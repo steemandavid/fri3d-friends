@@ -1,7 +1,9 @@
 # Implementation Plan — Gotcha (Assassin) game for !Fri3d Friends
 
 **Date:** 2026-07-26 · **Status:** design agreed, not implemented · **Target version:** v0.10.0
-**Camp date:** badges are handed out **14 August 2026** — everything must ship before then.
+**Camp:** **Friday 14 – Sunday 16 August 2026**, badges handed out Friday morning.
+Roughly **37 hours of playable time** once the 22:00–08:00 truce is excluded (§2.4).
+Everything must ship before then.
 
 This plan is written to be handed to an implementer who has *not* been part of the
 design conversation. It assumes familiarity with `DESIGN.md` (especially §3 BLE
@@ -18,7 +20,7 @@ sense until you know what the game feels like to play.
 
 *No technology in this section. It describes what a player experiences, nothing else.*
 
-You are at a four-day camp with several hundred other people wearing badges. One
+You are at a three-day camp with several hundred other people wearing badges. One
 morning your badge tells you: **you have a target.** It shows you their name. It does
 not tell you where they are, and it never tells you who is hunting *you* — because
 someone is.
@@ -84,7 +86,7 @@ looking for you, and everyone can see exactly how well you are doing by glancing
 their own badge.
 
 The obvious response — hide the badge in a tent and protect your lead — does not work.
-**A streak goes stale.** Six hours after your last kill it starts bleeding away, one
+**A streak goes stale.** Three hours after your last kill it starts bleeding away, one
 point every two hours, until there is nothing left. The crown belongs to whoever is
 still out there hunting, in public, right now. Your total kills are never touched by
 this; only the crown is.
@@ -199,7 +201,7 @@ Everything here is enforced by the backend unless marked *social*.
 9. **Bounties:** anyone on a live streak of **3 or more** is fair game for
    **everybody**, not just their assigned hunter — including people from their own
    group. Their name and streak are on the public hit list. Bounty kills score double.
-10. **Streaks perish.** Your streak holds for **6 hours** after your last kill, then
+10. **Streaks perish.** Your streak holds for **3 hours** after your last kill, then
     decays by **1 every 2 hours** until it reaches zero. Hiding your badge in a tent does
     not protect a lead — it forfeits it. (Total kills never decay.)
 11. **Night truce: no kills between 22:00 and 08:00.** Truce hours are excluded from
@@ -226,9 +228,10 @@ Everything here is enforced by the backend unless marked *social*.
   `DODGE_DECAY_MS` reset matters more at this setting than it would at three — it is
   what stops a single unlucky encounter from marking you as un-dodgeable by that
   assassin for the rest of the camp.
-- **Rule 7 (respawn, not elimination)** answers a 4-day camp: eliminating a
-  9-year-old at 09:30 on Friday because their badge battery died is not a game, it is
-  a punishment for logistics.
+- **Rule 7 (respawn, not elimination)** answers a three-day camp: eliminating a
+  9-year-old at 09:30 on Friday because their badge battery died would put them out
+  for a third of the entire event, for a reason that is not their fault. That is not a
+  game, it is a punishment for logistics.
 - **Rule 1 says "almost never" on purpose.** Group exclusion is a *preference the
   assignment tries to satisfy*, not an invariant. Three paths legitimately produce a
   same-group pair: an unsatisfiable constraint graph (§3.2 step 4 — the game must
@@ -268,7 +271,7 @@ it never touches `best_streak` or `total_kills`.
 
 ```
 active_seconds = wall_seconds_since(last_kill_at) minus overlapping truce intervals
-if active_seconds > STREAK_GRACE_S (default 6 h):
+if active_seconds > STREAK_GRACE_S (default 3 h):
     decayed = floor((active_seconds - STREAK_GRACE_S) / STREAK_DECAY_S)   # default 2 h
     streak  = max(0, streak_at_last_kill - decayed)
 ```
@@ -301,6 +304,33 @@ Rules:
   anti-stuffing mechanism, and it needs no lock-in date.
 - **Unverified by design.** Anyone can type any group name. Treat the group boards as
   entertainment, not as an award with a trophy attached, and say so on the page.
+
+### 2.4 Timing against a three-day camp
+
+The game is short. Excluding the 22:00–08:00 truce, the whole event is about
+**37 hours of playable time**:
+
+| Day | Playable |
+|---|---|
+| Friday (badges handed out in the morning) | ~14 h |
+| Saturday | ~14 h |
+| Sunday (ends late afternoon) | ~9 h |
+| **Total** | **~37 h** |
+
+Every duration constant should be read against that budget, not against a vague
+"multi-day event":
+
+| Constant | Value | Share of the game | Verdict |
+|---|---|---|---|
+| `RESPAWN_S` | 30 min | 1.4 % | Fine — a real cost, never a write-off. |
+| `STREAK_GRACE_S` | 3 h | 8 % | Fine. A leader must produce roughly every three hours to hold the crown. |
+| `STREAK_DECAY_S` | 2 h | — | A streak of 7 survives 3 + 14 = **17 playable hours**, about half the camp. Deliberate: the crown should be losable but not evaporate overnight. |
+| `TARGET_STALE_H` | 6 h | 16 % | Acceptable, but consider 4 h — six hours of hunting a ghost is a big slice of a 37-hour game. |
+| `DORMANT_H` | 24 h | **65 %** | ⚠️ **Too long. Recommend 12 h.** With truce hours excluded, 24 h of *playable* time is nearly two real days — a badge switched off on Friday night would not be spliced out of the ring until Sunday, stranding its hunter for most of the event. |
+
+`DORMANT_H` is the one that is actively wrong at this camp length; the rest merely
+want a second look. All are server-pushed (§5.4), so they can be retuned on Friday
+afternoon once real behaviour is visible.
 
 ---
 
@@ -354,7 +384,7 @@ from starting.**
 | Respawn | Splice in by the same rule. |
 | Opt-out | Splice out immediately; the hunter is reassigned on their next sync. |
 | Target unseen by anyone for `TARGET_STALE_H` (6 h) | Splice out, hunter reassigned. Score preserved; spliced back on return. |
-| No sync for `DORMANT_H` (24 h, truce hours excluded) | Splice out as dormant. |
+| No sync for `DORMANT_H` (truce hours excluded) | Splice out as dormant. **See §2.4 — 24 h is too long for a three-day camp; use 12 h.** |
 | Ring down to 2 | They hunt each other. Fine. |
 | Ring down to 1 | `target = null`, badge shows "waiting for players". |
 
@@ -519,7 +549,7 @@ press MENU
 | `ATTACK_COOLDOWN_MS` | 60000 | Between attempts on the same victim. |
 | `RESPAWN_S` | 1800 | 30 minutes. |
 | `BOUNTY_STREAK` | 3 | Streak at which you become fair game for everyone. |
-| `STREAK_GRACE_S` | 21600 | 6 h before decay starts. |
+| `STREAK_GRACE_S` | 10800 | 3 h before decay starts. |
 | `STREAK_DECAY_S` | 7200 | −1 streak every 2 h thereafter. |
 | `SYNC_S` | 300 | D13. Jittered ±20% (§10.3). |
 
@@ -1326,6 +1356,6 @@ as the day you arrive.
 
 ### 14.4 Nice to confirm
 
-- **Ceremony slot.** The format is built for a Sunday-noon announcement of four winners
+- **Ceremony slot.** The format is built for a **Sunday late-afternoon** announcement of four winners
   (two individual, two group). The ceremony is a large part of why people play to the
   end — worth a stage slot if one can be had.

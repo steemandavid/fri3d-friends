@@ -1,10 +1,15 @@
 # !Fri3d Friends — Gotcha (Assassin) game: design + implementation plan — 2026-07-26
 
-Design-only session. Produced **`Implementation_Plan_Gotcha_20260726.md`** (~1090
+Design-only session. Produced **`Implementation_Plan_Gotcha_20260726.md`** (~1360
 lines), a hand-off-ready plan for adding a camp-wide game of
 [Assassin/Gotcha](https://en.wikipedia.org/wiki/Assassin_(game)) to the app for Fri3d
-Camp (badges handed out **14 August 2026**). **No code was written and no application
-file was modified.** Target version v0.10.0.
+Camp (**Fri 14 – Sun 16 August 2026**, badges handed out Friday morning). **No code
+was written and no application file was modified.** Target version v0.10.0.
+
+The camp is short: excluding the 22:00–08:00 truce it is **~37 playable hours**, and
+plan §2.4 now reads every duration constant against that budget. One is actively
+wrong at this length — `DORMANT_H` at 24 h is 65 % of the game, so a badge switched
+off on Friday night would strand its hunter until Sunday. Recommend 12 h.
 
 The plan was built through three rounds of interview; the decisions below are settled
 (D1–D20 in the plan), not proposals.
@@ -36,7 +41,7 @@ protect the BLE scan, which `DESIGN.md` §3 calls load-bearing.
    `{soul, tgt:{pid,name,commitment}}` in one payload, so inheritance works in a WiFi
    dead zone with no server round-trip. The backend reconciles later.
 3. **Perishable streaks** (D4). Bounties on leaders would otherwise make "hide your
-   badge in a tent" the dominant strategy. A streak holds 6 h after your last kill,
+   badge in a tent" the dominant strategy. A streak holds 3 h after your last kill,
    then decays 1 per 2 h; totals never decay. Decay is derived server-side from
    `last_kill_at` (idempotent), so a powered-off badge decays fastest — it cannot even
    dodge.
