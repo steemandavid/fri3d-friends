@@ -9,6 +9,116 @@ protocol, §9 contact exchange, §10 BLE phone setup, §12 background beacon ser
 and `README.md`. Where this plan contradicts an existing pattern, it says so
 explicitly.
 
+**Read the next section first.** Everything after it is engineering; none of it makes
+sense until you know what the game feels like to play.
+
+---
+
+## The game, in plain language
+
+*No technology in this section. It describes what a player experiences, nothing else.*
+
+You are at a four-day camp with several hundred other people wearing badges. One
+morning your badge tells you: **you have a target.** It shows you their name. It does
+not tell you where they are, and it never tells you who is hunting *you* — because
+someone is.
+
+Your target is almost always a stranger. That is deliberate: the game does not want to
+hand you the friend sitting next to you.
+
+### Finding them
+
+Your badge is a radar. When your target is somewhere near, a bar on your screen starts
+to fill — stronger as you get closer, fading as you drift away. It cannot point you in
+a direction. It only ever tells you *warmer* or *colder*, which means finding someone
+is a matter of walking around, watching the bar, and paying attention to faces.
+
+Most of the time the bar is empty and your target is somewhere else entirely on the
+site. So you carry on with your day, and every so often the bar twitches, and you look
+up.
+
+### The kill
+
+When you are close enough — a few metres, near enough to see them — you press the
+**MENU** button.
+
+Their badge immediately starts **screaming.** Red screen, siren, `UNDER ATTACK — RUN!`
+Everyone nearby turns round. Your target now knows, with total clarity, that they are
+being killed and that it is one of the people in front of them.
+
+They have **five seconds** to get away from you. Not out of the building — just far
+enough, about ten metres, and broken away. If they manage it, they have dodged, and
+your badge tells you they escaped. You have to wait a minute before you can try again.
+
+But they only get away **once.** The second time you press MENU on the same person,
+there is no escape and no timer — their badge says **NO ESCAPE**, and they are gone. So
+a dodge is a reprieve, a moment of pure adrenaline in the middle of a crowd, and not a
+strategy. Nobody outruns this game.
+
+When they die, their badge hands you **their** target, and the hunt continues without
+pausing. Kill someone standing in a group of friends and you may find your next target
+is standing right there. There is nothing stopping you taking all of them.
+
+### Dying
+
+You will be killed. Everyone is killed, repeatedly.
+
+Your badge shows who did it and a countdown: **thirty minutes.** Then you are back,
+with a new target and a clean slate. You are never out of the game, never sitting on
+the sidelines for a day because your battery died at breakfast. Your total kills are
+yours forever — dying never takes them away.
+
+### Getting famous, and the trouble that brings
+
+There are two things worth being good at.
+
+**Total kills** is your permanent record — every kill you ever land, all camp.
+
+**Your streak** is how many you have killed since you last died, and it is the
+dangerous one, because your streak is **public**. Get to three and your name goes on
+the **hit list** — and now *anyone* may hunt you, not just the one person assigned to
+you. Including your own friends. You are worth double points to whoever gets you.
+
+So the leaderboard is also a target list. The better you do, the more of the camp is
+looking for you, and everyone can see exactly how well you are doing by glancing at
+their own badge.
+
+The obvious response — hide the badge in a tent and protect your lead — does not work.
+**A streak goes stale.** Six hours after your last kill it starts bleeding away, one
+point every two hours, until there is nothing left. The crown belongs to whoever is
+still out there hunting, in public, right now. Your total kills are never touched by
+this; only the crown is.
+
+### Reading the room
+
+Alive or dead is written on the front of every badge. You can glance at someone's
+badge — or your own, which lists who is nearby — and know whether they are currently in
+play. It is a small thing that changes how people move around each other: you learn to
+check before you walk up to someone.
+
+### Sleep, and not being a nuisance
+
+**Nobody can be killed between 22:00 and 08:00.** Badges do not scream at night, and
+sleeping costs you nothing — the streak clock stops too. The people running the game
+can also call an immediate truce across the whole camp if something needs to stop.
+
+Some places are simply off limits by agreement, not because the badge enforces it: the
+main stage during a show, the toilets and showers, a workshop while it is running, and
+first aid. And nobody runs indoors, near the fire, or through a crowd. It is a game
+about walking up to someone, not about sprinting.
+
+### Groups
+
+Whatever groups you have set on your badge — your hackerspace, your village, your
+crew — score together. There are two group boards: **total kills**, which rewards
+getting your people playing, and **kills per member**, which rewards a small sharp
+crew. Being in several groups is fine; you count for all of them.
+
+### If you would rather not
+
+Hold **MENU** and you are out, in about three seconds, no phone and no explanation
+needed. Rejoin whenever you like — your total is waiting for you.
+
 ---
 
 ## 0. Summary
@@ -26,8 +136,8 @@ Three tiers:
 
 | Tier | Role | Transport |
 |---|---|---|
-| **Backend** (new) | Authority: roster, ring, kills, scoring, game state, anti-cheat | HTTPS |
-| **Badge** (`gotcha.py`, new) | Radar, kill handshake, alarm, local event queue | BLE (peer↔peer) + HTTPS (badge↔backend) |
+| **Backend** (new) | Authority: roster, ring, kills, scoring, game state, anti-cheat | Signed HTTP |
+| **Badge** (`gotcha.py`, new) | Radar, kill handshake, alarm, local event queue | BLE (peer↔peer) + signed HTTP (badge↔backend, §6.2) |
 | **Web pages** (new, static) | Player status + leaderboards + host admin console | HTTPS |
 
 **The badge does the physical game; the backend does the bookkeeping.** BLE is used
@@ -58,6 +168,7 @@ metres of me right now" — and never for gossiping global state.
 | D18 | **The app manages no WiFi credentials at all** (§7) | Fri3d pre-loads the `fri3d-badge` SSID onto the badge (confirmed 2026-07-26), so `auto_connect()` handles it on boot. The app only *checks* connectivity and reports it. No credential in the repo, the `.mpk`, or any config file. |
 | D19 | **Integrated into !Fri3d Friends, not a separate app** (§8.6) | One BLE stack, one adv set, one one-shot `gatts_register_services`, one IRQ. Two apps cannot share the radio, and the game block lives *inside* the HSNT beacon. Isolation is achieved with lazy imports and a hard interface instead (§8.6). |
 | D20 | **Charging is assumed** (§8.7, §14.3) | The app cannot last a 16-hour waking day in any configuration, and power banks are ubiquitous at a hacker camp. Battery-aware degradation below 20 % is still built; the design does not depend on the power levers succeeding. |
+| D21 | **Plain HTTP with HMAC-signed requests and responses** (§6.2) | The game needs authenticity, not secrecy — kill proofs are self-authenticating and scores are published. Certificate verification is likely off on this build, so TLS would have given encryption without authenticity. One HTTPS call at enrollment bootstraps the key; everything after is signed plain HTTP. Removes the per-sync 40 KB allocation. **Constrains deployment: Tailscale Funnel is HTTPS-only and is therefore ruled out for the sync path.** |
 
 ---
 
@@ -67,14 +178,14 @@ These are the rules as they should appear on the rules card and the web page.
 Everything here is enforced by the backend unless marked *social*.
 
 1. **You have one target.** Your badge shows their name and how close they are. It
-   never tells you who is hunting *you*. Your target is never someone from one of
-   your own groups.
+   never tells you who is hunting *you*. Your target is **almost never** someone from
+   one of your own groups.
 2. **To kill:** get within a few metres of your target and press **MENU**. Hold the
    proximity for **5 seconds**. Their badge will scream — that is the point.
 3. **To survive:** if your badge screams, **run.** Break line of sight and get
    ~10 metres away within 5 seconds and you have dodged. *No running indoors, near
    the stage, near the fire, or in food queues.* (social)
-4. **You cannot dodge forever.** After **3 successful dodges from the same
+4. **You cannot dodge forever.** After **1 successful dodge from the same
    assassin**, their next attack lands **instantly**. Dodge counters reset an hour
    after that assassin last attacked you.
 5. **Attack cooldown:** an assassin must wait **60 seconds** between attempts on the
@@ -88,15 +199,15 @@ Everything here is enforced by the backend unless marked *social*.
 9. **Bounties:** anyone on a live streak of **3 or more** is fair game for
    **everybody**, not just their assigned hunter — including people from their own
    group. Their name and streak are on the public hit list. Bounty kills score double.
-10. **Streaks perish.** Your streak holds for **3 hours** after your last kill, then
-    decays by **1 per hour** until it reaches zero. Hiding your badge in a tent does
+10. **Streaks perish.** Your streak holds for **6 hours** after your last kill, then
+    decays by **1 every 2 hours** until it reaches zero. Hiding your badge in a tent does
     not protect a lead — it forfeits it. (Total kills never decay.)
 11. **Night truce: no kills between 22:00 and 08:00.** Truce hours are excluded from
     the streak-decay clock, so sleeping costs you nothing. The game host can call a
     camp-wide truce at any other time.
-12. **Safe zones (social):** main stage during shows, food queues, toilets and
-    showers, workshop tents while a workshop is running, first aid, and anyone's
-    sleeping tent. Not enforced by the badge — enforced by not being a jerk.
+12. **Safe zones (social):** main stage during shows, toilets and showers, workshop
+    tents while a workshop is running, and first aid. Not enforced by the badge —
+    enforced by not being a jerk.
 13. **Opting out:** press and hold **MENU** on your badge, or use the web page. You
     can rejoin later; your total is preserved.
 
@@ -109,11 +220,22 @@ Everything here is enforced by the backend unless marked *social*.
   computed **server-side on wall-clock time**, so a powered-off badge decays fastest
   of all: it cannot even dodge.
 - **Rule 4 answers "run away forever."** Without it a fast player is invulnerable.
-  Three dodges makes a real chase; the instant-kill fourth attempt guarantees it ends.
+  One dodge is a **single reprieve, not a chase**: escape once and your assassin's
+  next attempt lands regardless of how fast you are. Combined with the 60 s attack
+  cooldown, an encounter resolves in about a minute rather than dragging on. The 1 h
+  `DODGE_DECAY_MS` reset matters more at this setting than it would at three — it is
+  what stops a single unlucky encounter from marking you as un-dodgeable by that
+  assassin for the rest of the camp.
 - **Rule 7 (respawn, not elimination)** answers a 4-day camp: eliminating a
   9-year-old at 09:30 on Friday because their badge battery died is not a game, it is
   a punishment for logistics.
-- **Rule 1's group exclusion has a cost — read §3.3.** It makes every target a
+- **Rule 1 says "almost never" on purpose.** Group exclusion is a *preference the
+  assignment tries to satisfy*, not an invariant. Three paths legitimately produce a
+  same-group pair: an unsatisfiable constraint graph (§3.2 step 4 — the game must
+  still start), inheritance after a kill (§3.2), and bounty kills, which are open to
+  everyone including your own group (rule 9). Promising "never" in the rules would be
+  a promise the system does not keep.
+- **Rule 1's group exclusion has a cost — read §3.3.** It makes almost every target a
   stranger, which is thematically right but makes targets *harder to find*. The
   freshness/reassign machinery in §10.1 is what makes it survivable, not optional
   polish.
@@ -146,8 +268,8 @@ it never touches `best_streak` or `total_kills`.
 
 ```
 active_seconds = wall_seconds_since(last_kill_at) minus overlapping truce intervals
-if active_seconds > STREAK_GRACE_S (default 3 h):
-    decayed = floor((active_seconds - STREAK_GRACE_S) / STREAK_DECAY_S)   # default 1 h
+if active_seconds > STREAK_GRACE_S (default 6 h):
+    decayed = floor((active_seconds - STREAK_GRACE_S) / STREAK_DECAY_S)   # default 2 h
     streak  = max(0, streak_at_last_kill - decayed)
 ```
 
@@ -240,8 +362,9 @@ Badges never compute the ring; it only has to be self-consistent server-side.
 
 ### 3.3 The cost of group exclusion
 
-Excluding same-group pairs means your target is, by construction, someone you do not
-already hang around with. That is the point — but it directly increases the chance
+Preferring non-same-group pairs means your target is, in the overwhelming majority of
+cases, someone you do not already hang around with (the exceptions are enumerated in
+§1.1). That is the point — but it directly increases the chance
 that you and your target simply never occupy the same field. Combined with D16 (no
 kill cooldown, so sweeps are legal), the game's failure mode is not "too fast", it is
 **"I wandered for four hours and never found anyone."** The mitigations are §10.1
@@ -390,14 +513,14 @@ press MENU
 | `KILL_HOLD_MS` | 5000 | Sustained proximity required. |
 | `FLEE_RSSI` | −78 dBm | Escape threshold (hysteresis vs `KILL_RSSI`). |
 | `FLEE_MS` | 1500 | Time below `FLEE_RSSI` that counts as escaped. |
-| `DODGE_LIMIT` | 3 | Dodges per (attacker, victim) pair per life. |
+| `DODGE_LIMIT` | 1 | Dodges per (attacker, victim) pair per life. One reprieve, then the next attempt lands. |
 | `DODGE_DECAY_MS` | 3600000 | Dodge counter reset after 1 h with no attack from that attacker. |
 | `INSTANT_KILL_MS` | 1000 | Hold time once `dodges_left == 0`. |
 | `ATTACK_COOLDOWN_MS` | 60000 | Between attempts on the same victim. |
 | `RESPAWN_S` | 1800 | 30 minutes. |
 | `BOUNTY_STREAK` | 3 | Streak at which you become fair game for everyone. |
-| `STREAK_GRACE_S` | 10800 | 3 h before decay starts. |
-| `STREAK_DECAY_S` | 3600 | −1 streak per hour thereafter. |
+| `STREAK_GRACE_S` | 21600 | 6 h before decay starts. |
+| `STREAK_DECAY_S` | 7200 | −1 streak every 2 h thereafter. |
 | `SYNC_S` | 300 | D13. Jittered ±20% (§10.3). |
 
 Retuning `KILL_RSSI` and `KILL_HOLD_MS` **live from the admin page** is worth a lot:
@@ -456,41 +579,179 @@ that the service implements with buzzer/LED only.
 
 ### 6.1 Where the server runs
 
-An **Ubuntu laptop brought to camp**, published to the public internet via
-**Tailscale Funnel** or **Cloudflare Tunnel**.
+An **Ubuntu laptop brought to camp**. Preference order, driven by D21 (§6.2):
 
-- ⚠️ **Plain Tailscale is not usable by badges** — they cannot run a WireGuard client.
-  **Funnel** is the required feature: it publishes a tailnet service on a public
-  HTTPS URL that any ordinary HTTP client can reach. Cloudflare Tunnel does the same
-  and adds rate limiting and a custom domain.
-- Both are **outbound-only**, which is essential: behind camp NAT there is no port
-  forward to be had, so DDNS alone cannot work.
+1. **LAN route from the badge VLAN (A2)** — plain HTTP end to end, no internet in the
+   critical path. **Strongly preferred.** Ask the Fri3d infra crew; it is a
+   five-minute firewall change on their side.
+2. **Cloudflare Tunnel** — outbound-only, and it *can* serve plain HTTP on port 80 if
+   "Always Use HTTPS" is disabled. Adds rate limiting and a custom domain.
+3. ~~Tailscale Funnel~~ — **ruled out for the sync path.** Funnel is HTTPS-only
+   (443/8443/10000, TLS terminated by Tailscale), which would force a TLS handshake
+   back onto every sync and undo D21. Still fine for the *enrollment* endpoint.
+
+- ⚠️ **Plain Tailscale is not usable by badges either** — they cannot run a WireGuard
+  client. Only Funnel exposes a tailnet service to ordinary HTTP clients, and Funnel
+  is HTTPS-only, hence the above.
+- Options 1 and 2 are **outbound-only**, which is essential: behind camp NAT there is
+  no port forward to be had, so DDNS alone cannot work.
 - **Consequence of the subnet split:** badge → camp uplink → internet → back to camp →
-  laptop 50 m away. If the camp uplink drops, an on-site server is unreachable.
-  **Ask the Fri3d infra crew for a route from the badge VLAN to the laptop** — a
-  five-minute firewall change that removes the internet from the critical path.
-  Plan for Funnel; take the route if offered, and make the badge try a LAN address
-  first and fall back to the public URL.
+  laptop 50 m away. If the camp uplink drops, an on-site server is unreachable — which
+  is the second reason option 1 is preferred. Build the badge to try a configured LAN
+  address first and fall back to the public URL (§6.3), so the choice can be made on
+  arrival.
 - Load is negligible: 700 badges ÷ 300 s = **2.3 req/s**, a few KB each. SQLite and a
   single process are ample. Run it under systemd with restart-on-failure.
 
-### 6.2 TLS on the badge — verify this early
+### 6.2 Transport: plain HTTP with signed requests (D21)
 
-`DownloadManager` is aiohttp-backed, so HTTPS works, but on ESP32-S3 MicroPython:
-- a TLS handshake costs **tens of KB of RAM** and 1–3 s, and repeated handshakes are a
-  classic source of **heap fragmentation → OOM** over a multi-day run;
-- certificate verification may be **off by default** on this build. Unverified TLS is
-  still encrypted but MITM-able — on a hacker-camp network, assume someone will try.
+**Decision: the badge speaks plain HTTP and signs every request and response with
+HMAC-SHA256, except for a single HTTPS call at enrollment to bootstrap the key.**
 
-Decide explicitly and record it: (a) verify with a pinned CA/cert, (b) accept
-unverified TLS and treat all badge→server data as public, or (c) plain HTTP if the
-LAN route materialises. **Add "1000 consecutive HTTPS syncs without OOM" to Phase 0.**
+#### Why this is not a downgrade
+
+This game barely needs confidentiality. Kill proofs are self-authenticating (§3.4 — a
+soul is worthless to anyone but the killer), scores are public by design, and the hit
+list is *published*. What the game actually needs is **integrity and authenticity**:
+that a kill report really came from that badge, and that a "truce is on" or "your
+target is X" response really came from the server.
+
+TLS as this badge would have used it — very likely with certificate verification off
+(§6.2.1) — provides encryption but **not** authenticity against an active attacker.
+A signed-payload scheme provides authenticity but not encryption. On a hacker-camp
+network, **authenticity is the property that matters**: an unverified TLS session can be
+trivially intercepted and rewritten, whereas a signed payload cannot be forged without
+the key. So this is stronger than the realistic HTTPS alternative, not weaker.
+
+#### The scheme
+
+```
+enrollment (ONCE per badge, over HTTPS):
+    badge -> POST https://…/v1/enroll  { badge_key, display_name, groups, commitment }
+    server -> { pid, player_key (32 B, hex), game_id }
+    Exactly one TLS handshake in the badge's entire life, made early in uptime
+    while the heap is clean. Cost is irrelevant; it closes the key-delivery hole.
+
+every request thereafter (plain HTTP):
+    X-Pid:   <pid>
+    X-Ts:    <unix seconds, corrected by clock_offset_s>
+    X-Nonce: <16 random hex chars>
+    X-Sig:   HMAC_SHA256(player_key, METHOD || PATH || X-Ts || X-Nonce || BODY)
+
+every response:
+    X-Sig:   HMAC_SHA256(player_key, STATUS || X-Ts || REQUEST-NONCE || BODY)
+    The badge MUST verify this and discard unsigned or mis-signed responses.
+```
+
+- **Responses must be signed too.** Without it, a MITM could inject "truce off",
+  "you are dead", or a fake target. This is not optional.
+- **Replay defence:** server rejects `X-Ts` outside ±10 minutes (generous — badge RTCs
+  drift, see `clock_offset_s`, §8.3) and caches seen nonces for that window. The badge
+  rejects a response whose signature does not bind the nonce it just sent.
+- **Nothing replayable ever crosses the link.** The `player_key` is transmitted exactly
+  once, over TLS, at enrollment.
+- **MicroPython has no `hmac` module.** Implement HMAC-SHA256 by hand over
+  `hashlib.sha256` — it is about ten lines (key padding to 64 B, inner/outer digest).
+  Put it in `gotcha.py`'s pure half and **unit-test it against RFC 4231 vectors**.
+
+#### What this costs
+
+- **Loses:** eavesdroppers on the camp network can see who killed whom and when. The
+  leaderboard publishes that anyway. Record it in §13 and on the player page.
+- **Gains:** the entire TLS RAM/fragmentation risk (§6.2.1) drops from a Phase 0
+  blocker to a single handshake at enrollment. No cert pinning, no cert-verification
+  question, no per-sync 40 KB allocation on a heap shared with lvgl.
+
+#### ⚠️ Deployment consequence — this constrains §6.1
+
+**Tailscale Funnel serves HTTPS only** (443/8443/10000, TLS terminated by Tailscale).
+It **cannot** serve plain HTTP, so choosing D21 rules Funnel out for the sync path.
+The viable combinations are:
+
+| Path | Works with plain HTTP? |
+|---|---|
+| **LAN route (A2)** | ✅ Yes — the clean answer. Plain HTTP end to end. |
+| **Cloudflare Tunnel** | ✅ Yes, if "Always Use HTTPS" is disabled and port 80 is served. |
+| **Tailscale Funnel** | ❌ No — HTTPS only. Would force TLS back onto every sync. |
+
+Enrollment still needs an HTTPS endpoint regardless, so **the server must expose both**
+— HTTPS for `/v1/enroll`, plain HTTP for everything else. On the LAN path, enrollment
+can use a self-signed cert with verification off; the key exchange is then protected
+only against passive sniffing, which combined with a LAN-only route is acceptable.
+
+**This raises the value of A2 (§14.1) from "nice" to "strongly preferred", and makes
+Cloudflare Tunnel the better fallback over Tailscale Funnel.** Update §6.1 accordingly.
+
+### 6.2.1 Background: what HTTPS would have cost
+
+`DownloadManager` is aiohttp-backed, so HTTPS works out of the box. The question is
+what it costs. Taking the three resources separately, because they have very different
+answers:
+
+**Battery: a non-issue.** A TLS handshake is 1–3 s of CPU and radio. At a 5-minute sync
+that is under 1 % duty, i.e. **well under 1 mA averaged** against a ~150 mA baseline
+(§8.7). HTTPS is nowhere near the battery conversation; the BLE scan and the backlight
+are each ~50 mA and dwarf it by two orders of magnitude. **Do not optimise TLS for
+power.**
+
+**Time: a non-issue.** 1–3 s every 5 minutes, in a `TaskManager` task with a timeout,
+never on the main tick (§8.3). Nothing in the game is latency-sensitive — the only
+instant thing, the attack alarm, is BLE-local and never touches the network.
+
+**RAM: the entire risk, and it hinges on one unknown.** An mbedTLS session on ESP32
+needs roughly **20–45 KB**, dominated by the TLS record buffers
+(`MBEDTLS_SSL_IN_CONTENT_LEN`/`OUT_CONTENT_LEN`, up to 16 KB each unless the firmware
+was built smaller) plus certificate-chain parsing. That allocation is requested **every
+sync**, because `DownloadManager` uses **per-request aiohttp sessions** — there is no
+connection reuse to amortise it.
+
+That matters because MicroPython's GC **frees but does not compact**. A repeated
+30–40 KB contiguous allocation on a heap shared with lvgl's display buffers, fonts and
+widget trees is the textbook recipe for **fragmentation-induced `ENOMEM` after days of
+uptime** — total free memory looks fine, but no single block is big enough. This is the
+classic long-run failure mode for MicroPython-on-ESP32 network code.
+
+**But: the badge is an ESP32-S3-WROOM-1 N16R8V with 8 MB PSRAM.** If MicroPythonOS
+places the MicroPython heap in PSRAM — which is usual on PSRAM-equipped boards — then
+40 KB is a rounding error and fragmentation pressure is negligible. **If the heap is
+internal-only (~100–200 KB), a 40 KB TLS session is a third of everything and the risk
+is severe.** These are not close calls; they are opposite conclusions.
+
+**Resolve it with one line on the badge before designing around it:**
+
+```python
+import gc; gc.collect(); print(gc.mem_free())
+# megabytes  -> heap is in PSRAM  -> fragmentation pressure negligible
+# ~100-200 KB -> heap is internal -> a 40 KB TLS session is a third of everything
+```
+
+**D21 resolves this by removing the recurring allocation entirely**: one TLS handshake
+at enrollment, made early in uptime while the heap is clean, then plain HTTP forever.
+The check above is still worth running once — it tells you how much headroom the *rest*
+of the app has, which matters for the peer-table LRU (§4) and for lvgl — but it no
+longer gates the transport design.
+
+**Certificate verification** may be **off by default** on this build. That was the
+decisive argument for D21: unverified TLS is encrypted but freely MITM-able, so it
+would have bought secrecy the game does not need while failing to provide the
+authenticity it does.
+
+**Phase 0 item 2 is therefore reduced** from "1000 consecutive HTTPS syncs without OOM"
+to: run the `gc.mem_free()` check, confirm one enrollment handshake succeeds, and soak
+**1000 consecutive signed plain-HTTP syncs** for heap stability.
 
 ### 6.3 Endpoint configuration
 
-Base URL ships in `config.json` as `gotcha.api` with a compiled-in default, so it can
-be changed from the phone page or the on-badge editor without reflashing. The badge
-tries, in order: a configured LAN address (if set), then the public URL.
+Two base URLs ship in `config.json`, both changeable from the phone page or the
+on-badge editor without reflashing:
+
+| Key | Scheme | Used for |
+|---|---|---|
+| `gotcha.enroll` | **https://** | `/v1/enroll` only — once per badge, to bootstrap `player_key` (§6.2) |
+| `gotcha.api` | **http://** | Everything else, signed |
+
+The badge tries a configured LAN address first, then the public URL. Both must be
+reachable; the server exposes HTTPS and plain HTTP side by side.
 
 ---
 
@@ -555,7 +816,7 @@ Beacon build/parse lives in `ble_proximity.py` with the rest of the wire format 
 ```
 class GotchaResponder:   # VICTIM side — used by app AND background service
 class GotchaHunter:      # ASSASSIN side — app only
-class GotchaSync:        # HTTP client: enroll(), sync(), flush_events()
+class GotchaSync:        # signed HTTP client: enroll(), sync(), flush_events()
 ```
 
 ### 8.2 Persistence
@@ -566,11 +827,11 @@ corrupted by a power-off loses a kid's kills.
 
 ```json
 {
-  "enrolled": true, "pid": 4711, "token": "…", "game_id": "fri3d2026",
+  "enrolled": true, "pid": 4711, "player_key": "…32B hex…", "game_id": "fri3d2026",
   "soul": "…hex…", "commitment": "…hex…",
   "target": {"pid": 8123, "name": "Otter 42", "commitment": "…", "seen_ago_s": 240},
   "state": {"alive": true, "streak": 2, "total": 5, "respawn_at": null},
-  "dodges": {"8123": 2},
+  "dodges": {"8123": 1},
   "clock_offset_s": -3,
   "queue": [ {"uuid": "…", "type": "kill", …} ],
   "synced_at": "2026-08-14T15:22:07"
@@ -610,8 +871,8 @@ child and a screaming badge.
 | **Nametag (extended)** | A status chip — `ALIVE · streak 3 · 11 kills` or `DEAD · back 14:32` — plus one target strip: `🎯 Otter 42` and a 5-segment radar bar from `rssi_ewma`. Hidden entirely when not enrolled or no game is running. |
 | Radar detail (MENU short-press, target out of range) | Target name, dBm, **last seen by anyone: 12 min ago** (§10.1), your ranks, nearby bounty players. |
 | Attacking | Target name, hold progress bar, live RSSI, "KEEP CLOSE!" |
-| **Under attack** | Full-screen red, siren, `⚠ UNDER ATTACK — RUN! ⚠`, countdown, `dodges left: 2`. Must be unmistakable from across a field. |
-| Dodged | "YOU GOT AWAY!" + relief chime + dodges remaining. |
+| **Under attack** | Full-screen red, siren, `⚠ UNDER ATTACK — RUN! ⚠`, countdown, and either `you can still get away` or **`NO ESCAPE — they have you`** when `dodges_left == 0`. At `DODGE_LIMIT = 1` this is a binary state, so render it as words, not a counter. Must be unmistakable from across a field. |
+| Dodged | "YOU GOT AWAY!" + relief chime + **"they will catch you next time"** (at limit 1, the next attempt always lands). |
 | Killed | "GOTCHA — killed by \<name\>" + respawn countdown. **Countdown only (D14)** — no ghost mode in v1. |
 | Bounty nearby | Banner `BOUNTY: Otter 42 (streak 7) is near`, reusing the existing arrival-banner widget. |
 
@@ -744,7 +1005,7 @@ and 7 h is the difference between "charge overnight" and "charge at lunchtime to
 3. **WiFi power save (~65 mA).** Verify whether `WifiService` sets
    `wlan.config(pm=...)`. If it does not, setting DTIM power save is nearly free.
    Prefer this over connect-per-sync: raising the link every 5 minutes costs a DHCP
-   round-trip plus a TLS handshake (§6.2 heap risk) and fights the shared OS service.
+   round-trip and fights the shared OS service.
 4. **Battery-aware degradation.** Below 20 %: drop scan duty, stretch `SYNC_S`,
    disable LED breathing, blank the screen harder. Announce it on screen so it is not
    mysterious.
@@ -758,24 +1019,35 @@ USB meter, on both board generations.
 
 ## 9. Backend contract
 
-Stack unspecified. Requirements: HTTPS, ~2.3 req/s sustained, a small relational
-store, and something operable from a phone at a muddy campsite.
+Stack unspecified. Requirements: **HTTPS on `/v1/enroll` and plain HTTP on everything
+else** (§6.2), ~2.3 req/s sustained, a small relational store, and something operable
+from a phone at a muddy campsite.
 
 ### 9.1 Auth
 
-- **Badge:** `Authorization: Bearer <player_token>`, issued at enrollment, stored in
-  `gotcha.json`. Never displayed.
+- **Badge:** **HMAC-SHA256 request and response signing** with `player_key` (§6.2) —
+  headers `X-Pid`, `X-Ts`, `X-Nonce`, `X-Sig`. There is **no bearer token**; nothing
+  replayable crosses the link. `player_key` is issued once over HTTPS at enrollment,
+  stored in `gotcha.json`, and never displayed or re-transmitted.
+  - Server rejects `X-Ts` outside ±10 min and replays a nonce cache for that window.
+  - Server **signs every response**, binding the request nonce. The badge discards
+    unsigned or mis-signed responses — without this, a MITM could inject "truce off"
+    or a fake target over plain HTTP.
 - **Player web page:** public data only; the QR encodes
   `…/gotcha/?badge=XXXX&t=<short-lived read token>` for the private view (your target).
-- **Host:** session login on `/admin`, reachable from a phone.
+  The web page is served over HTTPS as normal — D21 governs the *badge* path only.
+- **Host:** session login on `/admin` over HTTPS, reachable from a phone.
 
 ### 9.2 Player endpoints
 
 ```
-POST /v1/enroll
+POST /v1/enroll                                    *** HTTPS — the only TLS call ***
   { badge_key, display_name, groups[], commitment, app_version, board }
-  -> { pid, player_token, game_id }
-  Idempotent on badge_key: re-enrolling returns the existing pid and a fresh token.
+  -> { pid, player_key (32 B hex), game_id }
+  Idempotent on badge_key: re-enrolling returns the existing pid and a fresh key.
+  Unsigned (the badge has no key yet); rate-limit by IP and badge_key.
+
+--- everything below: plain HTTP, signed both ways (§6.2, §9.1) ---
 
 GET /v1/sync
   -> { server_time,
@@ -888,7 +1160,7 @@ rather than pretending an open flashable badge is tamper-proof.
 | Only the assassin reports | Accept on soul proof alone; apply the death when the victim returns. |
 | Only the victim reports | `killed_by` names the attacker — credit the kill immediately, dedupe by `(victim_pid, life_id)` when the assassin's copy arrives. |
 | Backend down for hours | Everyone queues. **Dormancy must pause when global sync volume collapses**, or a server outage would mass-dormant the entire camp and shred the ring. |
-| 08:00, everyone powers on at once | **Jitter the sync schedule ±20%** — 700 simultaneous TLS handshakes is a self-inflicted DDoS. |
+| 08:00, everyone powers on at once | **Jitter the sync schedule ±20%** — 700 simultaneous syncs is a self-inflicted DDoS. |
 
 ### 10.4 Night, sleep and powered-off badges (D7)
 
@@ -931,8 +1203,10 @@ capable of invalidating downstream work:
    scan is load-bearing (`DESIGN.md` §3). Measure peer-detection rate and `last_seen`
    age with WiFi associated and syncing, versus WiFi off. *If coexistence badly
    degrades the scan, the architecture needs revisiting.*
-2. **TLS durability (§6.2).** 1000 consecutive HTTPS syncs without OOM or heap
-   fragmentation. Confirm whether certificates are verified on this build.
+2. **Sync durability (§6.2).** Run the `gc.mem_free()` heap check, confirm one
+   enrollment HTTPS handshake succeeds, then soak **1000 consecutive signed
+   plain-HTTP syncs** for heap stability. Verify the hand-rolled HMAC-SHA256 against
+   RFC 4231 vectors on-device, not just on host.
 3. **Third GATT service** fits alongside the existing two in one
    `gatts_register_services` call.
 4. **Scan duty reduction** (§8.7 lever 2): does 30 ms/240 ms keep NimBLE's duplicate
@@ -959,7 +1233,7 @@ The core fun. Ends with a real two-badge chase across a field.
 **Phase 5 — web pages.** Player card, four leaderboards, hit list, QR flow.
 
 **Phase 6 — scale and soak.** As many badges as can be assembled, running for hours.
-Watch RAM, the peer-table LRU, TLS heap, backend load, and **median time-to-first-kill**
+Watch RAM, the peer-table LRU, backend load, and **median time-to-first-kill**
 (§3.3). **Measure all five power scenarios in §8.7 with an inline USB meter, on both
 board generations.** Then a rules card, and a dry run with a dozen willing humans
 before 14 August.
@@ -971,7 +1245,7 @@ before 14 August.
 | Risk | Severity | Mitigation |
 |---|---|---|
 | **WiFi/BLE coexistence degrades the scan** | **High** | Phase 0 gates everything. 5-min sync (D13) already minimises exposure. |
-| **TLS heap fragmentation → OOM over 4 days** | **High** | Phase 0 soak; consider plain HTTP if the LAN route materialises. |
+| Signed plain HTTP: traffic is readable on the camp network | Low | Accepted (D21). Kill proofs are self-authenticating and scores are published; responses are signed so nothing can be injected. Noted in §13. |
 | **Background GATT + radio handoff** (§5.6) | **High** | `ensure_radio` self-heal is the precedent; budget hardware time; be willing to ship Phase 4 late. |
 | Unbounded `seen` table at 700 badges | High | LRU cap — fix regardless of Gotcha. |
 | Camp uplink down → on-site server unreachable | Medium | Ask for the badge-VLAN route (§6.1); D6 means play continues regardless. |
@@ -1003,6 +1277,13 @@ on-by-default. Take that seriously:
   `witnesses[]` for anti-cheat (§9.5): store it salted-hashed, retain it for the
   duration of the game only, purge after camp, and **drop it entirely if it is not
   earning its keep** — the soul mechanism carries the cryptographic weight on its own.
+- **Badge traffic is not encrypted** (D21, §6.2). Anyone on the camp network can read
+  who killed whom and when — which the public leaderboard tells them anyway — and, if
+  `witnesses[]` is kept, who was near whom. **This is the strongest argument for
+  dropping `witnesses[]`:** it is the only field whose plaintext exposure reveals
+  anything the game does not already publish. Requests and responses are signed, so
+  nothing can be forged or injected; the exposure is read-only. Say so plainly on the
+  player page rather than letting people assume HTTPS.
 - **Names.** Players choose their display name; `identity.py`'s auto-nickname is a
   good pseudonymous default. Never require real names.
 - **Publish the retention and deletion policy** on the player web page, and actually
@@ -1020,7 +1301,7 @@ changes depending on the answer, so Phase 1 can start while they are outstanding
 | # | Question | If YES | If NO |
 |---|---|---|---|
 | ~~A1~~ | ~~Will you pre-provision the camp SSID?~~ | **RESOLVED 2026-07-26: yes.** The `fri3d-badge` SSID is pre-loaded onto badges. §7 reduced to a connectivity *check*; the app manages no credentials and the repo contains none. | — |
-| A2 | **Can we have a route from the badge VLAN to a laptop on site?** (§6.1) | Badge talks to a LAN address. **Internet leaves the critical path**, the camp uplink stops being a single point of failure, and plain HTTP becomes viable — which **removes the TLS heap-fragmentation risk (§6.2) and Phase 0 item 2**. | Tailscale Funnel or Cloudflare Tunnel as planned. TLS soak stays a Phase 0 blocker. |
+| A2 | **Can we have a route from the badge VLAN to a laptop on site?** (§6.1) **Now strongly preferred, not merely nice** — D21 needs a path that carries plain HTTP. | Badge talks to a LAN address over plain HTTP. **Internet leaves the critical path** and the camp uplink stops being a single point of failure. | **Cloudflare Tunnel**, with "Always Use HTTPS" disabled so port 80 is served. **Tailscale Funnel is ruled out** for the sync path — HTTPS-only (§6.1). |
 
 Implement the endpoint logic to **try a configured LAN address first and fall back to
 the public URL** (§6.3) regardless of the answer — that way A2 can be answered as late

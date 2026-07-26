@@ -36,15 +36,15 @@ protect the BLE scan, which `DESIGN.md` §3 calls load-bearing.
    `{soul, tgt:{pid,name,commitment}}` in one payload, so inheritance works in a WiFi
    dead zone with no server round-trip. The backend reconciles later.
 3. **Perishable streaks** (D4). Bounties on leaders would otherwise make "hide your
-   badge in a tent" the dominant strategy. A streak holds 3 h after your last kill,
-   then decays 1/hour; totals never decay. Decay is derived server-side from
+   badge in a tent" the dominant strategy. A streak holds 6 h after your last kill,
+   then decays 1 per 2 h; totals never decay. Decay is derived server-side from
    `last_kill_at` (idempotent), so a powered-off badge decays fastest — it cannot even
    dodge.
 
 ## Gameplay
 
 - Assigned target, hunted via an RSSI radar bar. **MENU** attacks at close range; the
-  victim's badge **screams** and has ~5 s to break range. **3 dodges per assassin per
+  victim's badge **screams** and has ~5 s to break range. **1 dodge per assassin per
   life**, then the next attack is instant (answers "run away forever"). 60 s cooldown
   between attempts.
 - **Respawn (30 min), not elimination** — eliminating a 9-year-old at 09:30 Friday for
@@ -115,14 +115,36 @@ imports** (`gotcha.py` loaded only when a live game is detected) and try/except-
 entry points, so a Gotcha fault degrades to "no game", never "no nametag". A second
 Activity in the same package was considered and rejected.
 
+## Transport: plain HTTP with signed requests (D21)
+
+The badge speaks **plain HTTP, signing every request and response with HMAC-SHA256**,
+except for a **single HTTPS call at enrollment** to bootstrap the 32-byte `player_key`.
+No bearer token; nothing replayable crosses the link.
+
+Rationale: the game needs **authenticity, not secrecy**. Kill proofs are
+self-authenticating (a soul is worthless to anyone but the killer), scores are public,
+and the hit list is published. Certificate verification is likely **off** on this
+build, so TLS would have delivered encryption without authenticity — the property that
+actually matters on a hacker-camp network, where an unverified session is trivially
+intercepted and rewritten. **Responses are signed too**, or a MITM could inject "truce
+off" or a fake target.
+
+Side benefit: the per-sync 20–45 KB mbedTLS allocation disappears. `DownloadManager`
+uses per-request aiohttp sessions, so there was no connection reuse to amortise it, and
+MicroPython's GC frees without compacting — the textbook route to fragmentation
+`ENOMEM` after days of uptime. One handshake early in uptime replaces ~1000.
+
+MicroPython has no `hmac` module; implement it over `hashlib.sha256` (~10 lines) and
+test against RFC 4231 vectors.
+
+⚠️ **Deployment consequence:** **Tailscale Funnel is HTTPS-only** and is therefore
+ruled out for the sync path. Preference order is now (1) LAN route from the badge VLAN
+— plain HTTP end to end, **now strongly preferred rather than merely nice**;
+(2) Cloudflare Tunnel with "Always Use HTTPS" disabled. Plain Tailscale was never
+usable — badges cannot run a WireGuard client. Load is trivial (700 ÷ 300 s ≈
+**2.3 req/s**).
+
 ## Deployment
-
-Ubuntu laptop brought to camp, published via **Tailscale Funnel** or Cloudflare Tunnel.
-
-⚠️ **Plain Tailscale is unusable by badges** — they cannot run a WireGuard client.
-**Funnel** is the required feature (publishes a tailnet service on a public HTTPS URL).
-Both are outbound-only, which is essential: behind camp NAT there is no port forward,
-so DDNS alone cannot work. Load is trivial (700 ÷ 300 s ≈ **2.3 req/s**).
 
 Fri3d confirmed they **pre-load the `fri3d-badge` SSID onto badges**, so the app
 manages **no WiFi credentials at all** — it only checks connectivity and reports it.
@@ -133,7 +155,7 @@ No credential in the repo, the `.mpk`, or any config file.
 | Risk | Severity |
 |---|---|
 | WiFi/BLE coexistence degrading the load-bearing scan | High — Phase 0 gates everything |
-| TLS heap fragmentation over a 4-day run (ESP32 handshakes cost tens of KB; cert verification may be off) | High — Phase 0 soak, 1000 syncs |
+| ~~TLS heap fragmentation over a 4-day run~~ | **Removed by D21** — one handshake instead of ~1000 |
 | Background GATT + radio handoff (`beacon_service` must host the victim side) | High — most fragile area |
 | Unbounded `seen` table at 700 badges | High — fix regardless |
 | Battery (above) | High |
@@ -163,11 +185,13 @@ screen and a three-second badge-side exit (MENU long-press).
 ## Open items
 
 - **A2 (only blocking question left):** can Fri3d route the badge VLAN to the on-site
-  laptop? If yes, internet leaves the critical path and **the TLS risk and Phase 0
-  item 2 both disappear.** Non-blocking by design — the endpoint logic tries a LAN
-  address first and falls back to the public URL, so it can be answered on arrival.
+  laptop? **Upgraded from "nice" to "strongly preferred" by D21**, which needs a path
+  carrying plain HTTP — that is the LAN route, or Cloudflare Tunnel with HTTPS
+  enforcement off. Still non-blocking by design: the endpoint logic tries a LAN address
+  first and falls back to the public URL, so it can be answered on arrival.
 - **A4:** measure all five power scenarios on both boards with an inline USB meter.
 - v0.9.0 remains **not hardware-verified**; 118/118 host tests pass.
+
 # !Fri3d Friends — v0.9.0: on-badge onboarding (auto-nickname, group adoption, on-badge editor) — 2026-07-22
 
 Answers **GitHub issue #4** (ThomasFarstrike): the app *required* an
