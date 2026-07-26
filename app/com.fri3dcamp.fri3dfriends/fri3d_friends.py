@@ -540,16 +540,18 @@ class Fri3dFriends(Activity):
         return (r << 16) | (g << 8) | b
 
     def _short(self, s, n):
+        # ASCII "..." rather than U+2026: the built-in lvgl fonts are ASCII-only,
+        # so a real ellipsis renders as a missing glyph. Costs 2 chars of width.
         s = (s or "").strip()
-        return s if len(s) <= n else s[: n - 1] + "…"
+        return s if len(s) <= n else s[: max(1, n - 3)] + "..."
 
     def _controls_text(self):
         # Blank on the Configure-me screen — none of these apply there, and that
-        # layout puts its own "A: set up on badge / Y: skip for now" hint here.
+        # layout puts its own "A: op badge / Y: nu overslaan" hint here.
         if self._show_setup_screen():
             return ""
         # "B:mute" while unmuted, "B:unmute" while muted.
-        return "A:list  B:%s  Y:swap" % ("mute" if self._sound else "unmute")
+        return "A:lijst  B:%s  Y:ruil" % ("stil" if self._sound else "geluid")
 
     # ------------------------------------------------------------------ pills (full width, stacked)
     def _place_pills(self, scr):
@@ -690,7 +692,7 @@ class Fri3dFriends(Activity):
         ver.align(lv.ALIGN.TOP_MID, 0, 50)
 
         who = lv.label(sp)
-        who.set_text("by David Steeman")
+        who.set_text("door David Steeman")
         who.set_style_text_color(_col(COL_NAME), 0)
         who.set_style_text_font(lv.font_montserrat_16, 0)
         who.align(lv.ALIGN.TOP_MID, 0, 72)
@@ -769,7 +771,7 @@ class Fri3dFriends(Activity):
     def _hint_text(self):
         """The nametag footer hint: BOTH ways to reach setup. START is otherwise
         undiscoverable, and it is the only route that needs no phone at all."""
-        return "hold B: phone setup    START: on badge"
+        return "hou B: telefoon-setup   START: op badge"
 
     def _show_setup_screen(self):
         """True when the blocking Configure-me screen should be shown: no group
@@ -779,24 +781,24 @@ class Fri3dFriends(Activity):
         return self._unconfigured and not self._setup_skipped
 
     def _build_setup(self, scr):
-        # First-run "Configure me" layout. Every widget is tracked in
+        # First-run "Stel me in" layout. Every widget is tracked in
         # _setup_widgets so a save (over BLE) can HIDE (never delete — deleting
         # live widgets/screens crashes this build) the lot and swap to the
         # nametag in place. No WiFi needed: a phone connects over Bluetooth to
         # the static Web-Bluetooth page (SETUP_URL_BASE); the QR carries the URL
         # incl. ?badge=XXXX so the browser chooser shows exactly this badge.
-        info = self._label(scr, 0, 206, "starting Bluetooth…", COL_NEAR,
+        info = self._label(scr, 0, 206, "bluetooth starten...", COL_NEAR,
                            font=lv.font_montserrat_16, center=True)
         self._setup_info_lbl = info
         self._setup_widgets = [
-            self._label(scr, 0, 4, "Configure me", COL_HINT, font=lv.font_montserrat_24, center=True),
-            self._label(scr, 0, 30, "scan with your phone (Bluetooth)", COL_NONE,
+            self._label(scr, 0, 4, "Stel me in", COL_HINT, font=lv.font_montserrat_24, center=True),
+            self._label(scr, 0, 30, "scan met je telefoon (bluetooth)", COL_NONE,
                         font=lv.font_montserrat_14, center=True),
             info,
             # No phone / no internet? Two ways out (issue #4). A opens the
             # on-badge editor; Y drops straight to the nametag under the
             # auto-nickname and remembers the choice.
-            self._label(scr, 0, CONTROLS_TOP, "A: set up on badge   Y: skip for now",
+            self._label(scr, 0, CONTROLS_TOP, "A: op badge   Y: nu overslaan",
                         COL_HINT, font=lv.font_montserrat_12, center=True),
         ]
         # QR of the setup-page URL, on a white tile (the margin doubles as the
@@ -828,8 +830,8 @@ class Fri3dFriends(Activity):
             ov.set_style_border_color(_col(COL_HINT), 0)
         except Exception:
             pass
-        self._label(ov, 0, 6, "Phone setup", COL_HINT, font=lv.font_montserrat_24, center=True)
-        self._label(ov, 0, 34, "scan with your phone (Bluetooth)", COL_NONE,
+        self._label(ov, 0, 6, "Telefoon-setup", COL_HINT, font=lv.font_montserrat_24, center=True)
+        self._label(ov, 0, 34, "scan met je telefoon (bluetooth)", COL_NONE,
                     font=lv.font_montserrat_14, center=True)
         try:
             box = self._rbox(ov, (W - 140) // 2, 54, 140, 140, 0xFFFFFF, radius=6)
@@ -887,7 +889,7 @@ class Fri3dFriends(Activity):
             row.add_flag(lv.obj.FLAG.HIDDEN)
             self._adopt_rows.append(row)
         # y/w are panel-relative (panel is pw x H-56).
-        self._label(pn, 0, (H - 56) - 26, "A: next   B: tick   Y: join", COL_HINT,
+        self._label(pn, 0, (H - 56) - 26, "A: verder   B: vink   Y: meedoen", COL_HINT,
                     font=lv.font_montserrat_12, center=True, w=pw - 16)
         pn.add_flag(lv.obj.FLAG.HIDDEN)
         self._adopt_panel = pn
@@ -914,7 +916,7 @@ class Fri3dFriends(Activity):
         # instead of being clipped by the rounded screen corner.
         fw = W - 40
         self._friends_lbl = self._label(scr, (W - fw) // 2, self._friends_top,
-                                        "looking for friends…", COL_NONE,
+                                        "vrienden zoeken...", COL_NONE,
                                         font=lv.font_montserrat_14, center=True, w=fw)
         try:
             self._friends_lbl.set_long_mode(lv.label.LONG_MODE.WRAP)
@@ -931,7 +933,7 @@ class Fri3dFriends(Activity):
         except Exception:
             pass
         self._detail_header = lv.label(self._detail_panel)
-        self._detail_header.set_text("FRIENDS NEARBY")
+        self._detail_header.set_text("VRIENDEN DICHTBIJ")
         self._detail_header.set_style_text_color(_col(COL_NEAR), 0)
         self._detail_header.set_style_text_font(lv.font_montserrat_16, 0)
         self._detail_header.set_pos(8, 6)
@@ -1343,7 +1345,7 @@ class Fri3dFriends(Activity):
             return
         now = time.ticks_ms()
         # Only coalesce into a banner that is ITSELF an arrival banner still
-        # showing — never into a "Swapped with X ✓" / "Config saved ✓" banner
+        # showing — never into a "Geruild met X" / "Instellingen opgeslagen" banner
         # (that would silently rewrite it and skip the LED flash + sting).
         if (self._banner_is_arrival and self._banner_until and
                 time.ticks_diff(now, self._banner_until) < 0):
@@ -1363,7 +1365,7 @@ class Fri3dFriends(Activity):
             # Skipped, group-less badge: the nametag works, but there is nothing
             # to match on yet. Stand in for the friends list with the two ways to
             # fix that — neither of which needs a phone or the internet.
-            new_txt = "no group yet — press Y near a friend,\nor START to set up"
+            new_txt = "nog geen groep - druk Y bij een vriend,\nof START om in te stellen"
             if new_txt != self._friends_last:
                 try:
                     self._friends_lbl.set_text(new_txt)
@@ -1377,10 +1379,10 @@ class Fri3dFriends(Activity):
         if n:
             names = ", ".join(p[0] for p in peers)
             if len(names) > 90:          # wraps to ~3 lines; cap absurdly long lists
-                names = names[:89] + "…"
-            new_txt = "Friends nearby: " + names
+                names = names[:87] + "..."
+            new_txt = "Vrienden dichtbij: " + names
         else:
-            new_txt = "looking for friends…"
+            new_txt = "vrienden zoeken..."
         if new_txt != self._friends_last:
             try:
                 self._friends_lbl.set_text(new_txt)
@@ -1394,7 +1396,7 @@ class Fri3dFriends(Activity):
                 self._show_row(slot, True)
             else:
                 self._show_row(slot, False)
-        new_hdr = (("FRIENDS NEARBY · %d" % n) if n else "no friends nearby yet")
+        new_hdr = (("VRIENDEN DICHTBIJ %d" % n) if n else "nog geen vrienden dichtbij")
         if new_hdr != self._detail_header_last and self._detail_header is not None:
             try:
                 self._detail_header.set_text(new_hdr)
@@ -1511,9 +1513,9 @@ class Fri3dFriends(Activity):
         self._exchanging = True
         t0 = time.ticks_ms()
         try:
-            self._show_banner("Swapping contacts…")
+            self._show_banner("contacten ruilen...")
             self._wake()
-            name = self._config.get("name", "") or "Anonymous"
+            name = self._config.get("name", "") or "Anoniem"
             rec = await self._exch.run_window(self._ble, name, self._outgoing_contact())
             self._exch_log("%s board=%s %dms rec=%r trace=%s" % (
                 _now_str(), "2026" if self._is_2026 else "2024",
@@ -1528,15 +1530,15 @@ class Fri3dFriends(Activity):
                 self._store_contact(rec)
                 self._flash_leds(*_hsv(180))
                 TaskManager.create_task(self._sting(660))
-                self._show_banner("Swapped with %s ✓" % (rec.get("name") or "?"))
+                self._show_banner("Geruild met %s" % (rec.get("name") or "?"))
                 self._offer_groups(rec)
             else:
-                self._show_banner("No one swapping nearby")
+                self._show_banner("niemand aan het ruilen")
         except asyncio.CancelledError:
             raise            # app exiting mid-swap — don't touch widgets, just unwind
         except Exception:
             try:
-                self._show_banner("Swap failed")
+                self._show_banner("Ruilen mislukt")
             except Exception:
                 pass
         finally:
@@ -1599,8 +1601,8 @@ class Fri3dFriends(Activity):
         n = len(self._adopt_groups)
         try:
             self._adopt_title_lbl.set_text(
-                "%s is in %d groups\nJoin which?" % (peer, n) if n > 1
-                else "Join %s's group?" % peer)
+                "%s zit in %d groepen\nWelke meedoen?" % (peer, n) if n > 1
+                else "Meedoen met groep van %s?" % peer)
         except Exception:
             pass
         self._refresh_adopt()
@@ -1689,7 +1691,7 @@ class Fri3dFriends(Activity):
         added = merged[len(before):]          # what actually fit, in order
         if not added:
             if dropped:
-                self._show_banner("Already in %d groups (max %d)"
+                self._show_banner("Al in %d groepen (max %d)"
                                   % (len(before), MAX_GROUPS))
             return
         self._save_config("groups", merged)
@@ -1712,10 +1714,10 @@ class Fri3dFriends(Activity):
         self._pending_begin = True
         joined = ", ".join(added)
         if dropped:
-            self._show_banner("Joined %s (%d didn't fit, max %d)"
+            self._show_banner("%s erbij (%d paste niet, max %d)"
                               % (joined, dropped, MAX_GROUPS))
         else:
-            self._show_banner("Joined %s ✓ — restart app for pills" % joined)
+            self._show_banner("%s erbij - herstart de app" % joined)
 
     # --------------------------------------------------------- on-badge settings editor
     def _skip_setup(self):
@@ -1739,7 +1741,7 @@ class Fri3dFriends(Activity):
                 self._controls_lbl.set_text(self._controls_text())
             except Exception:
                 pass
-        self._show_banner("You can set up later: hold B, or START")
+        self._show_banner("Later instellen: hou B, of START")
 
     def _open_settings(self):
         """Launch the OS settings editor for our config (no phone, no internet).
@@ -1760,7 +1762,7 @@ class Fri3dFriends(Activity):
             except ImportError:          # docs show both spellings
                 from mpos.config import SharedPreferences
         except Exception:
-            self._show_banner("On-badge setup needs a newer OS")
+            self._show_banner("Instellen op badge vraagt nieuwere OS")
             return
         try:
             prefs = SharedPreferences(FULLNAME)
@@ -1774,22 +1776,22 @@ class Fri3dFriends(Activity):
             intent = Intent(activity_class=SettingsActivity)
             intent.putExtra("prefs", prefs)
             intent.putExtra("settings", [
-                {"title": "Your name", "key": "name",
-                 "placeholder": "Shown big on the badge"},
-                {"title": "Groups", "key": "groups",
-                 "placeholder": "Comma-separated, e.g. Makerspace Baasrode",
-                 "note": "Everyone in a group must type it the SAME way."},
-                {"title": "Alert sound", "key": "sound", "ui": "radiobuttons",
-                 "ui_options": [("On", "on"), ("Off", "off")]},
-                {"title": "Alert range", "key": "rssi_floor", "ui": "dropdown",
+                {"title": "Je naam", "key": "name",
+                 "placeholder": "Groot op de badge"},
+                {"title": "Groepen", "key": "groups",
+                 "placeholder": "Komma ertussen, bv. Makerspace Baasrode",
+                 "note": "Iedereen in een groep typt het NET ZO."},
+                {"title": "Geluid", "key": "sound", "ui": "radiobuttons",
+                 "ui_options": [("Aan", "on"), ("Uit", "off")]},
+                {"title": "Bereik", "key": "rssi_floor", "ui": "dropdown",
                  "ui_options": [(label, label) for label, _ in RANGE_PRESETS]},
-                {"title": "Banner seconds", "key": "banner_s", "ui": "slider",
+                {"title": "Banner (sec)", "key": "banner_s", "ui": "slider",
                  "min": 1, "max": 15},
             ])
             self.startActivity(intent)
         except Exception:
             self._settings_pending = False
-            self._show_banner("Couldn't open on-badge setup")
+            self._show_banner("Instellen op badge lukt niet")
 
     def _harvest_settings(self):
         """Merge the editor's prefs back into config.json and apply.
@@ -1823,7 +1825,7 @@ class Fri3dFriends(Activity):
             cfg = settings_to_config(got, base)
             _atomic_write_json(APP_DIR + "/config.json", cfg)
         except Exception:
-            self._show_banner("Couldn't save settings")
+            self._show_banner("Opslaan mislukt")
             return
         # Reload NOW, not via _reload_pending alone: this runs inside onResume,
         # just before onResume decides whether to begin() the beacon and with
@@ -1908,7 +1910,7 @@ class Fri3dFriends(Activity):
             self._hide_setup_overlay()
             self._led_last = None
             try:
-                self._show_banner("Setup closed")
+                self._show_banner("Setup gesloten")
             except Exception:
                 pass
 
@@ -1977,14 +1979,14 @@ class Fri3dFriends(Activity):
                 secs = time.ticks_diff(self._setup_win_deadline, now) // 1000
             if secs < 0:
                 secs = 0
-            self._set_lbl(self._overlay_count_lbl, "closes in %ds · Y to close" % secs)
+            self._set_lbl(self._overlay_count_lbl, "sluit over %ds - Y om te sluiten" % secs)
         else:
             # Configure-me screen (unconfigured).
             self._update_setup_qr(self._qr, self._qr_box, url)
             if bid and bid != "0000":
                 txt = "%s   code %s" % (setup_name(bid), code) if code else setup_name(bid)
             else:
-                txt = "starting Bluetooth…"
+                txt = "bluetooth starten..."
             if txt != self._setup_last:
                 self._set_lbl(self._setup_info_lbl, txt)
                 self._setup_last = txt
@@ -2067,7 +2069,7 @@ class Fri3dFriends(Activity):
             # (see _handle_buttons), so Y can't find a half-up radio in between.
             self._pending_begin = True
             self._swap_setup_for_nametag()
-        self._show_banner("Config saved ✓")
+        self._show_banner("Instellingen opgeslagen")
 
     def _swap_setup_for_nametag(self):
         # In-place layout swap on the SAME live screen: hide the setup widgets

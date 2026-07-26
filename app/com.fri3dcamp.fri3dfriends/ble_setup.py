@@ -234,11 +234,11 @@ def sanitize_config(new, base):
 # choices instead of a raw dBm number. A dropdown also sidesteps LVGL sliders
 # having to carry a negative range.
 RANGE_PRESETS = (
-    ("Full range (default)", -120),
-    ("Wide area", -90),
-    ("Same room / tent", -80),
-    ("Next to me", -70),
-    ("Touching", -60),
+    ("Volledig bereik (standaard)", -120),
+    ("Ruime omgeving", -90),
+    ("Zelfde tent of ruimte", -80),
+    ("Vlak naast me", -70),
+    ("Tegen elkaar", -60),
 )
 
 SETTINGS_KEYS = ("name", "groups", "sound", "rssi_floor", "banner_s")

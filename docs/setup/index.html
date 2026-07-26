@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>!Fri3d Friends — badge setup</title>
+<title>!Fri3d Friends — badge instellen</title>
 <!--
   Static Web-Bluetooth setup page for the "!Fri3d Friends" badge app.
   ONE self-contained file (inline CSS + JS, no frameworks, no build step),
@@ -58,82 +58,82 @@
 <body>
 
 <h1>!Fri3d Friends</h1>
-<div class="sub">Set up your badge from your phone — over Bluetooth, no WiFi needed.</div>
+<div class="sub">Stel je badge in vanaf je telefoon — via bluetooth, geen wifi nodig.</div>
 
 <!-- Unsupported-browser hint (iOS Safari / desktop without Web Bluetooth) -->
 <div id="unsupported" class="panel hidden">
-  <b>This browser can't do Web Bluetooth.</b>
+  <b>Deze browser kan geen Web Bluetooth.</b>
   <div id="ios-hint" class="hidden">
-    <p>On iPhone/iPad, open this page in the free <b>Bluefy</b> browser:</p>
-    <p><a id="bluefy-store" href="https://apps.apple.com/app/bluefy-web-ble-browser/id1492822055">Get Bluefy on the App Store</a></p>
-    <p><a id="bluefy-open" href="#">Open this page in Bluefy →</a></p>
+    <p>Op iPhone/iPad: open deze pagina in de gratis <b>Bluefy</b>-browser:</p>
+    <p><a id="bluefy-store" href="https://apps.apple.com/app/bluefy-web-ble-browser/id1492822055">Haal Bluefy in de App Store</a></p>
+    <p><a id="bluefy-open" href="#">Open deze pagina in Bluefy →</a></p>
   </div>
   <div id="desktop-hint" class="hidden">
-    <p>Use <b>Chrome</b> or <b>Edge</b> (desktop or Android). Firefox and Safari
-    don't support Web Bluetooth.</p>
+    <p>Gebruik <b>Chrome</b> of <b>Edge</b> (desktop of Android). Firefox en Safari
+    ondersteunen Web Bluetooth niet.</p>
   </div>
 </div>
 
 <!-- Connect -->
 <div id="connect-panel" class="panel">
-  <div>Badge: <span id="badge-label" class="badgechip">any</span></div>
-  <p class="muted" id="connect-hint">Tap Connect, then pick your badge from the list.</p>
-  <button id="connect-btn">🔗 Connect to badge</button>
+  <div>Badge: <span id="badge-label" class="badgechip">alle</span></div>
+  <p class="muted" id="connect-hint">Tik op Verbinden en kies je badge uit de lijst.</p>
+  <button id="connect-btn">🔗 Verbind met badge</button>
 </div>
 
 <!-- Auth -->
 <div id="auth-panel" class="panel hidden">
-  <label for="code">4-digit code shown on the badge screen</label>
+  <label for="code">4-cijferige code op het badgescherm</label>
   <input id="code" type="tel" inputmode="numeric" maxlength="4" autocomplete="off" placeholder="1234">
-  <button id="auth-btn">Unlock</button>
-  <button id="disconnect-btn" class="secondary">Disconnect</button>
+  <button id="auth-btn">Ontgrendelen</button>
+  <button id="disconnect-btn" class="secondary">Verbinding verbreken</button>
 </div>
 
 <!-- Main (tabs) -->
 <div id="main" class="hidden">
   <div class="tabs">
-    <button id="tab-config" class="active">Nametag</button>
-    <button id="tab-contacts">Contacts</button>
+    <button id="tab-config" class="active">Naamkaart</button>
+    <button id="tab-contacts">Contacten</button>
   </div>
 
   <!-- Config tab -->
   <div id="config-view">
     <div class="panel">
-      <label for="f-name">Name <span style="color:var(--hint)">*required</span></label>
-      <input id="f-name" type="text" placeholder="Your name">
+      <label for="f-name">Naam <span style="color:var(--hint)">*verplicht</span></label>
+      <input id="f-name" type="text" placeholder="Je naam">
 
-      <label for="f-groups">Groups (comma-separated) <span style="color:var(--hint)">*at least one required</span></label>
+      <label for="f-groups">Groepen (komma ertussen) <span style="color:var(--hint)">*minstens een</span></label>
       <input id="f-groups" type="text" placeholder="Alpha, Beta">
-      <div class="muted">The badge stays in setup until it has a name <b>and</b> at least one group — groups are what light up when a friend is near.</div>
+      <div class="muted">De badge blijft in setup tot hij een naam <b>en</b> minstens een groep heeft — groepen zijn wat oplicht als een vriend dichtbij is.</div>
 
-      <div class="checkbox"><input id="f-sound" type="checkbox"><label for="f-sound" style="margin:0">Alert sound</label></div>
+      <div class="checkbox"><input id="f-sound" type="checkbox"><label for="f-sound" style="margin:0">Geluid bij melding</label></div>
 
-      <label for="f-banner">Banner ms</label>
+      <label for="f-banner">Banner (ms)</label>
       <input id="f-banner" type="number" value="5000">
 
-      <label for="f-rssi">RSSI floor (dBm, -120 = off)</label>
+      <label for="f-rssi">RSSI-drempel (dBm, -120 = uit)</label>
       <input id="f-rssi" type="number" value="-120">
 
-      <h2>My contact info</h2>
-      <div class="muted">Any fields you like — Discord, website, phone, wallet…</div>
+      <h2>Mijn contactgegevens</h2>
+      <div class="muted">Wat je maar wil — Discord, website, telefoon, wallet…</div>
       <div id="contact-rows"></div>
-      <button id="add-field-btn" class="secondary">+ field</button>
+      <button id="add-field-btn" class="secondary">+ veld</button>
 
-      <div><button id="save-btn">Save to badge</button></div>
+      <div><button id="save-btn">Opslaan op badge</button></div>
     </div>
   </div>
 
   <!-- Contacts tab -->
   <div id="contacts-view" class="hidden">
     <div class="panel">
-      <button id="load-contacts-btn" class="secondary">Reload received contacts</button>
-      <button id="download-btn" class="secondary">Download JSON</button>
+      <button id="load-contacts-btn" class="secondary">Ontvangen contacten herladen</button>
+      <button id="download-btn" class="secondary">JSON downloaden</button>
       <div id="contacts-table"></div>
     </div>
   </div>
 </div>
 
-<div id="status" class="s-info">Ready.</div>
+<div id="status" class="s-info">Klaar.</div>
 
 <p class="muted" style="margin-top:24px">
   Access is gated by the code shown on the badge (prove you can see it — like
@@ -223,22 +223,22 @@ async function acquireGatt() {
 
 async function connect() {
   try {
-    setStatus("Opening Bluetooth chooser…", "info");
+    setStatus("Bluetooth-kiezer openen…", "info");
     const filters = badgeId ? [{ name: "Fri3d-" + badgeId }] : [{ namePrefix: "Fri3d-" }];
     device = await navigator.bluetooth.requestDevice({
       filters, optionalServices: [SETUP_SVC],
     });
     device.addEventListener("gattdisconnected", onDisconnected);
-    setStatus("Connecting…", "info");
+    setStatus("Verbinden…", "info");
     await acquireGatt();
     // Read pre-auth INFO to confirm we reached the right badge.
     const info = JSON.parse(dec.decode(await chars.info.readValue()));
     $("connect-panel").classList.add("hidden");
     $("auth-panel").classList.remove("hidden");
     $("code").focus();
-    setStatus("Connected to Fri3d-" + (info.badge || "?") + ". Enter the code shown on the badge.", "ok");
+    setStatus("Verbonden met Fri3d-" + (info.badge || "?") + ". Vul de code in die op de badge staat.", "ok");
   } catch (e) {
-    setStatus("Connection failed: " + (e.message || e), "bad");
+    setStatus("Verbinden mislukt: " + (e.message || e), "bad");
   }
 }
 
@@ -246,7 +246,7 @@ function onDisconnected() {
   // While withGatt() is auto-reconnecting, a drop is expected and handled there —
   // don't tear the UI down (that would bounce the user back to Connect mid-read).
   if (recovering) return;
-  setStatus("Badge disconnected.", "bad");
+  setStatus("Badge losgekoppeld.", "bad");
   $("main").classList.add("hidden");
   $("auth-panel").classList.add("hidden");
   $("connect-panel").classList.remove("hidden");
@@ -290,7 +290,7 @@ async function withGatt(label, fn) {
       } catch (e) {
         lastErr = e;
         if (!isDisconnectError(e) || i === GATT_RETRIES - 1) throw e;
-        setStatus(label + ": link dropped — reconnecting (" + (i + 1) + "/" + (GATT_RETRIES - 1) + ")…", "info");
+        setStatus(label + ": verbinding weg — opnieuw verbinden (" + (i + 1) + "/" + (GATT_RETRIES - 1) + ")…", "info");
         chars = {};                       // force a fresh acquire next round
         await sleep(Math.min(500 * (i + 1), 2500));   // growing backoff: give the badge
                                           // time to re-advertise / come back in range
@@ -310,31 +310,31 @@ function onStatusNotify(ev) {
 function handleStatusCode(code) {
   switch (code) {
     case "ok": setStatus("Saved ✓ — the badge shows your nametag.", "ok"); break;
-    case "invalid": setStatus("Badge rejected the config (invalid).", "bad"); break;
-    case "too_large": setStatus("Config too large.", "bad"); break;
-    case "auth_required": setStatus("Not authorised — enter the code again.", "bad"); break;
-    case "auth_ok": setStatus("Unlocked ✓", "ok"); break;
-    case "auth_fail": setStatus("Wrong code, try again.", "bad"); break;
-    case "locked": setStatus("Too many wrong codes — badge locked briefly, new code shown.", "bad"); break;
+    case "invalid": setStatus("Badge weigert de instellingen (ongeldig).", "bad"); break;
+    case "too_large": setStatus("Instellingen te groot.", "bad"); break;
+    case "auth_required": setStatus("Niet ontgrendeld — vul de code opnieuw in.", "bad"); break;
+    case "auth_ok": setStatus("Ontgrendeld ✓", "ok"); break;
+    case "auth_fail": setStatus("Foute code, probeer opnieuw.", "bad"); break;
+    case "locked": setStatus("Te veel foute codes — badge kort vergrendeld, nieuwe code getoond.", "bad"); break;
   }
 }
 
 async function auth() {
   const code = ($("code").value || "").trim();
-  if (!/^\d{4}$/.test(code)) { setStatus("Enter the 4-digit code.", "bad"); return; }
+  if (!/^\d{4}$/.test(code)) { setStatus("Vul de 4-cijferige code in.", "bad"); return; }
   try {
     await chars.auth.writeValueWithResponse(enc.encode(code));
     // Give the badge a moment, then read INFO — authed INFO carries the config.
     await sleep(150);
     const info = JSON.parse(dec.decode(await chars.info.readValue()));
-    if (!info.authed) { setStatus("Wrong code, try again.", "bad"); return; }
+    if (!info.authed) { setStatus("Foute code, probeer opnieuw.", "bad"); return; }
     authedCode = code;         // cache for silent re-auth after a transient drop
     fillForm(info);
     $("auth-panel").classList.add("hidden");
     $("main").classList.remove("hidden");
-    setStatus("Unlocked ✓ — edit and Save.", "ok");
+    setStatus("Ontgrendeld ✓ — pas aan en sla op.", "ok");
   } catch (e) {
-    setStatus("Auth failed: " + (e.message || e), "bad");
+    setStatus("Ontgrendelen mislukt: " + (e.message || e), "bad");
   }
 }
 
@@ -387,18 +387,18 @@ async function save() {
     // A badge needs a name AND at least one group to leave setup mode (groups
     // drive the proximity matching) — otherwise it silently stays on the QR
     // screen. Validate here so that can't happen without an explanation.
-    if (!form.name) { setStatus("Enter a name before saving.", "bad"); $("f-name").focus(); return; }
+    if (!form.name) { setStatus("Vul een naam in voor je opslaat.", "bad"); $("f-name").focus(); return; }
     if (!form.groups.length) {
-      setStatus("Add at least one group (comma-separated) — the badge stays in setup until it has a name and a group.", "bad");
+      setStatus("Voeg minstens een groep toe (komma ertussen) — de badge blijft in setup tot hij een naam en een groep heeft.", "bad");
       $("f-groups").focus(); return;
     }
     const payload = enc.encode(JSON.stringify(form));
     const total = Math.max(1, Math.ceil(payload.length / CFG_CHUNK));
-    if (total > 255) { setStatus("Config too large.", "bad"); return; }
-    setStatus("Saving…", "info");
+    if (total > 255) { setStatus("Instellingen te groot.", "bad"); return; }
+    setStatus("Opslaan…", "info");
     // Send every chunk under reconnect-and-retry. The badge's ChunkAssembler
     // resets on a fresh stream, so re-sending from seq 0 after a drop is safe.
-    await withGatt("Save", async () => {
+    await withGatt("Opslaan", async () => {
       for (let seq = 0; seq < total; seq++) {
         const part = payload.slice(seq * CFG_CHUNK, (seq + 1) * CFG_CHUNK);
         const frame = new Uint8Array(2 + part.length);
@@ -411,7 +411,7 @@ async function save() {
     await sleep(250);
     try { handleStatusCode(dec.decode(await chars.status.readValue()).replace(/\0+$/, "")); } catch (e) {}
   } catch (e) {
-    setStatus("Save failed: " + (e.message || e), "bad");
+    setStatus("Opslaan mislukt: " + (e.message || e), "bad");
   }
 }
 
@@ -427,8 +427,8 @@ async function readPage(offset) {
 
 async function loadContacts() {
   try {
-    setStatus("Reading contacts…", "info");
-    const list = await withGatt("Contacts read", async () => {
+    setStatus("Contacten lezen…", "info");
+    const list = await withGatt("Contacten lezen", async () => {
       const hdr = JSON.parse(dec.decode(await readPage(CONTACTS_HEADER_OFFSET)));
       const total = hdr.len | 0, page = hdr.page || 400;
       const buf = new Uint8Array(total);
@@ -444,15 +444,15 @@ async function loadContacts() {
       return JSON.parse(dec.decode(buf) || "[]");
     });
     renderContacts(list);
-    setStatus("Loaded " + list.length + " contact(s).", "ok");
+    setStatus("Geladen: " + list.length + " contact(en).", "ok");
   } catch (e) {
-    setStatus("Contacts read failed: " + (e.message || e), "bad");
+    setStatus("Contacten lezen mislukt: " + (e.message || e), "bad");
   }
 }
 
 function renderContacts(list) {
   if (!list.length) {
-    $("contacts-table").innerHTML = "<p class='muted'>No contacts received yet. Swap with another badge (press Y near a badge that also presses Y).</p>";
+    $("contacts-table").innerHTML = "<p class='muted'>Nog geen contacten ontvangen. Ruil met een andere badge (druk Y bij een badge die ook Y drukt).</p>";
     return;
   }
   let html = "<table><tr><th>Name</th><th>Received</th><th>Fields</th></tr>";
@@ -470,7 +470,7 @@ function esc(s) {
 }
 
 function downloadContacts() {
-  if (!contactsBytes) { setStatus("Load contacts first.", "bad"); return; }
+  if (!contactsBytes) { setStatus("Laad eerst de contacten.", "bad"); return; }
   const blob = new Blob([contactsBytes], { type: "application/json" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);

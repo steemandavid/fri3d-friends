@@ -1,6 +1,6 @@
 # Implementation Plan — Gotcha (Assassin) game for !Fri3d Friends
 
-**Date:** 2026-07-26 · **Status:** design agreed, not implemented · **Target version:** v0.10.0
+**Date:** 2026-07-26 (rev. 2, same day) · **Status:** design agreed, not implemented · **Target version:** v0.10.0
 **Camp:** **Friday 14 – Sunday 16 August 2026**, badges handed out Friday morning.
 Roughly **37 hours of playable time** once the 22:00–08:00 truce is excluded (§2.4).
 Everything must ship before then.
@@ -10,6 +10,18 @@ design conversation. It assumes familiarity with `DESIGN.md` (especially §3 BLE
 protocol, §9 contact exchange, §10 BLE phone setup, §12 background beacon service)
 and `README.md`. Where this plan contradicts an existing pattern, it says so
 explicitly.
+
+> **Revision 2** folds in ideas from an independent functional specification of the
+> same game (*Gotcha Badge Game Functionele Specificatie v1.0*), written in parallel by
+> another Fri3d participant. Adopted from it: **Reveal** (§5.7, D22), the **LED colour
+> language** (§8.8, D23), **join/spawn protection** (§5.8, D24), **demo mode** (§8.4),
+> the **battery warning ladder** (§8.7), **badge rebind** (§9.4), the **live dashboard
+> metrics** and **multi-host admin** (§9.4), and a reworked **state model** (§9.6).
+> Explicitly *not* adopted: shields (redundant with dodges), badge-off and
+> flat-battery elimination (see §1.1, rule 8), and server-authoritative-only play
+> (see D6). Its **separate child/adult target chains** were considered and replaced by
+> **personal quiet hours** (§10.4a, D25), which solve the same real problem without
+> recording anyone's age. Its **"finale mode"** remains open and is not designed here.
 
 **Read the next section first.** Everything after it is engineering; none of it makes
 sense until you know what the game feels like to play.
@@ -35,14 +47,41 @@ to fill — stronger as you get closer, fading as you drift away. It cannot poin
 a direction. It only ever tells you *warmer* or *colder*, which means finding someone
 is a matter of walking around, watching the bar, and paying attention to faces.
 
-Most of the time the bar is empty and your target is somewhere else entirely on the
-site. So you carry on with your day, and every so often the bar twitches, and you look
-up.
+You do not have to stare at the screen for this. The row of lights on the front of your
+badge *is* the radar: dark when there is nothing, then one blue light when your target
+is somewhere around, then two, then three — quickening and turning amber as you close —
+until the whole row is solid red and they are within arm's reach. You can hunt with the
+screen off, in a pocket, by glancing down.
+
+Most of the time the lights are dark and your target is somewhere else entirely on the
+site. So you carry on with your day, and every so often one of them flickers blue, and
+you look up.
+
+### Picking them out of a crowd
+
+The radar gets you to a group of thirty people around a fire. Then it stops helping:
+your badge knows your target is *here*, within a few metres, and cannot tell you which
+of the thirty they are. Names are on badges, but you are not going to read thirty
+badges without it being obvious what you are doing.
+
+So you press **MENU**, and their badge — and only theirs — **lights up bright gold for
+two seconds and chirps.**
+
+Now you know. And so do they, because it is their badge that just went off in their
+hand, and they can see you looking. Revealing is not free: you have spent your surprise
+to buy their location, and they get a couple of seconds' head start on deciding whether
+to walk away. You can only do it every couple of minutes, so you cannot stand in a
+crowd flashing people until something happens.
+
+That is the shape of a hunt. Wander until the light goes blue, close until it goes
+amber, reveal to find the face, then close the last few metres knowing they are already
+watching you.
 
 ### The kill
 
-When you are close enough — a few metres, near enough to see them — you press the
-**MENU** button.
+When you are close enough — a few metres, near enough to touch them — you press
+**MENU** again. It is the same button that revealed them; once you are near enough to
+kill, that is what it does, and your badge says so before you press it.
 
 Their badge immediately starts **screaming.** Red screen, siren, `UNDER ATTACK — RUN!`
 Everyone nearby turns round. Your target now knows, with total clarity, that they are
@@ -69,6 +108,12 @@ Your badge shows who did it and a countdown: **thirty minutes.** Then you are ba
 with a new target and a clean slate. You are never out of the game, never sitting on
 the sidelines for a day because your battery died at breakfast. Your total kills are
 yours forever — dying never takes them away.
+
+You come back with **ninety seconds of grace** — nobody can touch you while your badge
+glows white. It exists so that dying next to the person who killed you does not mean
+dying again the moment you return, and it is exactly as long as it takes to walk away.
+It ends the instant you attack someone, so it is a breath, not a bunker. New players
+get the same grace when they first join.
 
 ### Getting famous, and the trouble that brings
 
@@ -104,6 +149,13 @@ check before you walk up to someone.
 sleeping costs you nothing — the streak clock stops too. The people running the game
 can also call an immediate truce across the whole camp if something needs to stop.
 
+If you go to bed earlier than that, tell your badge. You can set your own quiet hours,
+from eight in the evening at the earliest, and inside them nobody can touch you. It
+works both ways — you cannot hunt during your own quiet hours either — and your streak
+carries on decaying, so an early night is rest rather than armour. This is how a
+nine-year-old and a night-owl adult can play the same game without either of them being
+woken up by it.
+
 Some places are simply off limits by agreement, not because the badge enforces it: the
 main stage during a show, the toilets and showers, a workshop while it is running, and
 first aid. And nobody runs indoors, near the fire, or through a crowd. It is a game
@@ -129,10 +181,11 @@ Add an optional camp-wide game of **Assassin/Gotcha**
 ([rules](https://en.wikipedia.org/wiki/Assassin_(game))) to the !Fri3d Friends app.
 
 Each enrolled player is assigned one **target**. You hunt your target physically,
-using your badge as a **radar** (BLE RSSI). When you get close enough you press
-**MENU** to attack; the victim's badge **screams** and they get a few seconds to
-**run out of range**. Kill your target and you inherit theirs. Death is a 30-minute
-respawn, not an elimination.
+using your badge as a **radar** (BLE RSSI). In a crowd you press **MENU** to
+**reveal** — their badge flashes gold, which tells you which person they are and tells
+them they have been found. Closer still, MENU **attacks**: the victim's badge
+**screams** and they get a few seconds to **run out of range**. Kill your target and
+you inherit theirs. Death is a 30-minute respawn, not an elimination.
 
 Three tiers:
 
@@ -154,7 +207,7 @@ metres of me right now" — and never for gossiping global state.
 | D2 | **Enrolled ON by default**, prominent opt-out | At 700 badges a sparse player base makes the hunt boring. Consent obligations are handled in §13. |
 | D3 | **Killable while the app is closed** | Otherwise "close the app" is perfect invincibility, and every kid finds that on day one. `beacon_service.py` must host the victim side of the handshake. |
 | D4 | **Respawn + streak + perishable bounty** (§2) | Nobody is ever locked out; the stay-alive tension survives; leaders get hunted; hiding your badge does not preserve a lead. |
-| D5 | **Kill proof = commitment–reveal ("the soul")** | Cryptographic proof of a genuine physical handshake, using only sha256, with no key distribution to 700 badges. |
+| D5 | **Kill proof = commitment–disclosure ("the soul")** | Cryptographic proof of a genuine physical handshake, using only sha256, with no key distribution to 700 badges. |
 | D6 | **Offline = keep playing, queue events** | Dead zones must not become invincibility zones. |
 | D7 | **Night truce 22:00–08:00 + host truce button** | Camp safety and sleep. Safe *zones* are printed rules, not code — the badge has no positioning. |
 | D8 | **No backward compatibility required** | The app has not been formally released and badges are handed out on 14 Aug 2026 with the current build. This permits a clean **HSNT v2** beacon (§4) and removes the riskiest item from Phase 0. |
@@ -171,6 +224,11 @@ metres of me right now" — and never for gossiping global state.
 | D19 | **Integrated into !Fri3d Friends, not a separate app** (§8.6) | One BLE stack, one adv set, one one-shot `gatts_register_services`, one IRQ. Two apps cannot share the radio, and the game block lives *inside* the HSNT beacon. Isolation is achieved with lazy imports and a hard interface instead (§8.6). |
 | D20 | **Charging is assumed** (§8.7, §14.3) | The app cannot last a 16-hour waking day in any configuration, and power banks are ubiquitous at a hacker camp. Battery-aware degradation below 20 % is still built; the design does not depend on the power levers succeeding. |
 | D21 | **Plain HTTP with HMAC-signed requests and responses** (§6.2) | The game needs authenticity, not secrecy — kill proofs are self-authenticating and scores are published. Certificate verification is likely off on this build, so TLS would have given encryption without authenticity. One HTTPS call at enrollment bootstraps the key; everything after is signed plain HTTP. Removes the per-sync 40 KB allocation. **Constrains deployment: Tailscale Funnel is HTTPS-only and is therefore ruled out for the sync path.** |
+| D22 | **Reveal — the last ten metres** (§5.7) | RSSI walks you into a crowd and then stops helping. Reveal makes your target's badge flash, at the cost of telling them they have been found. Pure BLE, works offline, and it is the mechanic that stops the endgame of every hunt being "squint at thirty lanyards". |
+| D23 | **The whole LED strip becomes the hunt radar; the friend LEDs are removed** (§8.8) | The badge must be readable at a glance with the screen dark — which is what makes §8.7's biggest power lever (blanking the display) survivable. A **bar** (length + colour) is legible at several metres in a way a single colour-coded dot is not. No information is lost: the friends panel and group pills still show everyone nearby. Average LED draw *falls*, because the bar is dark whenever the target is out of range. |
+| D24 | **Spawn and join protection** (§5.8) | Respawning next to your killer, or joining into the middle of a scrum, should not mean dying instantly. 90 s, forfeited the moment you attack. |
+| D25 | **Personal quiet hours, and no age data anywhere** (§10.4a) | Children go to bed before 22:00. The obvious fix — separate child and adult games — requires recording which badges belong to minors, and would not even deliver the safety it implies (bounties and inheritance cross cohorts). A self-serve personal truce window solves the actual problem, serves early-sleeping adults equally, and keeps **one ring, one game, no age flag, no cohort field**. |
+| D26 | **All user-facing text is Dutch** (§8.9) | Fri3d Camp is a Belgian/Dutch-language event and much of the audience is children, for whom English rules text is a real barrier at exactly the moment the game needs to be understood instantly. This covers the existing app, not just Gotcha: the whole UI is translated. **ASCII-only** — the built-in lvgl fonts do not carry accented glyphs (§8.9). |
 
 ---
 
@@ -182,53 +240,95 @@ Everything here is enforced by the backend unless marked *social*.
 1. **You have one target.** Your badge shows their name and how close they are. It
    never tells you who is hunting *you*. Your target is **almost never** someone from
    one of your own groups.
-2. **To kill:** get within a few metres of your target and press **MENU**. Hold the
-   proximity for **5 seconds**. Their badge will scream — that is the point.
-3. **To survive:** if your badge screams, **run.** Break line of sight and get
+2. **To find them in a crowd — Reveal.** When your target is near but you cannot tell
+   *which* person they are, press **MENU**: their badge flashes gold and chirps for
+   two seconds. It also tells them they have been found. One reveal every **2
+   minutes**, and none during a truce.
+3. **To kill:** get within a few metres of your target and press **MENU** again. Hold
+   the proximity for **5 seconds**. Their badge will scream — that is the point.
+4. **To survive:** if your badge screams, **run.** Break line of sight and get
    ~10 metres away within 5 seconds and you have dodged. *No running indoors, near
    the stage, near the fire, or in food queues.* (social)
-4. **You cannot dodge forever.** After **1 successful dodge from the same
+5. **You cannot dodge forever.** After **1 successful dodge from the same
    assassin**, their next attack lands **instantly**. Dodge counters reset an hour
    after that assassin last attacked you.
-5. **Attack cooldown:** an assassin must wait **60 seconds** between attempts on the
+6. **Attack cooldown:** an assassin must wait **60 seconds** between attempts on the
    same victim.
-6. **When you kill, you inherit** your victim's target and keep going. There is no
+7. **When you kill, you inherit** your victim's target and keep going. There is no
    cooldown — if you can take a whole table, take a whole table.
-7. **When you die**, you are out for **30 minutes**, then you respawn with a new
-   target and a **streak of zero**. Your total kills are never lost.
-8. **Four leaderboards:** individual *Total kills* and *Longest streak*; group
+8. **When you die**, you are out for **30 minutes**, then you respawn with a new
+   target and a **streak of zero**. Your total kills are never lost. You return with
+   **90 seconds of protection** — you cannot be attacked, your badge glows white, and
+   it ends the moment you attack someone. New players get the same grace when they
+   join.
+9. **Four leaderboards:** individual *Total kills* and *Longest streak*; group
    *Total kills* and *Kills per member*.
-9. **Bounties:** anyone on a live streak of **3 or more** is fair game for
-   **everybody**, not just their assigned hunter — including people from their own
-   group. Their name and streak are on the public hit list. Bounty kills score double.
-10. **Streaks perish.** Your streak holds for **3 hours** after your last kill, then
+10. **Bounties:** anyone on a live streak of **3 or more** is fair game for
+    **everybody**, not just their assigned hunter — including people from their own
+    group. Their name and streak are on the public hit list. Bounty kills score double.
+11. **Streaks perish.** Your streak holds for **3 hours** after your last kill, then
     decays by **1 every 2 hours** until it reaches zero. Hiding your badge in a tent does
     not protect a lead — it forfeits it. (Total kills never decay.)
-11. **Night truce: no kills between 22:00 and 08:00.** Truce hours are excluded from
+12. **Night truce: no kills between 22:00 and 08:00.** Truce hours are excluded from
     the streak-decay clock, so sleeping costs you nothing. The game host can call a
     camp-wide truce at any other time.
-12. **Safe zones (social):** main stage during shows, toilets and showers, workshop
+13. **Your own quiet hours.** If you go to bed earlier than the camp does, set your own
+    window on your badge — from 20:00 at the earliest, until 10:00 at the latest. Inside
+    it nobody can attack or reveal you. **You also cannot attack or reveal anyone**, and
+    **your streak still decays** outside the camp truce — going to bed early is rest,
+    not a shield. Anyone's badge shows they are asleep rather than refusing mysteriously.
+14. **Safe zones (social):** main stage during shows, toilets and showers, workshop
     tents while a workshop is running, and first aid. Not enforced by the badge —
     enforced by not being a jerk.
-13. **Opting out:** press and hold **MENU** on your badge, or use the web page. You
+15. **Opting out:** press and hold **MENU** on your badge, or use the web page. You
     can rejoin later; your total is preserved.
+
+**What the lights mean** (§8.8) — the whole LED strip is the radar, readable with the
+screen off. *Rules-card wording is Dutch (§8.9); English gloss in italics.*
+
+| Lampjes | Betekenis |
+|---|---|
+| uit | *dark* — doelwit niet in de buurt |
+| **1 blauw**, traag | *1 blue, slow* — doelwit ergens in de buurt |
+| **2–3 blauw/oranje**, sneller | *2–3 blue/amber, quickening* — je komt dichterbij |
+| **bijna vol, oranje** | *nearly full, amber* — heel dichtbij: nu onthullen |
+| **alles rood, vast** | *all red, steady* — aanvalsafstand: nu aanvallen |
+| **alles goud + piep** | *all gold + chirp* — jij bent zojuist onthuld |
+| **alles rood** (met sirene) | *all red + siren* — je wordt aangevallen: rennen |
+| **alles groen** | *all green* — je hebt hem te pakken |
+| **rood, trage puls** | *red, slow pulse* — je bent uit, wacht op herstart |
+| **alles wit** | *all white* — beschermd (net herstart of net begonnen) |
+| laatste lampje oranje | *last LED orange* — batterij bijna leeg |
 
 ### 1.1 Why these rules
 
-- **Rule 10 answers "just hide your badge."** A raw bounty on the leader creates an
+- **Rule 2 (Reveal) answers "which of these thirty people is Otter 42?"** RSSI is a
+  scalar: it walks you to within a few metres and then goes flat, and the last ten
+  metres are the part the radar cannot do. Without Reveal the endgame of every hunt is
+  squinting at lanyards, which is slow, conspicuous and faintly creepy. **The cost is
+  what makes it a mechanic rather than a cheat:** revealing hands your target the
+  single piece of information they most want — that they are being hunted, right now,
+  by someone standing near them. That cost is self-limiting, so the cooldown is a
+  backstop against crowd-spamming rather than the primary brake.
+- **Rule 8's protection window answers spawn-camping.** You die where you were killed,
+  and 30 minutes later you reappear in the same place, quite possibly next to the
+  person who did it — who, if you were on a streak, may have friends waiting. Ninety
+  seconds is enough to walk away and not enough to do anything with. Forfeiting it on
+  attack is what stops it becoming a free first strike.
+- **Rule 11 answers "just hide your badge."** A raw bounty on the leader creates an
   obvious dominant strategy: get a streak, then put the badge in a locker until
   Sunday. Making the streak perishable inverts that — the only way to *stay* on the
   crown is to keep hunting, in public, where bounty hunters can reach you. Decay is
   computed **server-side on wall-clock time**, so a powered-off badge decays fastest
   of all: it cannot even dodge.
-- **Rule 4 answers "run away forever."** Without it a fast player is invulnerable.
+- **Rule 5 answers "run away forever."** Without it a fast player is invulnerable.
   One dodge is a **single reprieve, not a chase**: escape once and your assassin's
   next attempt lands regardless of how fast you are. Combined with the 60 s attack
   cooldown, an encounter resolves in about a minute rather than dragging on. The 1 h
   `DODGE_DECAY_MS` reset matters more at this setting than it would at three — it is
   what stops a single unlucky encounter from marking you as un-dodgeable by that
   assassin for the rest of the camp.
-- **Rule 7 (respawn, not elimination)** answers a three-day camp: eliminating a
+- **Rule 8 (respawn, not elimination)** answers a three-day camp: eliminating a
   9-year-old at 09:30 on Friday because their badge battery died would put them out
   for a third of the entire event, for a reason that is not their fault. That is not a
   game, it is a punishment for logistics.
@@ -236,7 +336,7 @@ Everything here is enforced by the backend unless marked *social*.
   assignment tries to satisfy*, not an invariant. Three paths legitimately produce a
   same-group pair: an unsatisfiable constraint graph (§3.2 step 4 — the game must
   still start), inheritance after a kill (§3.2), and bounty kills, which are open to
-  everyone including your own group (rule 9). Promising "never" in the rules would be
+  everyone including your own group (rule 10). Promising "never" in the rules would be
   a promise the system does not keep.
 - **Rule 1's group exclusion has a cost — read §3.3.** It makes almost every target a
   stranger, which is thematically right but makes targets *harder to find*. The
@@ -252,7 +352,7 @@ Everything here is enforced by the backend unless marked *social*.
 | Quantity | Decays? | Notes |
 |---|---|---|
 | `total_kills` | No | Permanent record. Board 1. |
-| `streak` | **Yes** (rule 10) | Kills since last death. Board 2 ranks `best_streak` (high-water mark, never decays); the *live* `streak` carries the bounty. |
+| `streak` | **Yes** (rule 11) | Kills since last death. Board 2 ranks `best_streak` (high-water mark, never decays); the *live* `streak` carries the bounty. |
 | `deaths` | No | Displayed, not ranked. |
 
 **Points per kill:**
@@ -270,7 +370,9 @@ it never touches `best_streak` or `total_kills`.
 ### 2.2 Streak decay (server-side, idempotent)
 
 ```
-active_seconds = wall_seconds_since(last_kill_at) minus overlapping truce intervals
+active_seconds = wall_seconds_since(last_kill_at) minus overlapping CAMP truce intervals
+                 # camp-wide only: the 22:00-08:00 window and host-called truces.
+                 # Personal quiet hours (§10.4a) are NOT excluded -- see the note below.
 if active_seconds > STREAK_GRACE_S (default 3 h):
     decayed = floor((active_seconds - STREAK_GRACE_S) / STREAK_DECAY_S)   # default 2 h
     streak  = max(0, streak_at_last_kill - decayed)
@@ -279,6 +381,13 @@ if active_seconds > STREAK_GRACE_S (default 3 h):
 Deriving from `last_kill_at` rather than mutating a counter makes it idempotent and
 correct regardless of when the timer actually runs — important, because the backend
 may be unreachable for hours (§6).
+
+> ⚠️ **Only the camp-wide truce pauses decay — never a player's personal quiet hours.**
+> If personal windows paused the clock, a player could declare quiet hours from 20:00
+> to 10:00, become both unkillable and undecaying for fourteen hours a day, and hold
+> the crown by sleeping. Rule 11's whole purpose is that hiding forfeits a lead, and a
+> personal truce is a form of hiding. **Going to bed at 20:00 is rest, and it costs you
+> two hours of streak decay.** See §10.4a for the rest of the abuse analysis.
 
 ### 2.3 Group scoreboard (D15)
 
@@ -379,9 +488,9 @@ from starting.**
 
 | Event | Ring action |
 |---|---|
-| New enrollment mid-game | Splice in: pick random alive `P`; `new.target = P.target; P.target = new`. Retry up to 10 picks for a non-group-conflicting `P`. |
+| New enrollment mid-game | Splice in: pick random alive `P`; `new.target = P.target; P.target = new`. Retry up to 10 picks for a non-group-conflicting `P`. Joins `protected` (§5.8). |
 | Kill | `assassin.target = victim.target` (classic inheritance). If that creates a group conflict, try **one** re-splice; otherwise accept it and log. If it yields the assassin themselves, or a dead player, walk forward to the next alive player. |
-| Respawn | Splice in by the same rule. |
+| Respawn | Splice in by the same rule, with `SPAWN_PROTECT_S` protection (§5.8). |
 | Opt-out | Splice out immediately; the hunter is reassigned on their next sync. |
 | Target unseen by anyone for `TARGET_STALE_H` (6 h) | Splice out, hunter reassigned. Score preserved; spliced back on return. |
 | No sync for `DORMANT_H` (truce hours excluded) | Splice out as dormant. **See §2.4 — 24 h is too long for a three-day camp; use 12 h.** |
@@ -402,7 +511,13 @@ kill cooldown, so sweeps are legal), the game's failure mode is not "too fast", 
 *someone* killable nearby. Treat "median time-to-first-kill" as the metric to watch
 in the Phase 6 soak test.
 
-### 3.4 Kill proof — commitment and reveal ("the soul")
+### 3.4 Kill proof — commitment and disclosure ("the soul")
+
+> **Naming.** This was called "commitment–reveal" in rev. 1, after the standard
+> cryptographic term. Since rev. 2 added a **Reveal** *game mechanic* (§5.7) that has
+> nothing to do with it, this document says **disclosure** for the crypto and
+> **Reveal** for the gold flash. Do not mix them up in code either:
+> `disclose_soul()`, not `reveal_soul()`.
 
 The problem: an assassin could simply POST "I killed Otter 42" from a tent. We need
 proof that two badges were physically within a few metres of each other.
@@ -421,7 +536,7 @@ Properties:
 - A fresh soul per life binds each proof to one specific death; a replayed soul fails
   because the commitment has rotated.
 - The badge receives its **target's commitment** in the sync response, so it can
-  verify a revealed soul **locally and offline** before believing a kill.
+  verify a disclosed soul **locally and offline** before believing a kill.
 
 **What it does not stop** (documented honestly):
 - **Collusion.** Handing a friend your soul is *giving away your own life*, and it is
@@ -451,7 +566,11 @@ time-multiplexed ones. This deletes the riskiest item from the original Phase 0
   name budget is **exactly what it is today** — the game costs nothing when idle.
 - Game block = `pid` (3 B) + `gflags` (1 B) + `streak` (1 B) = **5 bytes**.
 - `gflags`: bit0 `ALIVE`, bit1 `UNDER_ATTACK`, bit2 `BOUNTY` (streak ≥ 3), bit3
-  `TRUCE`, bits 4–7 reserved.
+  `TRUCE`, bit4 `PROTECTED` (§5.8), bits 5–7 reserved.
+- `PROTECTED` is on air deliberately: a hunter's badge can then say
+  *"Otter 42 — protected, 43 s"* instead of offering an attack that will be refused,
+  and the white protection LED on the victim's badge has a matching signal on the
+  attacker's screen. It costs nothing — the byte already exists.
 - `streak` u8, saturating at 255 — lets a nearby badge render "BOUNTY: streak 7"
   and the alive/dead chip (D11) with no backend round-trip.
 
@@ -498,6 +617,7 @@ GOTCHA_SVC   6e400030-b5a3-f393-e0a9-e50e24dcca9e
   ATTACK     6e400031-…   WRITE        attacker -> victim
   DUEL       6e400032-…   READ+NOTIFY  victim -> attacker: live duel state
   SPOILS     6e400033-…   READ         victim -> attacker: soul + inherited target
+  REVEAL     6e400034-…   WRITE        hunter  -> target: "light yourself up" (§5.7)
 ```
 
 `ATTACK` payload: `{g, a_pid, v_pid, as: "target"|"bounty", nonce}`
@@ -543,14 +663,20 @@ press MENU
 | `KILL_HOLD_MS` | 5000 | Sustained proximity required. |
 | `FLEE_RSSI` | −78 dBm | Escape threshold (hysteresis vs `KILL_RSSI`). |
 | `FLEE_MS` | 1500 | Time below `FLEE_RSSI` that counts as escaped. |
+| `REVEAL_RSSI` | −80 dBm | Must be at least this close to reveal (§5.7). Deliberately looser than `KILL_RSSI` — reveal is the approach, not the strike. |
+| `REVEAL_COOLDOWN_S` | 120 | Per hunter, not per target. Backstop against crowd-spamming. |
+| `REVEAL_FLASH_MS` | 2500 | How long the target's badge flashes gold. |
 | `DODGE_LIMIT` | 1 | Dodges per (attacker, victim) pair per life. One reprieve, then the next attempt lands. |
 | `DODGE_DECAY_MS` | 3600000 | Dodge counter reset after 1 h with no attack from that attacker. |
 | `INSTANT_KILL_MS` | 1000 | Hold time once `dodges_left == 0`. |
 | `ATTACK_COOLDOWN_MS` | 60000 | Between attempts on the same victim. |
 | `RESPAWN_S` | 1800 | 30 minutes. |
+| `SPAWN_PROTECT_S` | 90 | Un-attackable after a respawn or a first join (§5.8). Forfeited on attacking. |
 | `BOUNTY_STREAK` | 3 | Streak at which you become fair game for everyone. |
 | `STREAK_GRACE_S` | 10800 | 3 h before decay starts. |
 | `STREAK_DECAY_S` | 7200 | −1 streak every 2 h thereafter. |
+| `QUIET_EARLIEST` | 20:00 | Earliest a personal quiet window may start (§10.4a). |
+| `QUIET_LATEST` | 10:00 | Latest a personal quiet window may end. |
 | `SYNC_S` | 300 | D13. Jittered ±20% (§10.3). |
 
 Retuning `KILL_RSSI` and `KILL_HOLD_MS` **live from the admin page** is worth a lot:
@@ -562,9 +688,9 @@ on Friday afternoon without reflashing 700 badges.
 Gotcha is a fourth consumer of a radio with **one adv set, one connection slot, one
 IRQ handler**. Extending `DESIGN.md` §9/§10:
 
-- A kill handshake **cannot** start while `_exchanging` (contact swap), while a setup
-  session/window is open, or while an adopt prompt is up. MENU is ignored with a
-  brief "busy" toast.
+- A kill handshake **or a reveal** (§5.7) **cannot** start while `_exchanging` (contact
+  swap), while a setup session/window is open, or while an adopt prompt is up. MENU is
+  ignored with a brief "busy" toast.
 - Y-swap and the setup window are **refused while a duel is live**.
 - **You cannot be attacked while you are attacking.** The single connection slot makes
   simultaneous client+server roles impractical here; the responder answers `BUSY`.
@@ -586,7 +712,8 @@ must additionally:
 - advertise the HSNT v2 beacon **with the game block**,
 - bring up the GATT server and accept `ATTACK` writes,
 - run the **victim half only** — alarm (buzzer + LEDs, no UI), hold timer, dodge
-  accounting, soul release, target handover,
+  accounting, soul release, target handover, **the reveal flash + chirp (§5.7)** and
+  **protection state (§5.8)**,
 - queue events and sync on the same cadence.
 
 It must **not** scan and **not** attack: hunting requires the app to be open.
@@ -602,6 +729,98 @@ that the service implements with buzzer/LED only.
 > registration, so each owner re-registers on taking the radio; `ensure_radio()`'s
 > write-probe self-heal already covers stale handles. **This is the single most
 > fragile area of the feature — budget real hardware time.**
+
+### 5.7 Reveal — the last ten metres (D22)
+
+**The problem Reveal exists to solve.** RSSI is a scalar. It gets you from "somewhere
+on site" to "within a few metres" and then it goes flat: standing in a group of thirty
+people around a fire, `rssi_ewma` says your target is *here* and cannot say *which
+one*. Names are on the badges, but reading thirty chest-height screens is slow,
+conspicuous, and not a thing anyone should be doing at a camp with children at it.
+
+**The mechanic.** With your target inside `REVEAL_RSSI`, press **MENU**: their badge
+flashes **bright gold on every LED for `REVEAL_FLASH_MS` and chirps**, and shows
+`SPOTTED — someone has found you`. You see which badge lit up. They see that they have
+been found.
+
+**Why it is balanced without much tuning.** The cost is paid in the same instant as the
+benefit: you buy their location by handing them the one fact they most want, which is
+that a hunter is standing within a few metres of them *right now*. A cautious player
+reveals once, at the right moment; a spammer just warns the whole field.
+`REVEAL_COOLDOWN_S` is a backstop against crowd-spamming, not the primary brake.
+
+**Transport: GATT write, not a beacon flag.** The obvious cheap implementation — set a
+"revealing pid X" field in your own advert and let X's badge notice while scanning — is
+wrong here, because **the victim side must work with the app closed** (D3), and
+`beacon_service.py` advertises but deliberately does not scan (§5.6). A connectionless
+reveal would therefore silently fail against exactly the players who are hardest to
+find. Reveal uses the same short GATT connection as the attack, so the background
+responder answers it for free.
+
+```
+HUNTER                                    TARGET
+------                                    ------
+target in peer table, rssi_ewma >= REVEAL_RSSI
+cooldown elapsed
+press MENU
+  gap_connect(target addr)
+  write REVEAL{g, h_pid, t_pid, nonce}  ->  validate: game running, not truce,
+                                            t_pid == me, alive
+                                        <-  (ack, then disconnect)
+  "REVEALING — look for the gold badge"     *** GOLD FLASH, all LEDs ***
+  start REVEAL_COOLDOWN_S                   + chirp + "SPOTTED" screen
+  queue "reveal"                            queue "revealed"
+```
+
+**Rules and arbitration:**
+
+- **Suppressed during a truce**, unconditionally and on both sides — a badge flashing
+  and chirping in a tent at 03:00 is precisely the nuisance §10.4 exists to prevent.
+- Subject to the same radio arbitration as an attack (§5.5): no reveal while
+  `_exchanging`, while a setup window is open, or while either party is in a duel. The
+  responder answers `BUSY`.
+- **Works fully offline.** No backend involvement; the hunter already holds the
+  target's `pid` and sees its advert.
+- Legal against **bounty players** as well as your assigned target, on the same terms.
+- Legal against a **protected** player (§5.8) — knowing where someone is does them no
+  harm, and it is often *how* you decide to wait out their 90 seconds.
+- Reported as a `reveal` / `revealed` event pair (§9.3) so the audit page can see
+  someone standing in a crowd flashing strangers.
+
+**Button semantics — one button, escalating with distance.** MENU short-press does the
+strongest thing currently available, which is unambiguous because the ladder is
+monotonic in proximity:
+
+| Target state | MENU short-press |
+|---|---|
+| within `KILL_RSSI` | **Attack** |
+| within `REVEAL_RSSI`, cooldown clear | **Reveal** |
+| within `REVEAL_RSSI`, cooling down | Radar detail (shows the cooldown) |
+| not detected | Radar detail |
+
+The screen and the hunt LED always name the action *before* it is pressed — the radar
+strip reads `MENU: reveal` or `MENU: ATTACK`, red LED — so the boundary case (you meant
+to reveal, you were already in kill range) resolves to "you attacked someone you were
+standing next to", which is what you wanted anyway. **Do not add a confirmation
+step**: the whole mechanic is a single press in a crowd.
+
+### 5.8 Spawn and join protection (D24)
+
+For `SPAWN_PROTECT_S` (90 s) after a respawn, and after a first enrollment, a player
+**cannot be attacked**.
+
+- `gflags` bit4 `PROTECTED` is set on air (§4), so a hunter's badge shows
+  *"protected — 43 s"* rather than offering an attack that will bounce.
+- The responder refuses `ATTACK` with `PROTECTED`. The attacker **pays no cooldown**
+  for a refused attempt.
+- **Protection ends immediately when the protected player sends an `ATTACK`.** It is a
+  breath, not a bunker, and it must never become a free first strike.
+- Reveal is still allowed against a protected player (§5.7).
+- The badge shows a white protection LED (§8.8) and a countdown chip; the backend
+  tracks `protected_until` and re-checks it on ingest, so a badge that lies about
+  protection gains nothing.
+- Protection is **not** paused by a truce — it is a 90-second wall-clock window and
+  interacting with truce arithmetic would buy nothing.
 
 ---
 
@@ -837,8 +1056,15 @@ EventQueue                                  # bounded, atomically persisted, ded
 DuelState                                   # the §5.3 state machine, tick(now, rssi)
 DodgeLedger                                 # per-attacker counters + DODGE_DECAY_MS
 GameConfig.from_sync(dict)                  # defensive parse of server tunables
-truce_active(now, cfg)                      # local truce check, server-clock corrected
+truce_active(now, cfg, quiet)               # camp truce OR personal quiet hours (§10.4a),
+                                            # server-clock corrected. Returns which one,
+                                            # since only the camp truce pauses decay (§2.2).
+clamp_quiet(window, cfg)                    # QUIET_EARLIEST/LATEST bounds, never raises
 score_preview(...)                          # mirror of §2, optimistic UI only
+menu_action(target, rssi, now, cfg)         # the §5.7 escalation ladder -> attack|reveal|detail
+reveal_ready(now, last_reveal_at, cfg)      # REVEAL_COOLDOWN_S
+protected(now, protected_until)             # §5.8
+hunt_bar(state, rssi, now, cfg, n_leds)     # -> [(r,g,b)] * n_leds, the §8.8 radar bar
 ```
 Beacon build/parse lives in `ble_proximity.py` with the rest of the wire format (§4).
 
@@ -860,17 +1086,22 @@ corrupted by a power-off loses a kid's kills.
   "enrolled": true, "pid": 4711, "player_key": "…32B hex…", "game_id": "fri3d2026",
   "soul": "…hex…", "commitment": "…hex…",
   "target": {"pid": 8123, "name": "Otter 42", "commitment": "…", "seen_ago_s": 240},
-  "state": {"alive": true, "streak": 2, "total": 5, "respawn_at": null},
+  "state": {"alive": true, "streak": 2, "total": 5, "respawn_at": null,
+            "protected_until": null},
   "dodges": {"8123": 1},
+  "last_reveal_at": 0,
   "clock_offset_s": -3,
   "queue": [ {"uuid": "…", "type": "kill", …} ],
   "synced_at": "2026-08-14T15:22:07"
 }
 ```
 
-Opt-out lives in `config.json` as `"gotcha": {"enrolled": false}` so it flows through
-the **existing** `sanitize_config` (used by both the phone page and the on-badge
-editor) and cannot be clobbered by a partial save.
+Opt-out and personal quiet hours live in `config.json` as
+`"gotcha": {"enrolled": false, "quiet": {"from": "20:30", "to": "08:00"}}` so they flow
+through the **existing** `sanitize_config` (used by both the phone page and the on-badge
+editor) and cannot be clobbered by a partial save. `sanitize_config` must clamp `quiet`
+to `QUIET_EARLIEST`/`QUIET_LATEST` (§10.4a) and fall back to the camp truce on anything
+it cannot parse — never raise, never store a half-valid window.
 
 Queue bounded at `MAX_QUEUE = 40`; on overflow drop the **oldest non-kill** event
 first, never a `kill` or `killed_by`.
@@ -899,7 +1130,10 @@ child and a screaming badge.
 | Screen | Content |
 |---|---|
 | **Nametag (extended)** | A status chip — `ALIVE · streak 3 · 11 kills` or `DEAD · back 14:32` — plus one target strip: `🎯 Otter 42` and a 5-segment radar bar from `rssi_ewma`. Hidden entirely when not enrolled or no game is running. |
-| Radar detail (MENU short-press, target out of range) | Target name, dBm, **last seen by anyone: 12 min ago** (§10.1), your ranks, nearby bounty players. |
+| Radar detail (MENU short-press, target out of range) | Target name, dBm, **last seen by anyone: 12 min ago** (§10.1), your ranks, nearby bounty players, reveal cooldown remaining. |
+| **Revealing** (hunter, §5.7) | `REVEALING — look for the gold badge`, 2.5 s, then back to the radar with the cooldown running. |
+| **Spotted** (target, §5.7) | Gold full-screen, chirp, `SPOTTED — someone has found you`. Deliberately *not* the attack alarm: no siren, no red, no "RUN". It is a warning, and it must not be mistakable for a kill in progress. |
+| **Protected** (§5.8) | White chip `PROTECTED — 43 s`, on the nametag. Shown on the *hunter's* radar strip too, from `gflags` bit4. |
 | Attacking | Target name, hold progress bar, live RSSI, "KEEP CLOSE!" |
 | **Under attack** | Full-screen red, siren, `⚠ UNDER ATTACK — RUN! ⚠`, countdown, and either `you can still get away` or **`NO ESCAPE — they have you`** when `dodges_left == 0`. At `DODGE_LIMIT = 1` this is a binary state, so render it as words, not a counter. Must be unmistakable from across a field. |
 | Dodged | "YOU GOT AWAY!" + relief chime + **"they will catch you next time"** (at limit 1, the next attempt always lands). |
@@ -917,9 +1151,18 @@ in `BTN_2024_DIAG`). Add it to both maps.
 
 | Gesture | Action |
 |---|---|
-| MENU short | Attack (target/bounty in range) · else open radar detail |
+| MENU short | The §5.7 escalation ladder: **attack** in kill range · **reveal** in reveal range · else radar detail. The label on screen always names the action before it is pressed. |
 | MENU long (≥1.5 s) | Leave / rejoin the game (confirm prompt) |
-| Existing A / B / Y / START | Unchanged |
+| Existing A / B / Y / START | Unchanged (A = detail panel, B = mute / long = setup window, Y = swap, START = exit) |
+
+**Demo mode.** A `Show me what the badge does` entry on the first-run screen (§13) and
+in the radar detail screen: it walks the whole colour language and both sounds — blue,
+amber, red, the gold reveal flash and chirp, the attack siren, the green kill flash,
+the dead pulse — with a one-line caption each, in about fifteen seconds. Borrowed
+straight from the other proposal, and it is the cheapest thing in this document: it
+runs entirely off `_flash_leds` and the existing buzzer, needs no game, no network and
+no enrollment, and it means the first time a nine-year-old hears the siren is not the
+first time it matters. **Run it during a truce with the buzzer suppressed.**
 
 Follow the **pre-built hidden widgets, `set_text` only** rule from the adopt prompt
 (`DESIGN.md` §13.3, landmine #1): never create or delete lvgl widgets per duel. Build
@@ -931,17 +1174,17 @@ every Gotcha widget once in `onCreate` and toggle `add_flag`/`remove_flag(lv.obj
 | File | Change |
 |---|---|
 | `gotcha.py` | **new** |
-| `fri3d_friends.py` | MENU map + handler, Gotcha widgets, duel UI, status chip, main-loop tick, sync task, connectivity check (§7), arbitration guards |
+| `fri3d_friends.py` | MENU map + the §5.7 escalation handler, Gotcha widgets, duel + reveal + spotted + protected UI, status chip, demo mode, **`_update_leds()` rewritten as the §8.8 radar bar — friend LEDs removed**, main-loop tick, sync task, connectivity check (§7), arbitration guards |
 | `ble_proximity.py` | **HSNT v2** build/parse + name budget; game fields on peer entries; **LRU cap on `seen`** |
 | `contact_exchange.py` | Register the Gotcha service in `_ensure_services()`; hand handles to `GotchaResponder` |
-| `beacon_service.py` | Victim-side responder + sync in the background (D3); v2 beacon |
-| `ble_setup.py` | `sanitize_config` accepts `gotcha`; expose enroll state over the setup GATT |
+| `beacon_service.py` | Victim-side responder (attack **and** reveal) + protection state + sync in the background (D3); v2 beacon; LED-only rendering of §8.8 |
+| `ble_setup.py` | `sanitize_config` accepts `gotcha` (incl. `quiet`, clamped per §10.4a); expose enroll state over the setup GATT |
 | `MANIFEST.JSON` | → 0.10.0 |
 | `docs/gotcha/index.html` | **new** — player card + 4 leaderboards |
 | `docs/gotcha/admin/index.html` | **new** — host console |
 | `tests/test_gotcha.py` | **new** |
 | `tests/test_ble_proximity.py` | v2 format, name budget, block presence |
-| `DESIGN.md` | new §14 |
+| `DESIGN.md` | new §14; **§11 (friend LEDs) rewritten as the radar bar**; note the Dutch-UI rule (§8.9) |
 | `README.md` | Gotcha section + the network caveat (§13) |
 
 ### 8.6 Why this is one app, not two (D19)
@@ -1036,9 +1279,21 @@ and 7 h is the difference between "charge overnight" and "charge at lunchtime to
    `wlan.config(pm=...)`. If it does not, setting DTIM power save is nearly free.
    Prefer this over connect-per-sync: raising the link every 5 minutes costs a DHCP
    round-trip and fights the shared OS service.
-4. **Battery-aware degradation.** Below 20 %: drop scan duty, stretch `SYNC_S`,
-   disable LED breathing, blank the screen harder. Announce it on screen so it is not
-   mysterious.
+4. **Battery-aware degradation, on an announced ladder.** Borrowed from the other
+   proposal's §15 — but **without** its "empty battery = elimination" rule, which at
+   ~11 h of runtime on a 16 h waking day would eliminate a large fraction of the camp
+   for a logistics failure (§1.1, rule 8). Warn, degrade, and keep playing:
+
+   | Level | Behaviour |
+   |---|---|
+   | **20 %** | On-screen notice + orange LED hint. Drop scan duty, stretch `SYNC_S` to 600 s, stop the friend LED breathe (hunt LED stays — it is the game). |
+   | **10 %** | Second notice, explicitly worded: *"find a power bank — you can still be killed while charging."* Blank the screen harder (2026 only, §8.7 lever 1). |
+   | **5 %** | Final notice. Sync once immediately to flush the event queue **before** the badge dies, so a kill landed at 4 % is not lost. Then minimum everything. |
+   | **0 %** | The badge stops. The player keeps their score, keeps their streak (it decays on wall-clock like anyone else's, rule 11), and returns as `dormant` → `protected` (§9.6) when charged. |
+
+   Announce each step on screen so a suddenly-sluggish radar is never mysterious.
+   **Flushing the queue at 5 % is the load-bearing part of this ladder** — everything
+   else is comfort.
 5. CPU frequency reduction (240 → 160 MHz) saves ~10–20 mA but risks lvgl smoothness
    and GATT timing. Not recommended.
 
@@ -1047,7 +1302,222 @@ USB meter, on both board generations.
 
 ---
 
-## 9. Backend contract
+### 8.8 The LED colour language (D23)
+
+**This is not decoration, it is the power budget.** §8.7 lever 1 says the single
+biggest saving available is blanking the screen — but the radar currently *lives* on
+the screen, so blanking it blinds the hunter and the lever cannot be pulled. Moving the
+hunt onto the LEDs is what makes an aggressive blank-after-inactivity compatible with
+playing the game. Treat this section as a prerequisite for lever 1, not as polish.
+
+#### 8.8.1 The whole strip becomes the radar (replaces the friend LEDs)
+
+**Decision: the friend-LED feature is removed. Gotcha owns all `n` LEDs.**
+
+`DESIGN.md` §11 currently gives one RGB LED per nearby friend, dimly breathing that
+friend's group colour, driven by `_update_leds(now)` every `LED_UPDATE_MS = 60`
+(`LED_DIM_MIN = 0.015` … `LED_DIM_MAX = 0.18`, `LED_BREATHE_MS = 3800`, phase-staggered,
+frame-cached). **That feature goes away**, and `_update_leds()` is rewritten around the
+hunt. `DESIGN.md` §11 must be marked superseded when this ships.
+
+**Why this is the right call rather than sharing:** one LED can only express the hunt as
+a *colour*, which asks a nine-year-old to distinguish blue from amber from red on a
+single 5 mm dot, at night, at a glance. The whole strip can express it as a **bar** —
+a length, which is pre-attentive and legible from several metres — *and* still carry
+the colour ramp on top. The upgrade from one LED to four or five is not incremental; it
+turns the LEDs from a hint into the primary radar, which is exactly what §8.7 lever 1
+needs.
+
+**What is lost, honestly:** the ambient pleasure of seeing your friends' group colours
+breathing on your chest. **No information is lost** — the on-screen friends panel and
+the group pills still show everyone nearby, with names, dBm and age. It is a
+deliberate trade of ambience for legibility, made on the assumption that during a live
+game the hunt is what you actually want the LEDs to be telling you.
+
+**A side benefit: this is cheaper.** The friend LEDs breathe continuously whenever
+anyone is nearby; the hunt bar is **completely dark whenever your target is not in
+range**, which is most of the time (§3.3). Average LED draw goes *down*, which helps the
+§8.7 budget rather than hurting it.
+
+#### 8.8.2 The radar bar
+
+`n` = 4 on the 2024, 5 on the 2026 (`_led_count()`, unchanged). LEDs fill from index 0
+upward. Both **length and colour** encode the same proximity axis, so the bar is
+readable whether you catch the count or the hue:
+
+| `rssi_ewma` | Lit LEDs | Colour | Brightness | Animation |
+|---|---|---|---|---|
+| target not detected | 0 | — | — | dark |
+| detected, far | 1 | blue | 0.20 | breathe, 3800 ms |
+| closing | 2 | blue | 0.25 | breathe, 2400 ms |
+| closing | 3 | **amber** | 0.35 | breathe, 1400 ms |
+| ≥ `REVEAL_RSSI` (reveal range) | n−1 | **amber** | 0.45 | breathe, 700 ms |
+| ≥ `KILL_RSSI` (attack range) | **all n** | **red** | 0.55 | steady |
+
+The lit count is `lit = clamp(1, n, ceil(n * fraction))` where `fraction` comes from the
+same RSSI→bucket mapping that drives the on-screen 5-segment bar, so the two readouts
+always agree and teach each other. **On the 2024 the bar has one fewer segment; nothing
+else changes.**
+
+The breathe *period* shortening as you close is the second redundant cue — quickening is
+noticeable in peripheral vision in a way that a colour change is not. A player who
+learns *"solid red, all of them, means press MENU"* has learned the whole hunt.
+
+#### 8.8.3 Whole-strip states
+
+These override the bar entirely:
+
+| State | Strip | Brightness | Duration |
+|---|---|---|---|
+| **Under attack** | all red, **steady** (not animated — §8.8.4) | 1.0 | until the duel resolves |
+| **You have been revealed** (§5.7) | all **gold** + chirp | 1.0 | `REVEAL_FLASH_MS` (2500) |
+| **You killed someone** | all green | 1.0 | `LED_FLASH_MS` (900) |
+| **You dodged** | green, two blinks | 0.8 | ~900 ms |
+| **You are dead** | all red, slow pulse 2000 ms | 0.20 | until respawn |
+| **You are protected** (§5.8) | all white, steady | 0.30 | 90 s |
+| **Battery ≤ 10 %** (§8.7) | LED n−1 only, orange, double-blink once a minute | 0.30 | — |
+| **No game / not enrolled / opted out** | **dark** | — | — |
+
+Low battery deliberately claims only the **last** LED, so it can coexist with a radar
+bar that has not yet filled that far — a dying badge should still be able to hunt.
+
+The existing `_flash_leds()` whole-strip override (Y-swap success, mute toggle) stays
+exactly as it is and keeps priority over the bar; those flashes are ~900 ms and do not
+meaningfully interrupt hunting.
+
+#### 8.8.4 The IRQ constraint — the part that will bite
+
+`lights.write()` **disables interrupts** and has already starved a short GATT link once
+in this project (field bug 2, `DESIGN.md` §9; §5.5 above). Therefore:
+
+- **During a duel: exactly two LED writes** — one when the alarm starts, one when it
+  ends. The "under attack" state is **steady red, not pulsing**, for this reason and no
+  other. Do not be tempted to animate it; the siren carries the urgency.
+- **The reveal flash happens after the link is closed.** Reveal is
+  write → ack → disconnect (§5.7); the victim's badge starts flashing on
+  *disconnect*, not on receipt of the write. Same rule on the hunter's side.
+- The bar animates freely **only when no GATT link is up** — which is the normal
+  hunting state, since the radar is pure passive scanning.
+- Reuse the existing `_led_override_until` deadline for the whole-strip states; it
+  already implements exactly this priority.
+- Keep the `_led_last` frame cache. It matters *more* now, not less: the two commonest
+  states are **dark** (no target) and **steady red** (kill range), and both must cost
+  **zero** `lights.write()` calls per tick. Cache the whole frame, not a per-LED colour.
+
+#### 8.8.5 Removing the friend LEDs — sequencing
+
+**Do not delete the friend-LED code before the hunt bar exists.** Deleting it early
+leaves the badge with a dark, dead LED strip and no replacement, which is a visible
+regression for zero benefit. `_update_leds()` is **replaced in Phase 2** (§11), in the
+same change that introduces the bar, and `DESIGN.md` §11 is rewritten at that point.
+
+The group-colour helper that the friend LEDs used (`_hsv()` and the group→hue
+derivation) is **still needed** — the on-screen group pills use it. Do not remove it
+along with the LED code.
+
+---
+
+### 8.9 Language — everything the player sees is Dutch (D26)
+
+**Scope: the whole app, not just Gotcha.** Fri3d is a Dutch-language event with a lot
+of children in the audience, and English rules text fails hardest at the moment this
+game most needs to be understood — a red screaming screen you have three seconds to
+read. The existing nametag, setup, swap and onboarding strings are translated in the
+same pass (§11, Phase 2).
+
+#### 8.9.1 The font constraint — read before writing any copy
+
+The UI chrome renders in **built-in lvgl fonts** (`font_montserrat_12/14/16/24/28`,
+used throughout `fri3d_friends.py`). In a stock lvgl build these carry **ASCII only**;
+a `ë` or `é` renders as a missing-glyph box, and nothing warns you at build time.
+
+> **Rule: all UI copy must be pure ASCII.** This costs nothing in Dutch — write
+> `een` not `één`, `overgenomen` not `geërfd`, `Prive` not `Privé`. Where a diacritic
+> is unavoidable in meaning, rephrase.
+
+**Player names are the exception and are safe.** The big name label uses the bundled
+`montserrat_name.ttf`, a **Latin-1 subset** TTF (`DESIGN.md` §11a), so a player called
+`Zoë` or `Renée` renders correctly. Do not "fix" names by stripping accents.
+
+**Verify once on hardware in Phase 0** (both badges are on the bench): render a label
+containing `ë é ï` in `font_montserrat_16` and read it back with
+`get_all_widgets_with_text()`. If the glyphs are present the ASCII rule can be relaxed;
+until then, assume they are not. Screenshots are not available for this check
+(`DESIGN.md` §1 — `capture_screenshot()` returns a scrambled buffer).
+
+#### 8.9.2 Register and conventions
+
+- **Address the player as `je`**, never `u`. This is a game at a hacker camp, and half
+  the players are nine.
+- **Short imperatives on urgent screens.** `RENNEN!` beats `Je wordt aangevallen, loop
+  weg`. The under-attack screen must be readable at a glance, from across a field, by a
+  child.
+- **Keep the English loanwords the audience actually uses**: `badge`, `groep`, `swap`,
+  `bluetooth`, `wifi`, `reset`. Translating `badge` to `naamkaartje` would be more
+  correct and less clear.
+- **Keep it short.** Dutch runs ~15 % longer than English, and this is a 296×240 screen
+  with fixed fonts and no reflow. Every translated string must be checked against its
+  widget width; several existing labels are already near the limit. Where a phrase
+  will not fit, cut it rather than shrinking the font.
+- **Numbers, times and units stay as they are** (`22:00`, `-65 dBm`, `30 min`).
+
+#### 8.9.3 The Gotcha strings
+
+The screens in §8.4, in the wording that should ship:
+
+| Screen | Dutch | *(English gloss)* |
+|---|---|---|
+| Status chip, alive | `LEEFT · reeks 3 · 11 kills` | *ALIVE · streak 3 · 11 kills* |
+| Status chip, dead | `UIT · terug om 14:32` | *DEAD · back at 14:32* |
+| Target strip | `DOELWIT: Otter 42` | *TARGET* |
+| Radar hint, reveal | `MENU: onthullen` | *MENU: reveal* |
+| Radar hint, attack | `MENU: AANVALLEN` | *MENU: ATTACK* |
+| Last seen | `laatst gezien: 12 min geleden` | *last seen 12 min ago* |
+| Revealing | `ONTHULLEN — zoek de gouden badge` | *look for the gold badge* |
+| Spotted (victim) | `GEZIEN! — iemand heeft je gevonden` | *SPOTTED* |
+| Attacking | `AANVAL OP Otter 42 — BLIJF DICHTBIJ!` | *KEEP CLOSE* |
+| **Under attack** | `JE WORDT AANGEVALLEN — RENNEN!` | *UNDER ATTACK — RUN!* |
+| Under attack, can escape | `je kan nog ontsnappen` | *you can still get away* |
+| Under attack, at limit | `GEEN ONTSNAPPEN — hij heeft je` | *NO ESCAPE* |
+| Dodged | `ONTSNAPT! — de volgende keer pakt hij je` | *YOU GOT AWAY! …next time* |
+| Killed | `GOTCHA — uitgeschakeld door <naam>` | *killed by* |
+| Respawn countdown | `terug over 28:14` | *back in* |
+| Protected | `BESCHERMD — 43 s` | *PROTECTED* |
+| Target protected | `Otter 42 — beschermd, 43 s` | *…protected* |
+| Target asleep (§10.4a) | `Otter 42 — slaapt` | *…asleep* |
+| Bounty banner | `PREMIE: Otter 42 (reeks 7) is dichtbij` | *BOUNTY … is near* |
+| Truce | `WAPENSTILSTAND — geen aanvallen` | *TRUCE* |
+| No network (§7) | `geen netwerk — check wifi bij Instellingen` | *no network* |
+| Demo mode entry | `Laat zien wat de badge doet` | *Show me what the badge does* |
+| First-run consent | `Meedoen met Gotcha? Andere spelers zien wanneer je in de buurt bent, en kunnen je opjagen.` | *…will see when you are nearby, and hunt you* |
+| Leave the game | `Stoppen met Gotcha?` | *Leave Gotcha?* |
+
+**Terminology, fixed once and used everywhere** — inconsistency here is what makes a
+translated UI feel broken:
+
+| English | Dutch | Note |
+|---|---|---|
+| target | **doelwit** | never `doel` |
+| kill (noun) | **kill** | the loanword is what players will say out loud |
+| to kill / eliminate | **uitschakelen** | |
+| streak | **reeks** | |
+| bounty / hit list | **premie** / **premielijst** | |
+| reveal | **onthullen** | |
+| dodge / escape | **ontsnappen** | |
+| respawn | **terugkomen** | avoid `respawnen` |
+| truce | **wapenstilstand** | |
+| quiet hours | **stiltetijd** | |
+| protected | **beschermd** | |
+| leaderboard | **klassement** | |
+| group | **groep** | matches the existing UI |
+
+#### 8.9.4 Existing strings to translate
+
+Not new work hidden in a footnote — this is a real pass over ~50 user-visible strings
+in `fri3d_friends.py` (banners, prompts, the setup screen, the on-badge editor), plus
+`ble_setup.py`'s field labels and helper text, plus **`docs/setup/index.html`**, which
+is the phone-facing setup page and is currently English throughout. Anything the player
+reads counts; log messages, exception text and code comments stay English.
 
 Stack unspecified. Requirements: **HTTPS on `/v1/enroll` and plain HTTP on everything
 else** (§6.2), ~2.3 req/s sustained, a small relational store, and something operable
@@ -1082,8 +1552,8 @@ POST /v1/enroll                                    *** HTTPS — the only TLS ca
 GET /v1/sync
   -> { server_time,
        game:   { id, state, truce_active, truce_until, truce_schedule, modifiers },
-       me:     { pid, alive, respawn_at, streak, best_streak, total_kills,
-                 rank_total, rank_streak, dodges: {attacker_pid: left} },
+       me:     { pid, alive, respawn_at, protected_until, streak, best_streak,
+                 total_kills, rank_total, rank_streak, dodges: {attacker_pid: left} },
        target: { pid, name, commitment, last_seen_ago_s } | null,
        hitlist:[ { pid, name, streak } ],          # capped at 16
        config: { KILL_RSSI, KILL_HOLD_MS, ... } }  # §5.4, live-tunable
@@ -1106,7 +1576,9 @@ Every event carries `uuid`, `pid`, `at` (badge clock, offset-corrected), and `ti
 | `killed_by` | `attacker_pid`, `new_commitment` | Confirm death, rotate commitment |
 | `dodge` | counterpart pid, `rssi_at_escape` | Decrement `dodges_left`, log |
 | `attack_started` | `victim_pid` | Cooldown bookkeeping, abuse detection |
-| `heartbeat` | `alive`, `target_seen_ago_s`, `peers_seen`, `battery`, `groups[]` | Liveness, stale-target detection, group snapshot |
+| `reveal` | `target_pid`, `rssi` | Log only. Feeds the audit page (§9.5) — someone standing in a crowd flashing strangers shows up here. |
+| `revealed` | `hunter_pid` | Log only. Also a **liveness signal for §10.1**: being revealed proves you were physically near someone, so it refreshes `last_seen`. |
+| `heartbeat` | `alive`, `target_seen_ago_s`, `peers_seen`, `battery`, `groups[]`, `quiet{from,to}` | Liveness, stale-target detection, group snapshot, personal quiet window (§10.4a) so the server can re-check it on ingest |
 | `optout` / `optin` | — | Splice out of / into the ring |
 
 ### 9.4 Admin endpoints
@@ -1116,13 +1588,47 @@ POST /v1/admin/game            create (name, start, end, tunables)
 POST /v1/admin/game/<id>/state {state: lobby|running|paused|ended}
 POST /v1/admin/truce           {active, until, reason}      # instant camp-wide
 POST /v1/admin/modifier        {type: double_points|amnesty, from, to}
-POST /v1/admin/player/<pid>    {action: kick|revive|void_kill|adjust|reassign}
+POST /v1/admin/player/<pid>    {action: kick|revive|void_kill|adjust|reassign|protect}
+POST /v1/admin/player/<pid>/rebind  {new_badge_key}    # badge broke — see below
+GET  /v1/admin/dashboard       the live numbers below
 GET  /v1/admin/audit           suspicious-pattern report
 GET  /v1/admin/export          full CSV/JSON dump
 ```
 
 Admin actions land on every badge within `SYNC_S`. Nothing needs a push channel: the
 one thing that must be instant — the attack alarm — is BLE-local.
+
+**Badge replacement (`/rebind`).** A badge will break, get lost, or go in a puddle, and
+"you have lost 11 kills and your streak" is not an acceptable answer at a camp. Rebind
+points an existing `pid` at a **new `badge_key`**, preserving score, streak, ring
+position and target. The old `badge_key` is tombstoned so the dead badge cannot
+re-enroll into the same identity. The new badge enrolls normally, gets a **fresh
+`player_key` and a fresh soul/commitment** (its old life's soul is gone with the old
+badge), and lands with `SPAWN_PROTECT_S` of protection so the swap is not itself a
+death sentence. This is distinct from the existing "`gotcha.json` wiped, same badge"
+path (§10.5), which needs no admin action at all.
+
+**The live dashboard.** Endpoints are not a screen; this is the screen. A host at a
+muddy campsite needs to answer "is the game alive?" in one glance, on a phone:
+
+| Group | Numbers |
+|---|---|
+| Population | enrolled · alive · dead-awaiting-respawn · protected · opted out · **dormant** |
+| Tempo | kills total · **kills last hour** · **kills last 10 minutes** · reveals last 10 minutes |
+| Health | badges synced in the last 15 min · **badges not seen for > 1 h** · queued-event backlog · ring conflicts (§3.2 step 4) |
+| Fleet | battery histogram · **count below 20 %** · app-open vs background-service split |
+| Leaders | top 5 individual, top 3 per group board, current hit list |
+
+**Kills in the last 10 minutes is the single most important number on the page** — it
+is the only one that distinguishes "the game is running quietly" from "the game has
+silently stopped working", which §3.3 names as the most likely failure mode. Put it
+first and make it big.
+
+**Multiple hosts, concurrently.** Several volunteers with several phones is how a camp
+actually gets run, so admin state lives server-side with no local session assumptions,
+and the dashboard polls (5 s) rather than holding a socket. No SignalR, no websockets,
+no realtime framework: at 700 players the dashboard is a few KB of JSON and a `setInterval`.
+Admin actions are logged with **which** host performed them.
 
 ### 9.5 Anti-cheat
 
@@ -1150,6 +1656,56 @@ The host can void kills, revive victims, adjust scores and kick. **This is the c
 posture for a hacker camp:** make cheating possible, visible and socially expensive
 rather than pretending an open flashable badge is tamper-proof.
 
+### 9.6 The state model
+
+Adapted from the other proposal's §13, which listed *Registered, Waiting,
+JoinProtection, Active, Shielded, Eliminated, Offline, Updating, Defective*. That list
+is a useful checklist but not a usable state machine, because it mixes **exclusive
+states** (Active, Eliminated) with **orthogonal conditions** (Offline, Shielded) and
+with **operational facts about hardware** (Defective, Updating). A badge can be Active
+*and* Offline; it cannot be Active *and* Eliminated. Split accordingly.
+
+**A. Server-side player status — exclusive, one per player, drives the ring.**
+
+| Status | In the ring? | Attackable? | Enters when | Leaves when |
+|---|---|---|---|---|
+| `active` | yes | yes | Enrolled and past protection | Dies, opts out, goes dormant/stale |
+| `protected` | yes | **no** | Enroll or respawn (§5.8) | 90 s elapse, or they attack |
+| `dead` | **spliced out** | no | Killed | `respawn_at` passes → `protected` |
+| `opted_out` | spliced out | no | Rule 15 (MENU long / web) | Opts back in → `protected` |
+| `dormant` | spliced out | no | No sync for `DORMANT_H`, truce-adjusted (§2.4 — use 12 h) | Any sync → `protected` |
+| `stale` | **hunts, is not hunted** | no | Not seen by *anyone* for `TARGET_STALE_H` (§10.1) | Seen again by anyone |
+| `kicked` | spliced out | no | Host action | Host action |
+| `retired` | spliced out | no | `badge_key` tombstoned by `/rebind` | never |
+
+`stale` is the one genuinely asymmetric status and it is worth the complexity: a player
+whose badge is in a tent should stop *stranding their hunter* without also being told
+they are out of the game when they pick it up ten minutes later.
+
+**B. Badge-local state — what the badge believes between syncs.**
+
+Exclusive: `NOT_ENROLLED` → `ENROLLING` → `HUNTING` ⇄ `REVEALING` / `ATTACKING` /
+`UNDER_ATTACK` / `SPOTTED` → `DEAD` → `HUNTING`. Plus `NO_TARGET` (ring of one) and
+`OPTED_OUT`.
+
+Orthogonal flags, any combination: `PROTECTED`, `TRUCE`, `OFFLINE` (queue non-empty or
+last sync failed), `LOW_BATTERY`.
+
+**The badge is authoritative for exactly one thing: its own death** (§10.2). Everything
+else it holds is a cache of the server's status, and the server re-derives all of it on
+ingest.
+
+**Deliberately not modelled:**
+- **`Shielded`** — we have no shield item (§5.8 protection is a timed status, not a
+  consumable), and adding both a shield and a dodge would give the game two overlapping
+  defensive systems.
+- **`Updating`** — there is no OTA path in scope; badges are updated by hand from the
+  AppStore between games.
+- **`Defective`** — not a player status. A broken badge is a *reason* for `/rebind`
+  (§9.4), after which the player is `protected` on new hardware and the old
+  `badge_key` is `retired`. Modelling hardware faults as game states would put a
+  soldering-iron problem into the scoring engine.
+
 ---
 
 ## 10. Edge cases and real-camp dynamics
@@ -1175,10 +1731,20 @@ rather than pretending an open flashable badge is tamper-proof.
 | Victim already dead but hasn't synced | Responder answers `ALREADY_DEAD`; assassin gets nothing and pays no cooldown. |
 | Assassin's target changed since last sync | The **victim's badge is the authority for its own death** — if it accepted the duel it dies. The backend then reconciles: an invalid pairing is voided **and the victim is revived** with streak restored. A stale assassin must never be able to permanently cost someone their streak. |
 | Truce begins mid-duel | The duel completes. The truce gates *new* attacks only. |
+| Either party's **personal quiet hours** begin mid-duel | Same rule — the duel completes (§10.4a). |
+| Attack or reveal attempted into someone's personal quiet hours | Refused by the responder; the hunter's badge should not have offered it, since `gflags` bit3 is set on air. **No cooldown charged.** |
+| Player tries to attack *during their own* quiet hours | Blocked badge-side before the connection is attempted, and re-checked server-side on ingest. Symmetry is what stops quiet hours being an invulnerability exploit (§10.4a). |
 | Two assassins on one bounty player | Single slot; second gets `BUSY`. |
 | Victim sitting in a setup window or swap | Attack refused. **Exploit:** camping in a setup window is temporary invulnerability, bounded by the existing 2-min idle / 10-min absolute caps (`DESIGN.md` §10). While a game is running, shorten the absolute cap to 3 min. |
 | RSSI spike causes a false dodge | Use the smoothed `rssi_ewma` and require `FLEE_MS` sustained, never a single sample. |
 | Rapid re-attack after a dodge | `ATTACK_COOLDOWN_MS` (60 s) per pair. |
+| Reveal lands while the target is in a duel with someone else | Responder answers `BUSY`; **no cooldown charged** to the hunter. |
+| Target walks out of range between reveal and attack | Nothing special — the reveal already did its job, and the cooldown runs. This is the normal case. |
+| Reveal fires but the target is not wearing the badge visibly | The reveal is spent and the hunter learns nothing. Accepted: it is the same information asymmetry as looking for a face. |
+| Reveal during truce | Refused on **both** sides — the hunter's badge does not attempt the connection, and the responder refuses if it somehow arrives. Same defence-in-depth as the siren (§10.4). |
+| Attack against a `PROTECTED` player | Refused with `PROTECTED`; **no cooldown charged**. The hunter's badge shows the remaining seconds from `gflags` bit4, so this should rarely be attempted. |
+| Protected player attacks someone | Protection drops **at the moment the `ATTACK` write is sent**, not when the duel resolves — a failed or dodged attack still forfeits it. |
+| Protected player is killed by a stale assassin who had not synced | The **victim's badge refuses the duel outright** (it knows it is protected), so this resolves at the responder, not by later reconciliation. |
 
 ### 10.3 Sync, offline and clock
 
@@ -1207,6 +1773,52 @@ rather than pretending an open flashable badge is tamper-proof.
 - On power-on the badge does not need a sync to know the truce; the cached schedule
   is enough.
 
+### 10.4a Personal quiet hours (D25)
+
+**The problem.** The camp truce starts at 22:00. A lot of the children at Fri3d are
+asleep well before that, and a badge that screams at 20:45 in a family tent is exactly
+the outcome §10.4 exists to prevent.
+
+**Why not separate child and adult games** (the other proposal's §4/§19): it would
+require the system to record **which badges belong to minors**, which is a category of
+data this design has otherwise gone out of its way not to hold (D17, §13). It would not
+even deliver the safety it implies, because bounties (rule 10) and target inheritance
+(rule 7) both cross cohorts — making it a real guarantee means two fully disjoint
+games, two hit lists, eight leaderboards and two ceremonies. And it would delete the
+best story the game can produce, which is a ten-year-old taking out an adult.
+
+**The mechanic instead.** Any player may set a personal quiet window on their own
+badge. It is not age-gated, nothing records why it was set, and it serves an adult who
+wants to sleep at 21:00 identically.
+
+| Property | Rule |
+|---|---|
+| Bounds | Start no earlier than `QUIET_EARLIEST` (20:00); end no later than `QUIET_LATEST` (10:00). The camp truce is always contained within it. |
+| Default | Exactly the camp truce, 22:00–08:00 — i.e. setting nothing changes nothing. |
+| Effect inbound | You cannot be attacked or revealed. |
+| **Effect outbound** | **You cannot attack or reveal either.** Non-negotiable — see below. |
+| Streak decay | **Not** paused (§2.2). Only the camp truce pauses decay. |
+| Visibility | Sets `gflags` bit3 `TRUCE` on air, so a hunter's badge reads *"Otter 42 — asleep"* instead of refusing without explanation. |
+| Where it lives | `config.json` under `gotcha.quiet`, through the existing `sanitize_config` — so it is settable from **both** the phone setup page and the on-badge editor, and cannot be clobbered by a partial save. |
+| Enforcement | Badge-local (cached schedule + `clock_offset_s`, so it works with no network), re-checked server-side on ingest. |
+| Dormancy | Dormancy accounting pauses through the player's **personal** window plus the existing 1 h grace, not just the camp truce — a badge switched off at 20:00 must not be spliced out by morning. |
+
+**The two ways this could be abused, and why it isn't:**
+
+1. **"I'll be unkillable all evening and keep hunting."** Closed by making the window
+   symmetric. Quiet hours are a truce, not a shield; if you cannot be attacked you
+   cannot attack. This is the single most important line in this section — an
+   asymmetric version would be a straightforward invulnerability exploit and every kid
+   would find it on Friday afternoon.
+2. **"I'll declare 20:00–10:00 quiet hours and freeze my streak overnight."** Closed by
+   §2.2: personal windows do not pause decay. Fourteen hours of personal quiet costs
+   you the four hours outside the camp truce, at −1 streak per 2 h. Sleeping early is
+   free in safety and paid for in crown.
+
+**No age or cohort field is stored anywhere** — not in `config.json`, not in
+`gotcha.json`, not in the backend schema. If a future version wants a children's
+leaderboard, that is a display-layer opt-in and must not become a gameplay input.
+
 ### 10.5 Ring, identity and groups
 
 | Situation | Behaviour |
@@ -1219,7 +1831,8 @@ rather than pretending an open flashable badge is tamper-proof.
 | Player changes groups mid-game | Kills keep the snapshot they were scored with (§2.3). |
 | `gotcha.json` wiped | Re-enroll by `badge_key` → same `pid`, score intact. |
 | Two players, same display name | Disambiguate with `#pid` in the UI. |
-| Badge lost, swapped or stolen | Host kicks or reassigns from the admin page. |
+| **Badge broken, drowned or lost** | Host runs `/v1/admin/player/<pid>/rebind` (§9.4): score, streak, ring position and target survive onto the new badge; fresh `player_key` and soul; lands `protected`; old `badge_key` `retired`. |
+| Badge stolen, or a player caught cheating | Host kicks from the admin page. |
 | Target opts out mid-hunt | Immediate reassign on next sync. |
 
 ---
@@ -1253,10 +1866,18 @@ collapse to a single v2 beacon.)*
 Fully testable with a simulator; no badge required.
 
 **Phase 2 — badge: connectivity check, enrollment, sync, v2 beacon, radar.** No kills.
-Ends with two badges enrolled, each showing the other as target with a live radar bar.
+Includes the **LED radar bar replacing the friend LEDs** (§8.8) and **demo mode**, both
+of which are independent of the duel and make Phase 3 far easier to test in the field.
+**Also the Dutch translation pass (§8.9)** — do it before there are three new screens
+of English to retranslate. Ends with two badges enrolled, each showing the other as
+target with a live on-screen radar bar *and* a live LED bar.
 
-**Phase 3 — the duel.** Handshake, alarm, dodge, soul reveal, inheritance, reporting.
-The core fun. Ends with a real two-badge chase across a field.
+**Phase 3 — the duel and the Reveal.** Handshake, alarm, dodge, soul disclosure,
+inheritance, reporting, plus **Reveal (§5.7)** and **spawn protection (§5.8)**. The core
+fun. Ends with a real two-badge chase across a field. **Build Reveal first** — it is a
+much simpler GATT interaction than the duel (write, ack, disconnect, flash), it
+exercises the same connect path, and having it working makes every subsequent duel test
+easier to set up.
 
 **Phase 4 — background participation** (D3). The fragile one; see §5.6.
 
@@ -1285,6 +1906,10 @@ before 14 August.
 | RSSI at a real camp ≠ RSSI on a bench | Medium | Every threshold is server-tunable live (§5.4). |
 | Sybil / collusion | Low | Detected not prevented (§9.5); host can void and revive. |
 | Badge never joined WiFi; player cannot tell the game is broken | Medium | Explicit `no network — check WiFi in Settings` state (§7), never silent absence. |
+| **Reveal is mistaken for an attack** and someone bolts through a crowd | Medium | The two are deliberately unmistakable: gold + single chirp + `SPOTTED` versus red + siren + `RUN`. **Demo mode (§8.4) exists largely to teach this difference before it matters.** Verify with real children in the Phase 6 dry run, not just with adults who read the rules card. |
+| Reveal spam in a crowd | Low | Self-limiting (it warns your target), `REVEAL_COOLDOWN_S` on top, and `reveal` events land on the audit page (§9.5). |
+| Removing the friend LEDs is felt as a loss | Low | §8.8.1: no *information* is lost (friends panel + pills are unchanged), the hunt bar is far more legible than one shared LED would have been, and average LED power falls. Revisit only if players actually complain. |
+| The 2024's 4-LED bar reads differently from the 2026's 5 | Low | §8.8.2: the bar is proportional, and colour carries the same signal redundantly. Check both boards in the Phase 6 dry run. |
 
 ---
 
@@ -1299,9 +1924,19 @@ on-by-default. Take that seriously:
 - **First-run notice.** The first time a badge detects a live game it must show a
   screen saying what joining means — *"other players will be able to see when you are
   nearby, and hunt you"* — with joining as an explicit acknowledgement. On-by-default
-  means enrolled once acknowledged, not before.
+  means enrolled once acknowledged, not before. **Offer demo mode (§8.4) from this
+  screen**: a fifteen-second walkthrough of every colour and both sounds. Informed
+  consent for a game whose central mechanic is a badge screaming in your hand is much
+  better served by *hearing it once, on purpose* than by a paragraph of text — and it
+  is the same screen either way.
 - **One-press exit on the badge itself** (MENU long-press), not buried in a web page
   that needs a phone. A kid who wants out must get out in three seconds without help.
+- **No age, and no child/adult cohort, is recorded anywhere** (D25, §10.4a) — not in
+  `config.json`, not in `gotcha.json`, not in the backend schema, not on the web pages.
+  Children who go to bed early are served by **personal quiet hours**, which any player
+  can set and which record only a time window. This was a deliberate choice over
+  separate child and adult games: it solves the real problem (a badge screaming at
+  20:45 in a family tent) without the system ever needing to know who the children are.
 - **Location tracking is explicitly out of scope** (D17). No AP association, no
   witness-derived location hints. The only proximity data collected is
   `witnesses[]` for anti-cheat (§9.5): store it salted-hashed, retain it for the

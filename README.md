@@ -33,6 +33,17 @@ It's **generic and redistributable**: any hackerspace/makerspace can flash it an
 set their own group name(s) and member name by editing one file (no code changes)
 — and it finds *their* people.
 
+> **Language: the app's interface is in Dutch.** Fri3d is a Dutch-language event
+> with a lot of children in the audience, so every string the player sees — the
+> badge UI, the on-badge editor and the phone setup page — is Dutch. Code,
+> comments, docstrings, log output and this README stay English.
+>
+> **UI copy must be pure ASCII.** The badge renders its chrome in lvgl's built-in
+> `font_montserrat_*`, which carry ASCII only — a `ë` or `é` becomes a
+> missing-glyph box with no warning at build time. Write `een`, not `één`.
+> **Player names are the exception**: the big name label uses the bundled
+> Latin-1 subset TTF, so `Zoë` renders correctly. Never strip accents from names.
+
 ## Install
 
 ### From the AppStore (recommended)
@@ -113,11 +124,11 @@ keyboard on the button-only 2024 badge.
 
 | Setting | How you edit it |
 |---|---|
-| **Your name** | text |
-| **Groups** | text, comma-separated |
-| **Alert sound** | On / Off |
-| **Alert range** | pick from *Full range · Wide area · Same room / tent · Next to me · Touching* |
-| **Banner seconds** | slider, 1–15 s |
+| **Je naam** | text |
+| **Groepen** | text, comma-separated |
+| **Geluid** | Aan / Uit |
+| **Bereik** | pick from *Volledig bereik · Ruime omgeving · Zelfde tent of ruimte · Vlak naast me · Tegen elkaar* |
+| **Banner (sec)** | slider, 1–15 s |
 
 Saving writes straight to `config.json` through the same validation the phone page
 uses, and applies immediately. Contact fields (Email, Discord, …) are **not** in
@@ -133,7 +144,7 @@ No network is involved: the page talks GATT straight to the badge, which is idea
 at Fri3d Camp where badges and phones sit on different SSIDs/subnets.
 
 - **Open the page.** Scan the **QR code** the badge shows (on the first-run
-  "Configure me" screen, or in the setup window on a configured badge). It points
+  "Stel me in" screen, or in the setup window on a configured badge). It points
   at a static page on GitHub Pages:
   `https://steemandavid.github.io/fri3d-friends/setup/?badge=XXXX`. `XXXX` is the
   badge's unique id, also printed on screen (`Fri3d-XXXX`).
@@ -164,9 +175,9 @@ at Fri3d Camp where badges and phones sit on different SSIDs/subnets.
 Press **Y** and, within ~5 s, have a nearby badge's owner press **Y** too. The
 two badges find each other over Bluetooth and swap their `contact` info in both
 directions — **no shared group or friendship required**, just radio range. The
-banner confirms `Swapped with <name> ✓`; the received fields are stored on your
+banner confirms `Geruild met <name>`; the received fields are stored on your
 badge with the date & time and are visible in the phone setup page's **Contacts**
-tab. (If nobody else is swapping in the window you get `No one swapping nearby`.)
+tab. (If nobody else is swapping in the window you get `niemand aan het ruilen`.)
 
 ### Joining a friend's group by swapping
 
@@ -200,7 +211,7 @@ away, but the coloured **pills** only re-lay-out on the next app start.
 > startup splash. The app runs on **both the Fri3d 2024 and 2026 badges**
 > (auto-detected; force with the `board` key above).
 
-> **First-run:** with no `groups` set, the badge shows a **"Configure me" screen
+> **First-run:** with no `groups` set, the badge shows a **"Stel me in" screen
 > with a QR code** of its Bluetooth setup page and **does not run the proximity
 > beacon/scan** — safer than beeping as a blank badge. It *does* advertise as
 > `Fri3d-XXXX` so a phone can connect and configure it. Three ways forward, and
@@ -233,7 +244,7 @@ and the Makerspace Baasrode logo, then the nametag appears.
 The idle screen shows: your **name** large across the top (it scrolls if too
 long), your **group(s)** as coloured pills directly under it, battery %
 (top-right, inset from the rounded corner), and a **friends line** —
-`Friends nearby: Alice, Bob` when peers are in range, or `looking for friends…`
+`Vrienden dichtbij: Alice, Bob` when peers are in range, or `vrienden zoeken...`
 when none. On a new arrival, a banner appears for ~5 s (`banner_ms`), the LEDs
 flash, and a short buzzer sting plays — with a **colour + tone unique to the
 shared group** (derived from the group hash, so you can recognise *which* group

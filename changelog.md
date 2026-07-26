@@ -1,3 +1,203 @@
+# !Fri3d Friends — Gotcha plan rev. 2 (peer-spec merge) + Dutch UI translation — 2026-07-26
+
+Second session of the day. Two halves:
+
+1. **Design** — compared our Gotcha plan against an independent functional spec written
+   in parallel by another Fri3d participant, and merged the ideas worth taking.
+   `Implementation_Plan_Gotcha_20260726.md` grew **1362 → ~1875 lines** (rev. 2).
+2. **Code** — first application changes for v0.10.0: the whole user interface was
+   **translated to Dutch**, and the LED design was reworked.
+
+Unlike the earlier session today, **this one did modify application files.**
+
+## Part 1 — Merging the peer specification
+
+Source: `/storage/fileshare/Gotcha_Badge_Game_Specificatie_1_tot_30.txt` (Dutch, 30
+numbered chapters, hardware-agnostic). It is a *functional spec*; ours is an
+*implementation plan* for one specific badge. High conceptual overlap, and the
+disagreements were mostly about what 700 badges at a real campsite do to a design.
+
+### Adopted (with the decision id added to the plan)
+
+| # | Idea | Landed in |
+|---|---|---|
+| D22 | **Reveal** — target's badge flashes gold + chirps, and *they know* | §5.7 (new), rule 2, GATT `REVEAL` char, 3 tunables |
+| D23 | **LED colour language** | §8.8 (rewritten, see below) |
+| D24 | **Spawn / join protection**, 90 s | §5.8 (new), `gflags` bit4, rule 8 |
+| D26 | **All UI in Dutch** | §8.9 (new) — implemented this session |
+| — | Demo mode (learn the lights + sounds in 15 s) | §8.4, §13 |
+| — | Battery warning ladder 20/10/5 % | §8.7 lever 4 |
+| — | Badge rebind (broken badge → new hardware, score intact) | §9.4, §10.5 |
+| — | Live dashboard metric list; multiple concurrent admin phones | §9.4 |
+| — | Reworked state model | §9.6 (new) |
+
+**Reveal is the best idea in their document.** RSSI is a scalar: it walks you into a
+crowd of thirty and then goes flat. Their answer — the badge never names the target,
+you press Reveal and only the real one lights up — solves the last ten metres. We kept
+our target name (it makes the hunt narratable) and added Reveal as the
+crowd-disambiguation move. The cost is paid in the same instant as the benefit: you buy
+their location by telling them a hunter is within a few metres, which is self-limiting,
+so `REVEAL_COOLDOWN_S` (120 s) is a backstop rather than the primary brake.
+
+Two implementation calls worth recording:
+
+- **Reveal shares MENU with attack**, escalating by distance (attack in kill range →
+  reveal in reveal range → radar detail). A/B/Y/START are all bound already
+  (A = detail, B = mute / long = setup, Y = swap, START = exit). The ladder is
+  monotonic in proximity so it cannot misfire in the dangerous direction, and the
+  screen names the action before it is pressed.
+- **Reveal is a GATT write, not a beacon flag.** The cheap version (advertise
+  "revealing pid X" and let X notice while scanning) fails exactly where it matters:
+  `beacon_service.py` advertises but deliberately does **not** scan (§5.6), so a
+  connectionless reveal would silently never work against players with the app closed.
+
+### Rejected, and why
+
+| Their rule | Why not |
+|---|---|
+| **Badge off / flat battery = elimination** (§14, §15) | §8.7 says the app gets ~11 h against a 16 h waking day. This would eliminate a large slice of the camp for a logistics failure. Ours: respawn (rule 8). |
+| **Server is sole source of truth; badges decide nothing** (§2, §8) | At a campsite this makes dead zones into places the game stops, and into invincibility zones. Ours: D6/D10, queue events and hand the inherited target over inside the kill handshake. |
+| **Shields** (§12) | Redundant with dodges; two overlapping defensive systems. |
+| Separate child/adult rings (§4, §19) | Replaced — see below. |
+
+Also noted: their spec has **no proof of physical presence** — the server sees a POST
+claiming a kill and cannot distinguish it from one sent from a tent. That is what our
+commitment–disclosure "soul" (§3.4) exists for.
+
+### Naming collision fixed
+
+§3.4 was "commitment–**reveal**", the standard crypto term. Since rev. 2 adds a
+**Reveal** game mechanic, the crypto is now called **commitment–disclosure**
+throughout, and the plan tells the implementer to write `disclose_soul()`, not
+`reveal_soul()`.
+
+## Part 2 — Kids and adults → personal quiet hours (D25)
+
+Their §4/§19 separates children and adults into disjoint target chains with their own
+play hours. Digging in, that bundles **three different problems**: safety (an adult
+walking up to a child), fairness (adults dominate the boards), and sleep (kids go to
+bed before 22:00).
+
+Separate rings only addresses fairness, and **does not even deliver the safety it
+implies** — our bounty rule (streak ≥ 3 is fair game for everyone) and target
+inheritance both cross cohorts, so a real guarantee means two fully disjoint games:
+two rings, two hit lists, eight boards, two ceremonies. It also requires recording
+**which badges belong to minors**, a category of data this design has otherwise avoided
+(D17, §13), and it deletes the best story the game can produce.
+
+**Decision (D25): one ring, no age data anywhere, plus personal quiet hours** (§10.4a).
+Any player sets their own window, 20:00 earliest to 10:00 latest; it is not age-gated
+and serves an adult who sleeps at 21:00 identically.
+
+Two exploits this opened, both closed in the spec:
+
+1. **Asymmetry** — "unkillable but still hunting" would have been found on Friday
+   afternoon. The window blocks attacking *and* being attacked.
+2. **Decay freezing** — declaring 20:00–10:00 would otherwise freeze a streak 14 h/day
+   and let someone hold the crown by sleeping. So **only the camp-wide truce pauses
+   streak decay**; personal windows do not (§2.2). An early night costs ~2 h of decay.
+
+Skipped for now: "finale mode" (their §29), left open in the plan.
+
+## Part 3 — LEDs: the whole strip becomes the radar (D23)
+
+**The friend-LED feature is removed.** `DESIGN.md` §11's one-LED-per-nearby-friend
+breathe is replaced by a **proximity bar** across all LEDs (4 on 2024, 5 on 2026):
+
+| `rssi_ewma` | Lit | Colour | Animation |
+|---|---|---|---|
+| not detected | 0 | — | dark |
+| far | 1 | blue | breathe 3800 ms |
+| closing | 2–3 | blue → amber | breathe 2400 → 1400 ms |
+| reveal range | n−1 | amber | breathe 700 ms |
+| kill range | **all n** | **red** | steady |
+
+Whole-strip overrides: under attack (red, **steady** — the WS2812 IRQ constraint, not a
+style choice), revealed (gold), kill (green), dead (slow red pulse), protected (white),
+low battery (last LED orange only, so a dying badge can still hunt).
+
+Three reasons this beat sharing the strip:
+
+- **It is the power budget.** §8.7's biggest lever is blanking the screen — but the
+  radar currently *lives* on the screen, so today that lever blinds the hunter. A bar
+  is a *length*, pre-attentive and legible at several metres, in a way a single
+  colour-coded dot is not.
+- **Average LED draw falls.** Friend LEDs breathe whenever anyone is nearby; the hunt
+  bar is dark whenever the target is out of range, which is most of the time (§3.3).
+- **No information is lost** — the friends panel and group pills still show everyone.
+
+Sequencing recorded in §8.8.5: **do not delete the friend-LED code before the bar
+exists** (that just leaves a dead strip), and `_hsv()` / the group→hue derivation must
+survive the deletion because the on-screen pills still use it.
+
+## Part 4 — Dutch translation (implemented, D26 / §8.9)
+
+Every string the player sees is now Dutch. Code, comments, docstrings and log output
+stay English.
+
+| File | Scope |
+|---|---|
+| `app/…/fri3d_friends.py` | ~42 strings: banners, prompts, first-run screen, controls hints, adopt prompt, on-badge editor field titles |
+| `app/…/ble_setup.py` | the 5 `RANGE_PRESETS` labels |
+| `docs/setup/index.html` | ~59 strings: whole phone setup page incl. all status/error text |
+| `tests/test_ble_setup.py` | label assertions updated |
+| `README.md`, `DESIGN.md` | quoted UI strings + a new language/glyph section |
+
+### ⚠️ The font landmine — found before writing any copy
+
+UI chrome renders in **built-in** `font_montserrat_12/14/16/24/28`. On a stock lvgl
+build these carry **ASCII only**: `ë`, `é`, `—`, `…`, `✓`, `·` render as missing-glyph
+boxes, **with no warning at build time**.
+
+- **Rule: UI copy is pure ASCII.** Costs nothing in Dutch (`een`, not `één`).
+- **Player names are exempt** — the 42 px label uses the bundled **Latin-1** subset TTF
+  (`montserrat_name.ttf`), so `Zoë`/`Renée` render correctly. Never strip accents from
+  a name.
+- **This surfaced pre-existing bugs.** v0.9.0 was already shipping `…`, `✓`, `·` and
+  `—` inside UI strings. All removed. `_short()`'s `…` became `"..."` with the slice
+  width adjusted (`n-1` → `n-3`, guarded by `max(1, …)`) so rendered width is
+  unchanged; the friends-line cap went `[:89]+"…"` → `[:87]+"..."`.
+
+### `RANGE_PRESETS` is a round-trip key, not just display
+
+The on-badge editor passes dropdown options as `[(label, label)]`, and
+`settings_to_config()` matches the returned string against `RANGE_PRESETS` labels — so
+translating them is a **behavioural** change and had to land together with
+`tests/test_ble_setup.py`. (The `sound` radiobutton was safe: its value `"on"`/`"off"`
+is separate from its label, so only `("Aan","on")`/`("Uit","off")` labels changed.)
+
+### Terminology, fixed once in plan §8.9.3
+
+`doelwit` (target), `reeks` (streak), `premie` / `premielijst` (bounty / hit list),
+`onthullen` (reveal), `ontsnappen` (dodge), `uitschakelen` (kill), `terugkomen`
+(respawn), `wapenstilstand` (truce), `stiltetijd` (quiet hours), `beschermd`
+(protected), `klassement` (leaderboard). Register is **`je`, never `u`**; loanwords the
+audience actually uses (`badge`, `groep`, `swap`, `wifi`) are kept.
+
+## Verification
+
+- `python3 -m pytest tests/ -q` → **118 passed**
+- All six app modules parse (`ast.parse`)
+- Scripted check: **0 non-ASCII characters remain in any UI string literal**
+- Both translation passes were applied by assert-checked scripts (every old string had
+  to match exactly once, or the script aborted without writing)
+
+## Known gaps / follow-ups
+
+- ⚠️ **Nothing was deployed to a badge this session.** Two badges are on USB
+  (`usb-Espressif_Systems_Espressif_Device_1cdbd49d9de40000-if00`,
+  `…_90706901bac80000-if00`) but were not flashed.
+- ⚠️ **Dutch strings are not width-checked on hardware.** Dutch runs ~15 % longer than
+  English on a 296×240 fixed-font screen with no reflow, and several labels were
+  already near their limits. **This is the first thing to check on the next deploy.**
+- ⚠️ **The ASCII-only assumption is unverified.** Nobody has confirmed this build's
+  built-in fonts actually lack Latin-1. Plan §8.9.1 and `DESIGN.md` §11a.1 record the
+  check: render `ë é ï` in `font_montserrat_16` and read it back with
+  `get_all_widgets_with_text()` (screenshots cannot answer this — `DESIGN.md` §1).
+- The LED bar and everything else in rev. 2 is **plan only** — no Gotcha code exists.
+  `DESIGN.md` §11 still documents the friend LEDs, correctly, because they still ship.
+- `MANIFEST.JSON` is still at 0.9.0; the Dutch UI is unreleased.
+
 # !Fri3d Friends — Gotcha (Assassin) game: design + implementation plan — 2026-07-26
 
 Design-only session. Produced **`Implementation_Plan_Gotcha_20260726.md`** (~1360

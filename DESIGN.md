@@ -294,6 +294,29 @@ was in active use / off-limits during development).
   (e.g. `David Steeman ON4BDS`) wrap to the next line instead of being clipped by
   the rounded screen corner; the name list is capped at ~90 chars.
 
+### 11a.1 Language & glyph coverage (v0.10.0)
+
+- **All user-facing text is Dutch** — badge UI, on-badge editor
+  (`RANGE_PRESETS` labels included) and `docs/setup/index.html`. Code, comments,
+  docstrings and log output stay English. See the Gotcha plan §8.9 for the fixed
+  terminology list (`doelwit`, `reeks`, `premie`, `onthullen`, `wapenstilstand`).
+- ⚠️ **UI copy must be pure ASCII.** UI chrome uses the **built-in**
+  `font_montserrat_12/14/16/24/28`, which on a stock lvgl build carry ASCII only;
+  a `ë`/`é`/`—`/`…`/`✓`/`·` renders as a missing glyph, silently. Several such
+  characters were shipping in v0.9.0 strings and were removed in the v0.10.0
+  translation pass — including the `…` in `_short()`, replaced by `"..."` with the
+  slice widths adjusted (`n-1` → `n-3`) so rendered width is unchanged.
+- **Player names are exempt and must stay exempt**: the 42 px name label uses the
+  bundled **Latin-1** subset TTF above, so `Zoë`/`Renée` render correctly. Never
+  strip accents from a name to satisfy the ASCII rule.
+- **Not yet verified on hardware**: whether this build's built-in fonts actually
+  lack the Latin-1 range. The ASCII rule is the safe assumption until someone
+  renders `ë é ï` in `font_montserrat_16` and reads it back with
+  `get_all_widgets_with_text()` (screenshots can't answer this — §1).
+- **Dutch runs ~15 % longer than English** on a 296×240 fixed-font screen with no
+  reflow. Translated strings are **not yet width-checked on a badge**; several
+  were already near their widget limits.
+
 ## 11. Friend LEDs — per-friend breathing (v0.4.0)
 
 Each nearby friend gets one RGB LED, slowly + dimly **breathing that friend's

@@ -366,7 +366,7 @@ def test_config_to_settings_round_trip():
            "rssi_floor": -80, "banner_ms": 3000, "contact": {"Email": "a@b.c"}}
     prefs = bs.config_to_settings(cfg)
     assert prefs == {"name": "David", "groups": "Alpha, Beta", "sound": "off",
-                     "rssi_floor": "Same room / tent", "banner_s": "3"}
+                     "rssi_floor": "Zelfde tent of ruimte", "banner_s": "3"}
     out = bs.settings_to_config(prefs, cfg)
     assert out["name"] == "David"
     assert out["groups"] == ["Alpha", "Beta"]
@@ -411,11 +411,11 @@ def test_settings_range_tolerates_raw_dbm_and_junk():
 
 
 def test_range_label_snaps_to_nearest_preset():
-    assert bs.range_label(-120) == "Full range (default)"
-    assert bs.range_label(-80) == "Same room / tent"
-    assert bs.range_label(-78) == "Same room / tent"      # hand-edited value
-    assert bs.range_label(-1000) == "Full range (default)"
-    assert bs.range_label("junk") == "Full range (default)"
+    assert bs.range_label(-120) == "Volledig bereik (standaard)"
+    assert bs.range_label(-80) == "Zelfde tent of ruimte"
+    assert bs.range_label(-78) == "Zelfde tent of ruimte"      # hand-edited value
+    assert bs.range_label(-1000) == "Volledig bereik (standaard)"
+    assert bs.range_label("junk") == "Volledig bereik (standaard)"
 
 
 def test_settings_partial_harvest_never_wipes():
@@ -441,6 +441,6 @@ def test_config_to_settings_defaults_on_empty_config():
     prefs = bs.config_to_settings({})
     assert prefs["name"] == "" and prefs["groups"] == ""
     assert prefs["sound"] == "on"
-    assert prefs["rssi_floor"] == "Full range (default)"
+    assert prefs["rssi_floor"] == "Volledig bereik (standaard)"
     assert prefs["banner_s"] == "5"
     assert set(prefs) == set(bs.SETTINGS_KEYS)
