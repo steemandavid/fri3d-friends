@@ -221,6 +221,98 @@ def sanitize_config(new, base):
     return cfg
 
 
+# ---------------------------------------------------------------------------
+# On-badge settings editor (MicroPythonOS SettingsActivity) <-> config.json
+# ---------------------------------------------------------------------------
+#
+# The editor uses SharedPreferences purely as a TRANSFER BUFFER; config.json
+# stays the single source of truth. These two pure helpers convert between the
+# two representations so the whole mapping is host-testable and the LVGL/Activity
+# wiring in fri3d_friends.py stays dumb.
+
+# Alert range presets — the DESIGN.md section 5.1 guidance table, as labelled
+# choices instead of a raw dBm number. A dropdown also sidesteps LVGL sliders
+# having to carry a negative range.
+RANGE_PRESETS = (
+    ("Full range (default)", -120),
+    ("Wide area", -90),
+    ("Same room / tent", -80),
+    ("Next to me", -70),
+    ("Touching", -60),
+)
+
+SETTINGS_KEYS = ("name", "groups", "sound", "rssi_floor", "banner_s")
+
+
+def range_label(rssi_floor):
+    """dBm -> the closest preset label. Any hand-edited config.json value (the
+    phone page and the docs both allow arbitrary dBm) still shows as the nearest
+    preset rather than blank."""
+    val = _as_int(rssi_floor, -120)
+    best = RANGE_PRESETS[0]
+    for label, dbm in RANGE_PRESETS:
+        if abs(dbm - val) < abs(best[1] - val):
+            best = (label, dbm)
+    return best[0]
+
+
+def config_to_settings(cfg):
+    """config.json dict -> {pref_key: str} to seed SharedPreferences before
+    launching the editor. Every value is a string: that is what the OS's
+    textarea/dropdown/slider widgets round-trip."""
+    cfg = cfg if isinstance(cfg, dict) else {}
+    groups = cfg.get("groups")
+    groups = groups if isinstance(groups, list) else []
+    banner = _as_int(cfg.get("banner_ms", 5000), 5000)
+    return {
+        "name": (cfg.get("name") or "") if isinstance(cfg.get("name"), str) else "",
+        "groups": ", ".join(g for g in groups if isinstance(g, str) and g.strip()),
+        "sound": "on" if cfg.get("sound", True) else "off",
+        "rssi_floor": range_label(cfg.get("rssi_floor", -120)),
+        "banner_s": str(max(1, banner // 1000)),
+    }
+
+
+def settings_to_config(prefs, base):
+    """{pref_key: str} harvested from the editor -> a full, validated config.
+
+    Wraps sanitize_config() for the two mappings it cannot do itself:
+
+      * sound is a radiobutton returning the STRING "on"/"off" — feeding that
+        straight in would be a bug, because bool("off") is True.
+      * the editor asks for banner SECONDS (a 1..15 slider is friendlier than
+        milliseconds); config.json stores milliseconds.
+
+    `groups` needs no special handling: sanitize_config already accepts a
+    comma-separated string. Keys absent from `prefs` are left to sanitize_config,
+    which falls back to `base` — so a partial harvest can never wipe a field.
+    """
+    prefs = prefs if isinstance(prefs, dict) else {}
+    new = {}
+    if "name" in prefs:
+        new["name"] = prefs["name"]
+    if "groups" in prefs:
+        new["groups"] = prefs["groups"]
+    if "sound" in prefs:
+        v = prefs["sound"]
+        new["sound"] = v if isinstance(v, bool) else str(v).strip().lower() == "on"
+    if "rssi_floor" in prefs:
+        want = str(prefs["rssi_floor"]).strip()
+        dbm = None
+        for label, val in RANGE_PRESETS:
+            if want == label:
+                dbm = val
+                break
+        # Tolerate a raw dBm value too (an older prefs blob, or a hand edit).
+        new["rssi_floor"] = _as_int(want, -120) if dbm is None else dbm
+    if "banner_s" in prefs:
+        secs = _as_int(prefs["banner_s"], 5)
+        if secs < 1:
+            secs = 5
+        new["banner_ms"] = secs * 1000
+    return sanitize_config(new, base)
+
+
 def build_info(bid, authed, config=None):
     """Serialize the INFO characteristic value to JSON bytes.
 

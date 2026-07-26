@@ -5,7 +5,8 @@
 #
 #   1. PURE WIRE-FORMAT FUNCTIONS (fnv1a_16, normalize_group, hash_groups,
 #      name_budget, truncate_utf8, build_payload, parse_payload, intersect,
-#      shared_name_for). These have NO dependency on `bluetooth` / `mpos` /
+#      shared_name_for, parse_groups_field, merge_groups, new_groups_from).
+#      These have NO dependency on `bluetooth` / `mpos` /
 #      `lvgl` / `asyncio` and are unit-tested off-device (tests/). Importing
 #      this module on a host must work.
 #
@@ -257,6 +258,78 @@ def build_own_table(groups):
             continue
         seen.add(gid)
         out.append((g, gid))
+    return out
+
+
+def parse_groups_field(value):
+    """Parse the cleartext "Groups" contact field from a Y-swap -> [name, ...].
+
+    `contact_exchange` ships the sender's group NAMES (not the hashed ids) as a
+    comma-joined string in the contact envelope, so a receiving badge can offer
+    to join them (zero typing — a typo'd group hashes differently and silently
+    never matches, which is the worst failure mode this app has).
+
+    Defensive: non-str input -> []. Empty/whitespace entries are dropped.
+    """
+    if not isinstance(value, str):
+        return []
+    return [g.strip() for g in value.split(",") if g.strip()]
+
+
+def merge_groups(existing, incoming, max_groups=MAX_GROUPS):
+    """Append `incoming` group names to `existing`, skipping duplicates.
+
+    Returns `(merged, dropped)`. Duplicate detection uses normalize_group(), so
+    "Makerspace Baasrode" is recognised as already-joined even when the peer
+    typed " makerspace baasrode ". `existing` is never reordered or rewritten —
+    the user's own spelling of a group they already have wins.
+
+    The result is capped at `max_groups` (the beacon can only advertise
+    MAX_GROUPS ids); `dropped` counts the incoming names that did not fit, so
+    the caller can say so instead of silently discarding them.
+
+    Pure — no clock, no radio. Unit-tested off-device.
+    """
+    merged = list(existing or [])
+    seen = set()
+    for g in merged:
+        n = normalize_group(g)
+        if n:
+            seen.add(n)
+    dropped = 0
+    for g in incoming or []:
+        n = normalize_group(g)
+        if not n or n in seen:
+            continue
+        if len(merged) >= max_groups:
+            dropped += 1
+            continue
+        seen.add(n)
+        merged.append(g.strip() if isinstance(g, str) else g)
+    return merged, dropped
+
+
+def new_groups_from(existing, incoming, max_groups=MAX_GROUPS):
+    """The subset of `incoming` that is not already in `existing`.
+
+    Used to decide whether a post-swap "join a group?" prompt is worth showing
+    at all, and to populate its rows. Dedups within `incoming` too, so a peer
+    listing the same group twice offers it once. Order is preserved.
+    """
+    seen = set()
+    for g in existing or []:
+        n = normalize_group(g)
+        if n:
+            seen.add(n)
+    out = []
+    for g in incoming or []:
+        n = normalize_group(g)
+        if not n or n in seen:
+            continue
+        seen.add(n)
+        out.append(g.strip() if isinstance(g, str) else g)
+        if len(out) >= max_groups:
+            break
     return out
 
 

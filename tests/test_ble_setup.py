@@ -355,3 +355,92 @@ def test_build_setup_adv_layout():
     assert adv[4] == 0x09
     assert adv[5:] == name
     assert len(adv) <= 31
+
+
+# ---------------------------------------------------------------------------
+# v0.9.0 — on-badge settings editor <-> config.json
+# ---------------------------------------------------------------------------
+
+def test_config_to_settings_round_trip():
+    cfg = {"name": "David", "groups": ["Alpha", "Beta"], "sound": False,
+           "rssi_floor": -80, "banner_ms": 3000, "contact": {"Email": "a@b.c"}}
+    prefs = bs.config_to_settings(cfg)
+    assert prefs == {"name": "David", "groups": "Alpha, Beta", "sound": "off",
+                     "rssi_floor": "Same room / tent", "banner_s": "3"}
+    out = bs.settings_to_config(prefs, cfg)
+    assert out["name"] == "David"
+    assert out["groups"] == ["Alpha", "Beta"]
+    assert out["sound"] is False
+    assert out["rssi_floor"] == -80
+    assert out["banner_ms"] == 3000
+    assert out["contact"] == {"Email": "a@b.c"}      # untouched by the editor
+
+
+def test_settings_sound_off_string_is_false():
+    # The trap this wrapper exists for: bool("off") is True, so the radiobutton
+    # string must never reach sanitize_config unconverted.
+    assert bs.settings_to_config({"sound": "off"}, {})["sound"] is False
+    assert bs.settings_to_config({"sound": "on"}, {})["sound"] is True
+    assert bs.settings_to_config({"sound": False}, {})["sound"] is False
+
+
+def test_settings_banner_seconds_to_ms():
+    assert bs.settings_to_config({"banner_s": "8"}, {})["banner_ms"] == 8000
+    assert bs.settings_to_config({"banner_s": 2}, {})["banner_ms"] == 2000
+    # Junk / out-of-range falls back to the 5 s default rather than hiding every
+    # banner (sanitize_config clamps anything under 500 ms).
+    assert bs.settings_to_config({"banner_s": "0"}, {})["banner_ms"] == 5000
+    assert bs.settings_to_config({"banner_s": "junk"}, {})["banner_ms"] == 5000
+
+
+def test_settings_groups_comma_string():
+    out = bs.settings_to_config({"groups": "Alpha, Beta ,, Gamma"}, {})
+    assert out["groups"] == ["Alpha", "Beta", "Gamma"]
+    assert bs.settings_to_config({"groups": ""}, {"groups": ["Old"]})["groups"] == []
+
+
+def test_settings_range_presets_map_to_dbm():
+    for label, dbm in bs.RANGE_PRESETS:
+        assert bs.settings_to_config({"rssi_floor": label}, {})["rssi_floor"] == dbm
+
+
+def test_settings_range_tolerates_raw_dbm_and_junk():
+    # An older prefs blob or a hand-edited value shouldn't reset the setting.
+    assert bs.settings_to_config({"rssi_floor": "-75"}, {})["rssi_floor"] == -75
+    assert bs.settings_to_config({"rssi_floor": "nonsense"}, {})["rssi_floor"] == -120
+
+
+def test_range_label_snaps_to_nearest_preset():
+    assert bs.range_label(-120) == "Full range (default)"
+    assert bs.range_label(-80) == "Same room / tent"
+    assert bs.range_label(-78) == "Same room / tent"      # hand-edited value
+    assert bs.range_label(-1000) == "Full range (default)"
+    assert bs.range_label("junk") == "Full range (default)"
+
+
+def test_settings_partial_harvest_never_wipes():
+    # A harvest missing keys must leave those fields at their existing values --
+    # config.json is the source of truth, prefs is only a transfer buffer.
+    base = {"name": "David", "groups": ["Alpha"], "sound": False,
+            "rssi_floor": -70, "banner_ms": 2000, "contact": {"Email": "a@b.c"}}
+    out = bs.settings_to_config({"name": "Dave"}, base)
+    assert out["name"] == "Dave"
+    assert out["groups"] == ["Alpha"]
+    assert out["sound"] is False
+    assert out["rssi_floor"] == -70
+    assert out["banner_ms"] == 2000
+    assert out["contact"] == {"Email": "a@b.c"}
+
+
+def test_settings_to_config_survives_junk_input():
+    assert bs.settings_to_config(None, {"name": "keep"})["name"] == "keep"
+    assert bs.settings_to_config("nope", {"name": "keep"})["name"] == "keep"
+
+
+def test_config_to_settings_defaults_on_empty_config():
+    prefs = bs.config_to_settings({})
+    assert prefs["name"] == "" and prefs["groups"] == ""
+    assert prefs["sound"] == "on"
+    assert prefs["rssi_floor"] == "Full range (default)"
+    assert prefs["banner_s"] == "5"
+    assert set(prefs) == set(bs.SETTINGS_KEYS)

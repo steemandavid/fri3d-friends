@@ -280,3 +280,86 @@ def test_shared_name_none_when_disjoint():
     table = build_own_table(["Alpha"])
     sid, sname = shared_name_for(table, [0x1234])
     assert sid is None and sname is None
+
+
+# ---------------------------------------------------------------------------
+# v0.9.0 — adopting a group from a friend after a Y-swap
+# ---------------------------------------------------------------------------
+
+def test_parse_groups_field_splits_and_trims():
+    assert bp.parse_groups_field("Alpha, Beta,  Gamma ") == ["Alpha", "Beta", "Gamma"]
+
+
+def test_parse_groups_field_drops_empties_and_junk():
+    assert bp.parse_groups_field("Alpha,,  , Beta,") == ["Alpha", "Beta"]
+    assert bp.parse_groups_field("") == []
+    for junk in (None, 42, ["Alpha"], {"a": 1}):
+        assert bp.parse_groups_field(junk) == []
+
+
+def test_parse_groups_field_single_group():
+    assert bp.parse_groups_field("Makerspace Baasrode") == ["Makerspace Baasrode"]
+
+
+def test_new_groups_from_skips_already_joined():
+    # Dedup is by normalize_group, so the peer's casing/spacing doesn't matter:
+    # a typo'd group hashes differently and silently never matches, which is
+    # exactly what adoption exists to prevent.
+    existing = ["Makerspace Baasrode"]
+    incoming = ["  makerspace baasrode ", "Fri3d Volunteers"]
+    assert bp.new_groups_from(existing, incoming) == ["Fri3d Volunteers"]
+
+
+def test_new_groups_from_dedups_within_incoming():
+    assert bp.new_groups_from([], ["A", "a", " A "]) == ["A"]
+
+
+def test_new_groups_from_empty_when_nothing_new():
+    assert bp.new_groups_from(["A", "B"], ["b", "a"]) == []
+    assert bp.new_groups_from(["A"], []) == []
+
+
+def test_new_groups_from_caps_at_max_groups():
+    incoming = ["G%d" % i for i in range(MAX_GROUPS + 3)]
+    assert len(bp.new_groups_from([], incoming)) == MAX_GROUPS
+
+
+def test_merge_groups_appends_new_only():
+    merged, dropped = bp.merge_groups(["Alpha"], ["Beta", " alpha "])
+    assert merged == ["Alpha", "Beta"]     # existing spelling preserved
+    assert dropped == 0
+
+
+def test_merge_groups_multi_select_from_one_peer():
+    # A friend in several groups: the user ticks two of them at once.
+    merged, dropped = bp.merge_groups(["Mine"], ["Alpha", "Beta"])
+    assert merged == ["Mine", "Alpha", "Beta"]
+    assert dropped == 0
+
+
+def test_merge_groups_caps_and_reports_dropped():
+    existing = ["G%d" % i for i in range(MAX_GROUPS - 1)]
+    merged, dropped = bp.merge_groups(existing, ["New1", "New2", "New3"])
+    assert len(merged) == MAX_GROUPS
+    assert merged[-1] == "New1"            # first ticked wins the last slot
+    assert dropped == 2                    # caller must surface this, not swallow it
+
+
+def test_merge_groups_full_existing_drops_everything():
+    existing = ["G%d" % i for i in range(MAX_GROUPS)]
+    merged, dropped = bp.merge_groups(existing, ["New"])
+    assert merged == existing
+    assert dropped == 1
+
+
+def test_merge_groups_trims_and_survives_junk():
+    merged, dropped = bp.merge_groups(["A"], ["  B  ", "", "   ", None, 42])
+    assert merged == ["A", "B"]
+    assert dropped == 0
+
+
+def test_merge_groups_result_still_hashes():
+    # The whole point: the merged list must drive the beacon.
+    merged, _ = bp.merge_groups(["Alpha"], ["Beta"])
+    ids, _ = hash_groups(merged)
+    assert ids == hash_groups(["Alpha", "Beta"])[0]

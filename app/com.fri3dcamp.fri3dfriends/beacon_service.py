@@ -26,6 +26,7 @@ if APP_DIR not in sys.path:
     sys.path.insert(0, APP_DIR)
 
 from ble_proximity import build_payload, build_own_table, hash_groups, ADV_MS
+from identity import auto_nickname
 
 try:
     from mpos import Service, TaskManager
@@ -41,11 +42,26 @@ POLL_MS = 5000                   # app-state / beacon-health check cadence
 REFRESH_POLLS = 6                # re-assert the adv every 6 polls (~30 s)
 
 
-def load_beacon_config(app_dir=APP_DIR):
+def _unique_id():
+    """The board's fused id bytes, or b"" off-device (host tests)."""
+    try:
+        import machine
+        return machine.unique_id()
+    except Exception:
+        return b""
+
+
+def load_beacon_config(app_dir=APP_DIR, uid=None):
     """Read config.json -> (own_ids, name), or None if unconfigured/unreadable.
 
-    Mirrors Fri3dFriends._load_config's rule: a badge with no name or no
-    valid group is "unconfigured" and must stay off the air (README promise).
+    Mirrors Fri3dFriends._load_config's rule, which since v0.9.0 is GROUPS ONLY:
+    an empty `name` falls back to the auto-nickname (identity.auto_nickname), so
+    the background beacon advertises the same name the app shows. A badge with no
+    valid group still stays off the air entirely (README promise) — groups are
+    never auto-assigned, so an un-set-up badge is silent, not spamming the camp.
+
+    `uid` is injectable for the host tests; on-device it comes from
+    machine.unique_id().
     """
     try:
         with open(app_dir + "/config.json") as f:
@@ -57,8 +73,10 @@ def load_beacon_config(app_dir=APP_DIR):
         return None
     name = cfg.get("name")
     name = name.strip() if isinstance(name, str) else ""
+    if not name:
+        name = auto_nickname(_unique_id() if uid is None else uid)
     ids = [gid for _, gid in build_own_table(groups)]
-    if not name or not ids:
+    if not ids:
         return None
     own_ids, _ = hash_groups(groups)
     return own_ids, name

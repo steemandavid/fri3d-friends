@@ -37,6 +37,12 @@ MAX_CONTACT_BYTES = 500         # cap on the contact envelope (fits one raised-M
 GATT_MTU = 515                  # request a large ATT MTU so the envelope fits one op
 MAX_CONTACTS = 200              # cap on the stored received-contact list
 
+# Contact fields that survive envelope truncation longest. "Groups" carries the
+# sender's group NAMES in cleartext so the receiver can offer to join one — see
+# build_contact_envelope() and ble_proximity.parse_groups_field().
+GROUPS_FIELD = "Groups"
+PROTECTED_FIELDS = (GROUPS_FIELD,)
+
 # Custom 128-bit UUIDs for the exchange GATT service (Nordic-UART-derived base).
 SVC_UUID   = "6e400010-b5a3-f393-e0a9-e50e24dcca9e"
 MYINFO_CHR = "6e400011-b5a3-f393-e0a9-e50e24dcca9e"   # READ: this badge's contact envelope
@@ -139,23 +145,36 @@ def _coerce_fields(contact):
     return out
 
 
-def build_contact_envelope(name, contact, max_bytes=MAX_CONTACT_BYTES):
+def build_contact_envelope(name, contact, max_bytes=MAX_CONTACT_BYTES,
+                           protect=PROTECTED_FIELDS):
     """Serialize this badge's identity + contact fields to compact JSON bytes.
 
     Shape: {"n": <name>, "c": {field: value, ...}}. If the encoding exceeds
-    `max_bytes`, contact fields are dropped (last-added first) until it fits; the
-    name is always kept. Returns bytes (valid JSON, <= max_bytes when possible).
+    `max_bytes`, contact fields are dropped until it fits; the name is always
+    kept. Returns bytes (valid JSON, <= max_bytes when possible).
+
+    Fields named in `protect` are dropped LAST, after every other field has
+    already gone. "Groups" is protected because the receiver uses it to offer
+    "join my friend's group" — the only zero-typing way to join a group. It used
+    to be the FIRST casualty: _outgoing_contact() adds it via setdefault(), so it
+    landed at the end of the dict, and this loop pops from the end. Worse,
+    MicroPython does not guarantee dict ordering, so which field died was not
+    even deterministic. Protecting it by NAME removes both problems.
     """
     import json
     name = name if isinstance(name, str) else ""
     fields = _coerce_fields(contact)
-    keys = list(fields.keys())
+    # keys.pop() drops from the END, so order it most-important FIRST: protected
+    # fields lead, everything else trails and is sacrificed first. Within each
+    # tier the original order is kept.
+    keys = [k for k in fields if k in protect]
+    keys += [k for k in fields if k not in protect]
     while True:
         env = {"n": name, "c": {k: fields[k] for k in keys}}
         data = json.dumps(env).encode("utf-8")
         if len(data) <= max_bytes or not keys:
             return data
-        keys.pop()          # drop the last field and retry
+        keys.pop()          # drop the least-important remaining field and retry
 
 
 def parse_contact_envelope(data):
@@ -309,6 +328,41 @@ class ContactExchange:
         service. NimBLE accepts that call only ONCE per power-on, so both
         features must register together or the second one EINVALs until reboot."""
         self._setup = setup
+
+    def radio_off(self):
+        """Power the radio down if WE brought it up (idempotent, never raises).
+
+        BLEProximity.end() early-returns when proximity never held the radio, so
+        on a badge with no groups — which never calls proximity.begin() — a
+        Y-swap or a setup session would otherwise leave BLE active after the app
+        paused, with nothing able to switch it off. That path became reachable in
+        v0.9.0, when a group-less badge gained the ability to swap in order to
+        adopt a friend's group.
+
+        active(False) clears NimBLE's gatts table, so drop the cached handles
+        too; ensure_radio() re-registers on the next use (re-registration IS
+        permitted after an active(False)/active(True) cycle — see below)."""
+        if not self._ble:
+            return
+        for fn in (lambda: self._ble.gap_scan(None),
+                   lambda: self._ble.gap_advertise(None)):
+            try:
+                fn()
+            except Exception:
+                pass
+        self._safe_disconnect()
+        try:
+            self._ble.active(False)
+        except Exception:
+            pass
+        self._svc_ready = False
+        self._mtu_set = False
+        if self._setup is not None:
+            try:
+                self._setup.on_radio_off()
+            except Exception:
+                pass
+        self._ble = None
 
     def ensure_radio(self, bluetooth):
         """Bring BLE up, set the MTU once, register both services once. The

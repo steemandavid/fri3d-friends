@@ -22,6 +22,13 @@ groups / contact fields and view/export received contacts from a phone or laptop
 network**: the phone talks Bluetooth straight to the badge. Scan the QR the badge
 shows to open the page; a 4-digit code on the badge gates access.
 
+**No phone? No internet? The badge works on its own.** A brand-new badge names
+itself (something like *Otter 42*) and goes straight to a working nametag — press
+**Y** on the first screen to skip setup. From there you can join a friend's group
+just by swapping with them (**Y**, no typing), or edit everything on the badge
+itself with **START**. The phone page is the comfortable option, never a
+requirement.
+
 It's **generic and redistributable**: any hackerspace/makerspace can flash it and
 set their own group name(s) and member name by editing one file (no code changes)
 — and it finds *their* people.
@@ -72,8 +79,14 @@ Edit **`/apps/com.fri3dcamp.fri3dfriends/config.json`**:
 - **`groups`** — one or more group names you belong to. Two badges alert on each
   other when their group lists **overlap** (any shared group). Each name is
   hashed before broadcast (never sent as text), so type it the same way on every
-  member's badge (case/whitespace are ignored). Up to ~5 groups.
-- **`name`** — your display name (shown large across the top of the screen).
+  member's badge (case/whitespace are ignored). Up to ~5 groups. Easiest to join
+  by **swapping with someone already in the group** (see below) — that copies the
+  name exactly and can't be typo'd.
+- **`name`** — your display name (shown large across the top of the screen). Leave
+  it empty and the badge picks a stable **auto-nickname** for itself (*Otter 42*,
+  *Badger 7*, …), derived from the chip's own id, so a fresh badge is usable
+  immediately. It's the same name every boot and is never written to the file, so
+  clearing `name` always brings it back.
 - **`rssi_floor`** — optional coarse range gate in dBm. Default **`-120`** =
   detect anything the radio can hear (full range). Raise it to only alert on
   badges that are close, e.g. `-80` (≈ same tent / ~10 m) or `-70` (≈ next to me).
@@ -90,6 +103,26 @@ Edit **`/apps/com.fri3dcamp.fri3dfriends/config.json`**:
   "value"` pairs (Discord, website, phone, bitcoin wallet, anything). This is the
   data sent to another badge when you both press **Y**. Easiest to edit from the
   **phone setup page** (below) rather than by hand.
+
+## Setup on the badge itself (no phone, no internet)
+
+Press **START** (or **A** on the first-run screen) to open the on-badge editor. It
+uses MicroPythonOS's own settings UI, so it works on **both badges** — tap-and-type
+on the 2026 badge's touchscreen, and button-navigated focus plus the on-screen
+keyboard on the button-only 2024 badge.
+
+| Setting | How you edit it |
+|---|---|
+| **Your name** | text |
+| **Groups** | text, comma-separated |
+| **Alert sound** | On / Off |
+| **Alert range** | pick from *Full range · Wide area · Same room / tent · Next to me · Touching* |
+| **Banner seconds** | slider, 1–15 s |
+
+Saving writes straight to `config.json` through the same validation the phone page
+uses, and applies immediately. Contact fields (Email, Discord, …) are **not** in
+the on-badge editor — there are arbitrarily many of them and they're long, so
+that's what the phone page is for.
 
 ## Setup / contacts from your phone (over Bluetooth, no keyboard, no WiFi)
 
@@ -135,18 +168,51 @@ banner confirms `Swapped with <name> ✓`; the received fields are stored on you
 badge with the date & time and are visible in the phone setup page's **Contacts**
 tab. (If nobody else is swapping in the window you get `No one swapping nearby`.)
 
+### Joining a friend's group by swapping
+
+The swap also carries the sender's **group name(s)**. If your friend is in a group
+you're not in, the badge asks right after the swap:
+
+```
+      Alice is in 3 groups
+      Join which?
+
+   >  [x] Makerspace Baasrode
+      [x] Fri3d Volunteers
+      [ ] Lockpicking Village
+
+   A: next   B: tick   Y: join
+```
+
+Everything offered starts ticked, so the usual case — a friend with one group — is
+a single **Y**. This is the easiest way to join a group and the most reliable:
+group names are matched exactly (after ignoring case and spacing), so a typo means
+you silently never match anyone. Swapping copies the name across character for
+character. It needs no phone, no internet and no typing, and it works on a badge
+that has never been set up at all.
+
+Your groups fill up at **5 maximum**; if more are ticked than fit, the badge joins
+what it can and says how many didn't. Newly joined groups go on the air right
+away, but the coloured **pills** only re-lay-out on the next app start.
+
 > Note: the screen shows your group(s) as **coloured pills** (colour derived from
 > the group name). The **!Fri3d Friends logo** (`fri3dfriends.png`) appears on the
 > startup splash. The app runs on **both the Fri3d 2024 and 2026 badges**
 > (auto-detected; force with the `board` key above).
 
-> **First-run / unconfigured:** if `name` is empty or `groups` is empty, the
-> badge shows a **"Configure me" screen with a QR code** of its Bluetooth setup
-> page and **does not run the proximity beacon/scan** — safer than beeping as a
-> blank badge. It *does* advertise as `Fri3d-XXXX` so a phone can connect and
-> configure it. Scan the QR, connect, enter the on-screen code, fill in your name
-> and group(s), and save: the badge **switches to the nametag and goes on the air
-> immediately** — no reboot needed.
+> **First-run:** with no `groups` set, the badge shows a **"Configure me" screen
+> with a QR code** of its Bluetooth setup page and **does not run the proximity
+> beacon/scan** — safer than beeping as a blank badge. It *does* advertise as
+> `Fri3d-XXXX` so a phone can connect and configure it. Three ways forward, and
+> only the first needs a phone:
+>
+> - **Scan the QR**, connect, enter the on-screen code, fill in your name and
+>   group(s), and save: the badge **switches to the nametag and goes on the air
+>   immediately** — no reboot needed.
+> - **A — set up on badge:** opens the on-badge editor (see below). No phone.
+> - **Y — skip for now:** drops straight to a working nametag under the badge's
+>   **auto-nickname**. Remembered, so you're not asked again. You can still join a
+>   group later by swapping with a friend, or set up via **B** / **START**.
 
 ## Controls
 
@@ -156,7 +222,10 @@ tab. (If nobody else is swapping in the window you get `No one swapping nearby`.
 | **B** | Short press: mute / unmute the alert buzzer (saved). **Hold ~1.5 s:** open the phone-setup window (Bluetooth) |
 | **Y** | Swap contacts with another badge nearby (they press **Y** too, within ~5 s) |
 | **X** | *(handled by the OS)* quit to the launcher / OS menu |
-| **START** | *(unused)* |
+| **START** | Open the **on-badge settings editor** (name, groups, sound, alert range, banner) |
+
+While the "join a group?" prompt is up after a swap, the buttons are **A: next ·
+B: tick · Y: join**.
 
 At launch a **3-second splash** shows the app name, version, "by David Steeman"
 and the Makerspace Baasrode logo, then the nametag appears.
@@ -214,7 +283,8 @@ until you open the app — but *they* see *you*.
 app/com.fri3dcamp.fri3dfriends/   → the app (deploy to /apps/…)
   MANIFEST.JSON, fri3d_friends.py, ble_proximity.py (proximity beacon),
   beacon_service.py (background beacon boot service),
-  contact_exchange.py (Y-button GATT swap), ble_setup.py (Web-Bluetooth setup GATT service),
+  contact_exchange.py (Y-button GATT swap), ble_setup.py (Web-Bluetooth setup GATT
+  service + on-badge editor mapping), identity.py (auto-nickname),
   config.json, fri3dfriends.png (splash logo), icon_64x64.png (launcher icon),
   montserrat_name.ttf (42px name font)
 docs/setup/index.html   → the Web-Bluetooth setup page (served via GitHub Pages)
@@ -258,10 +328,21 @@ on the next AppStore refresh. See the MicroPythonOS
 > the `project-summaries` index but the card is dropped). To ship a new version
 > cleanly, prefer deleting + recreating the project from the fresh `.mpk` (it
 > re-extracts a matching `metadata.json` + icon), or manually re-upload both the
-> icon and a corrected `metadata.json` (it needs an `"icon_map": {"64x64":
-> "icon_64x64.png"}` entry). Sanity-check the live state via
-> `https://badgehub.eu/api/v3/project-summaries` and
-> `.../api/v3/projects/<slug>`.
+> icon and a corrected `metadata.json`.
+>
+> **Mind the icon filename — hyphen, not underscore.** Inside the `.mpk` the
+> launcher icon is `icon_64x64.png` (underscore) and must stay that way. But
+> BadgeHub stores the *project-level* icon as **`icon-64x64.png`** (hyphen), and
+> it builds the AppStore icon URL verbatim from the `icon_map` value — so
+> `metadata.json` needs `"icon_map": {"64x64": "icon-64x64.png"}`. Pointing it at
+> the underscore name yields a 404 icon URL: the app lists in the AppStore with a
+> broken/absent icon, yet looks fine once installed (the badge reads the icon from
+> inside the package). That was
+> [issue #1](https://github.com/steemandavid/fri3d-friends/issues/1).
+>
+> Sanity-check the live state via `https://badgehub.eu/api/v3/project-summaries`
+> and `.../api/v3/projects/<slug>` — and actually fetch the advertised icon URL,
+> confirming it returns **200** and not a 404 JSON body.
 
 The logo/icon are generated by `tools/make_hybrid_logo.py`; the 42px name font is
 a subset Montserrat TTF (`montserrat_name.ttf`).

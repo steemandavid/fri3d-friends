@@ -33,10 +33,15 @@ import mpos
 
 from ble_proximity import (
     BLEProximity, build_own_table, hash_groups, fnv1a_16,
-    EVICT_MS, RSSI_FLOOR_DEFAULT,
+    parse_groups_field, new_groups_from, merge_groups,
+    EVICT_MS, RSSI_FLOOR_DEFAULT, MAX_GROUPS,
 )
-from contact_exchange import ContactExchange, add_received
-from ble_setup import SetupService, setup_name, SETUP_WINDOW_MS
+from contact_exchange import ContactExchange, add_received, GROUPS_FIELD
+from ble_setup import (
+    SetupService, setup_name, SETUP_WINDOW_MS,
+    config_to_settings, settings_to_config, RANGE_PRESETS, SETTINGS_KEYS,
+)
+from identity import auto_nickname
 
 FULLNAME = "com.fri3dcamp.fri3dfriends"
 
@@ -45,7 +50,7 @@ FULLNAME = "com.fri3dcamp.fri3dfriends"
 SETUP_URL_BASE = "https://steemandavid.github.io/fri3d-friends/setup/"
 
 # A configured badge opens a setup window with a LONG press of B (short press
-# still toggles mute). START is intentionally unused / not present on both boards.
+# still toggles mute). START opens the on-badge settings editor (v0.9.0).
 SETUP_HOLD_MS = 1500
 
 
@@ -69,6 +74,21 @@ def _asset_bytes(name):
         except Exception:
             pass
     return None
+
+
+def _unique_id():
+    """The board's fused id bytes (for the auto-nickname), or b"" if unreadable.
+
+    machine.unique_id() needs no radio, unlike the BLE MAC behind the
+    `Fri3d-XXXX` setup id -- and a fresh badge with no groups never powers the
+    radio at all. See identity.py for why the two names look deliberately
+    different rather than nearly-but-not-quite the same.
+    """
+    try:
+        from machine import unique_id
+        return unique_id()
+    except Exception:
+        return b""
 
 
 def _atomic_write_json(path, obj):
@@ -268,6 +288,21 @@ class Fri3dFriends(Activity):
         self._qr_last = None
         self._setup_widgets = []
         self._reload_pending = False
+        self._setup_skipped = False       # user chose "skip for now" on Configure-me
+        # Post-swap "join my friend's group?" prompt (v0.9.0). Deferred out of
+        # _do_exchange because button edges are swallowed while _exchanging.
+        self._pending_adopt = None        # (peer_name, [group, ...]) once a swap offers new groups
+        self._adopt_groups = []           # the offered groups while the prompt is up
+        self._adopt_ticked = []           # parallel list of bools
+        self._adopt_row = 0               # highlighted row
+        self._adopt_open = False
+        self._adopt_panel = None          # create-once prompt overlay
+        self._adopt_title_lbl = None
+        self._adopt_rows = []
+        self._adopt_last = None
+        # On-badge settings editor (MicroPythonOS SettingsActivity).
+        self._settings_prefs = None
+        self._settings_pending = False    # harvest prefs on the next onResume
         self._splash_scr = None
         self._splash_logo = None
         self._splash_task = None
@@ -318,11 +353,23 @@ class Fri3dFriends(Activity):
         if not isinstance(contact, dict):
             contact = {}
         cfg["contact"] = contact
+        # Auto-nickname (v0.9.0): a badge with no name still shows one, so it is
+        # useful straight out of the box instead of being inert until someone
+        # with an internet-connected phone helps (issue #4). Derived, never
+        # written to flash: auto_nickname() is pure and deterministic, so the
+        # name is stable across reboots and can never fight a phone-side save.
+        if not cfg["name"]:
+            cfg["name"] = auto_nickname(_unique_id())
         self._contact = contact
         self._config = cfg
         self._own_table = build_own_table(cfg["groups"])
         ids = [gid for _, gid in self._own_table]
-        self._unconfigured = (not cfg["name"]) or (not ids)
+        # The gate is now GROUPS ONLY -- the name is always populated. Groups are
+        # never auto-assigned (a shared default would make every badge match every
+        # other badge and turn the arrival alert into camp-wide noise), so "no
+        # group" still means "stay off the air".
+        self._unconfigured = not ids
+        self._setup_skipped = bool(cfg.get("setup_skipped"))
 
     def _save_config(self, key, value):
         try:
@@ -339,7 +386,15 @@ class Fri3dFriends(Activity):
         self._btn_pins = {}
         self._pin_prev = {}
         if self._is_2026:
-            return  # 2026 reads via mpos.io_expander; no raw pins
+            # 2026 reads A/B/Y via mpos.io_expander -- but START is plain GPIO 0
+            # on BOTH boards (DESIGN.md "2024 vs 2026"), and the expander map has
+            # no START index, so claim that one pin here too.
+            try:
+                self._btn_pins["p%d" % START_PIN] = Pin(START_PIN, Pin.IN, Pin.PULL_UP)
+                self._pin_prev[START_PIN] = 1
+            except Exception:
+                pass
+            return
         for gp in BTN_2024_DIAG:
             try:
                 self._btn_pins["p%d" % gp] = Pin(gp, Pin.IN, Pin.PULL_UP)
@@ -348,6 +403,13 @@ class Fri3dFriends(Activity):
                 pass
 
     def _held(self, name):
+        if name == "start":
+            # Raw GPIO 0, active-low, on both boards.
+            p = self._btn_pins.get("p%d" % START_PIN)
+            try:
+                return p is not None and p.value() == 0
+            except Exception:
+                return False
         if self._is_2026:
             idx = BTN_2026_EXP.get(name)
             if idx is None:
@@ -482,6 +544,10 @@ class Fri3dFriends(Activity):
         return s if len(s) <= n else s[: n - 1] + "…"
 
     def _controls_text(self):
+        # Blank on the Configure-me screen — none of these apply there, and that
+        # layout puts its own "A: set up on badge / Y: skip for now" hint here.
+        if self._show_setup_screen():
+            return ""
         # "B:mute" while unmuted, "B:unmute" while muted.
         return "A:list  B:%s  Y:swap" % ("mute" if self._sound else "unmute")
 
@@ -682,23 +748,35 @@ class Fri3dFriends(Activity):
         # Widgets shared by both layouts, built exactly once. The banner is
         # deliberately built LAST so it z-stacks above everything; if the
         # nametag is built later (first-time configure), it is re-raised.
-        if self._unconfigured:
+        if self._show_setup_screen():
             self._build_setup(scr)
         else:
             self._build_nametag(scr)
         self._clock_lbl = self._label(scr, CLOCK_X, CLOCK_Y, "--:--", COL_BATT,
                                       font=lv.font_montserrat_14)
-        # Footer hint (was the WiFi-portal URL): configured badges get a phone
-        # setup reachable by holding B. Blank on the Configure-me screen (it
-        # already explains itself).
-        hint = "" if self._unconfigured else "hold B: phone setup"
+        # Footer hint (was the WiFi-portal URL). Blank on the Configure-me
+        # screen, which already explains itself.
+        hint = "" if self._show_setup_screen() else self._hint_text()
         self._setup_hint_lbl = self._label(scr, 0, CONTROLS_TOP - 14, hint, COL_BATT,
                                            font=lv.font_montserrat_12, center=True)
         self._controls_lbl = self._label(scr, 0, CONTROLS_TOP, self._controls_text(),
                                          COL_NONE, font=lv.font_montserrat_12, center=True)
-        if not self._unconfigured:
+        if not self._show_setup_screen():
             self._build_setup_overlay(scr)
+        self._build_adopt_panel(scr)
         self._build_banner(scr)
+
+    def _hint_text(self):
+        """The nametag footer hint: BOTH ways to reach setup. START is otherwise
+        undiscoverable, and it is the only route that needs no phone at all."""
+        return "hold B: phone setup    START: on badge"
+
+    def _show_setup_screen(self):
+        """True when the blocking Configure-me screen should be shown: no group
+        AND the user hasn't chosen "skip for now" (persisted as `setup_skipped`).
+        A skipped badge falls through to a normal nametag under its auto-nickname
+        — the point of issue #4 — and can still set up later via B / START."""
+        return self._unconfigured and not self._setup_skipped
 
     def _build_setup(self, scr):
         # First-run "Configure me" layout. Every widget is tracked in
@@ -707,14 +785,19 @@ class Fri3dFriends(Activity):
         # nametag in place. No WiFi needed: a phone connects over Bluetooth to
         # the static Web-Bluetooth page (SETUP_URL_BASE); the QR carries the URL
         # incl. ?badge=XXXX so the browser chooser shows exactly this badge.
-        info = self._label(scr, 0, 210, "starting Bluetooth…", COL_NEAR,
+        info = self._label(scr, 0, 206, "starting Bluetooth…", COL_NEAR,
                            font=lv.font_montserrat_16, center=True)
         self._setup_info_lbl = info
         self._setup_widgets = [
-            self._label(scr, 0, 6, "Configure me", COL_HINT, font=lv.font_montserrat_24, center=True),
-            self._label(scr, 0, 34, "scan with your phone (Bluetooth)", COL_NONE,
+            self._label(scr, 0, 4, "Configure me", COL_HINT, font=lv.font_montserrat_24, center=True),
+            self._label(scr, 0, 30, "scan with your phone (Bluetooth)", COL_NONE,
                         font=lv.font_montserrat_14, center=True),
             info,
+            # No phone / no internet? Two ways out (issue #4). A opens the
+            # on-badge editor; Y drops straight to the nametag under the
+            # auto-nickname and remembers the choice.
+            self._label(scr, 0, CONTROLS_TOP, "A: set up on badge   Y: skip for now",
+                        COL_HINT, font=lv.font_montserrat_12, center=True),
         ]
         # QR of the setup-page URL, on a white tile (the margin doubles as the
         # QR quiet zone). Hidden until the badge id is known (radio up); fed by
@@ -766,6 +849,48 @@ class Fri3dFriends(Activity):
                                               font=lv.font_montserrat_12, center=True)
         ov.add_flag(lv.obj.FLAG.HIDDEN)
         self._overlay = ov
+
+    def _build_adopt_panel(self, scr):
+        # Post-swap "join my friend's group(s)?" prompt. Same create-once/hide
+        # discipline as _build_setup_overlay: MAX_GROUPS rows are built now and
+        # only ever set_text()'d + hidden/shown — never created or deleted per
+        # prompt (deleting live widgets hard-crashes this build).
+        #
+        # The tick is drawn as "[x]"/"[ ]" text rather than an lv.checkbox: the
+        # app registers no LVGL input device (every button is polled in _loop),
+        # so a real widget would need a focus group that doesn't exist.
+        pw = W - 24
+        pn = self._rbox(scr, (W - pw) // 2, 24, pw, H - 56, COL_PANEL, radius=10)
+        try:
+            pn.set_style_border_width(2, 0)
+            pn.set_style_border_color(_col(COL_NEAR), 0)
+            pn.set_style_pad_all(4, 0)
+        except Exception:
+            pass
+        self._adopt_title_lbl = lv.label(pn)
+        self._adopt_title_lbl.set_text("")
+        self._adopt_title_lbl.set_style_text_color(_col(COL_NEAR), 0)
+        self._adopt_title_lbl.set_style_text_font(lv.font_montserrat_16, 0)
+        self._adopt_title_lbl.set_pos(6, 4)
+        self._adopt_rows = []
+        for i in range(MAX_GROUPS):
+            row = lv.label(pn)
+            row.set_text("")
+            row.set_style_text_color(_col(COL_NONE), 0)
+            row.set_style_text_font(lv.font_montserrat_14, 0)
+            row.set_pos(6, 30 + i * 20)
+            try:
+                row.set_width(pw - 16)
+                row.set_long_mode(lv.label.LONG_MODE.DOT)
+            except Exception:
+                pass
+            row.add_flag(lv.obj.FLAG.HIDDEN)
+            self._adopt_rows.append(row)
+        # y/w are panel-relative (panel is pw x H-56).
+        self._label(pn, 0, (H - 56) - 26, "A: next   B: tick   Y: join", COL_HINT,
+                    font=lv.font_montserrat_12, center=True, w=pw - 16)
+        pn.add_flag(lv.obj.FLAG.HIDDEN)
+        self._adopt_panel = pn
 
     def _build_nametag(self, scr):
         cfg = self._config
@@ -951,16 +1076,23 @@ class Fri3dFriends(Activity):
         # (blocking) ntptime.settime() call never hitches app launch.
         self._next_ntp_ms = time.ticks_add(time.ticks_ms(), NTP_RESYNC_MS)
         self._set_brightness(255)
+        # Returning from the on-badge settings editor (a sub-Activity pauses us).
+        if self._settings_pending:
+            self._harvest_settings()
         if not self._unconfigured:
             try:
                 self._ble.begin(self._config["groups"], self._config["name"],
                                 self._config["rssi_floor"])
             except Exception:
                 pass
-        else:
-            # Unconfigured badge, app foreground: run the BLE setup service so a
-            # phone can configure us over Bluetooth (no proximity radio runs).
+        elif self._show_setup_screen():
+            # Configure-me on screen: run the BLE setup service so a phone can
+            # configure us over Bluetooth (no proximity radio runs).
             self._start_configure_setup()
+        # else: a SKIPPED, group-less badge — no proximity beacon (nothing to
+        # match on) and no standing setup advertising. The radio comes up on
+        # demand for a Y-swap or a held-B setup window, and _teardown_ble()
+        # powers it back down.
         if not self._entered and self._splash_task is None:
             self._splash_task = TaskManager.create_task(self._splash_then_enter())
         self._task = TaskManager.create_task(self._loop())
@@ -1025,6 +1157,13 @@ class Fri3dFriends(Activity):
     def _teardown_ble(self):
         try:
             self._ble.end()
+        except Exception:
+            pass
+        # proximity.end() only powers the radio down if PROXIMITY owned it. A
+        # badge with no groups never calls begin(), so a swap or setup session
+        # is the only thing that ever brought BLE up — hand it the off switch.
+        try:
+            self._exch.radio_off()
         except Exception:
             pass
 
@@ -1100,6 +1239,40 @@ class Fri3dFriends(Activity):
         # suppressed during a swap or an open setup window (a WS2812 LED write or
         # an lvgl toggle would starve the short GATT link — field bug 2).
         busy = self._exchanging or self._setup_open or self._setup_task is not None
+
+        # --- prompts, handled BEFORE the busy gate ------------------------
+        # Both of these live on screens where `busy` is (or has just been) True,
+        # so they would never see an edge if they waited their turn below.
+        if self._adopt_open:
+            self._handle_adopt_buttons()
+            return
+        if self._pending_adopt is not None and not self._exchanging:
+            # The swap task has finished; safe to prompt now.
+            self._open_adopt()
+            return
+        if self._show_setup_screen():
+            # Configure-me: A opens the on-badge editor, Y skips to the nametag.
+            # No phone or internet needed for either (issue #4).
+            # Poll BOTH every tick — `or` would short-circuit and leave the
+            # other button's edge state stale, faking a press on a later tick.
+            a_ev = self._edge("a")
+            y_ev = self._edge("y")
+            if a_ev:
+                self._wake()
+                self._open_settings()
+            elif y_ev:
+                self._wake()
+                self._skip_setup()
+            self._handle_b_button(True)      # keep press state coherent, no action
+            return
+        if self._edge("start"):
+            # START is otherwise unused on both boards, and is plain GPIO 0 on
+            # each — the one free gesture for the on-badge editor.
+            if not busy:
+                self._wake()
+                self._open_settings()
+                return
+
         self._handle_b_button(busy)
         for name in ("a", "y"):
             ev = self._edge(name)
@@ -1114,11 +1287,12 @@ class Fri3dFriends(Activity):
                 continue
             self._wake()
             if ev == "y":
-                # An unconfigured badge has no BLE running (proximity.begin() was
-                # skipped); firing a swap would activate a radio no teardown path
-                # deactivates. Match the README: unconfigured badges don't swap.
-                if not self._unconfigured:
-                    self._exch_task = TaskManager.create_task(self._do_exchange())
+                # A group-less badge MAY swap: that is how it adopts a friend's
+                # group without typing (v0.9.0). ContactExchange.ensure_radio()
+                # brings the radio up on demand and _teardown_ble() now calls
+                # exch.radio_off(), so there is a teardown path even when
+                # proximity.begin() was never called.
+                self._exch_task = TaskManager.create_task(self._do_exchange())
             elif ev == "a":
                 self._detail = not self._detail
                 if self._detail_panel is not None:
@@ -1139,7 +1313,7 @@ class Fri3dFriends(Activity):
             self._b_long = False
         elif held and prev_down:
             # Long-press threshold: open the setup window once, mid-hold.
-            if (not self._b_long and not busy and not self._unconfigured and
+            if (not self._b_long and not busy and not self._show_setup_screen() and
                     time.ticks_diff(now, self._b_down_ms) >= SETUP_HOLD_MS):
                 self._b_long = True
                 self._wake()
@@ -1183,7 +1357,20 @@ class Fri3dFriends(Activity):
             self._fire_alert(self._alert_names)
 
     def _refresh_nearby(self):
-        if self._unconfigured or self._friends_lbl is None:
+        if self._friends_lbl is None:
+            return
+        if self._unconfigured:
+            # Skipped, group-less badge: the nametag works, but there is nothing
+            # to match on yet. Stand in for the friends list with the two ways to
+            # fix that — neither of which needs a phone or the internet.
+            new_txt = "no group yet — press Y near a friend,\nor START to set up"
+            if new_txt != self._friends_last:
+                try:
+                    self._friends_lbl.set_text(new_txt)
+                    self._friends_lbl.set_style_text_color(_col(COL_HINT), 0)
+                except Exception:
+                    pass
+                self._friends_last = new_txt
             return
         peers = self._ble.current_peers()
         n = len(peers)
@@ -1310,10 +1497,14 @@ class Fri3dFriends(Activity):
         # What the swap sends alongside the name. Auto-include the badge's own
         # group(s) as a contact field (a user-defined field of the same name in
         # `contact` wins). Empty values are omitted.
+        #
+        # The receiver uses this field to offer "join my friend's group" — the
+        # only zero-typing way into a group — so build_contact_envelope() treats
+        # GROUPS_FIELD as protected and drops it LAST under size pressure.
         out = dict(self._contact) if isinstance(self._contact, dict) else {}
         groups = [g for g in (self._config.get("groups") or []) if g]
         if groups:
-            out.setdefault("Groups", ", ".join(groups))
+            out.setdefault(GROUPS_FIELD, ", ".join(groups))
         return out
 
     async def _do_exchange(self):
@@ -1338,6 +1529,7 @@ class Fri3dFriends(Activity):
                 self._flash_leds(*_hsv(180))
                 TaskManager.create_task(self._sting(660))
                 self._show_banner("Swapped with %s ✓" % (rec.get("name") or "?"))
+                self._offer_groups(rec)
             else:
                 self._show_banner("No one swapping nearby")
         except asyncio.CancelledError:
@@ -1369,6 +1561,285 @@ class Fri3dFriends(Activity):
             _atomic_write_json(self._contacts_path(), store)
         except Exception:
             pass
+
+    # --------------------------------------------------------- adopt a friend's group
+    def _offer_groups(self, rec):
+        """Queue the "join my friend's group(s)?" prompt after a swap.
+
+        Only QUEUES it: we're still inside _do_exchange with self._exchanging
+        True, and _handle_buttons swallows every edge while busy, so prompting
+        here would render a panel nobody could answer. The main loop picks the
+        flag up once the swap task has finished — same deferral idiom as
+        _reload_pending / _pending_begin.
+        """
+        # Clear first: a swap that offers nothing new must not leave an EARLIER
+        # swap's offer queued, or the prompt would pop up naming the wrong peer.
+        self._pending_adopt = None
+        try:
+            fields = rec.get("fields") or {}
+            offered = parse_groups_field(fields.get(GROUPS_FIELD))
+            fresh = new_groups_from(self._config.get("groups"), offered)
+            if fresh:
+                self._pending_adopt = (rec.get("name") or "?", fresh)
+        except Exception:
+            pass
+
+    def _open_adopt(self):
+        peer, groups = self._pending_adopt
+        self._pending_adopt = None
+        if not groups or self._adopt_panel is None:
+            return
+        self._adopt_groups = groups[:MAX_GROUPS]
+        # Pre-ticked: the common case is a friend with one group, which should
+        # then be a single Y press. Unticking is the exception.
+        self._adopt_ticked = [True] * len(self._adopt_groups)
+        self._adopt_row = 0
+        self._adopt_open = True
+        self._adopt_last = None
+        n = len(self._adopt_groups)
+        try:
+            self._adopt_title_lbl.set_text(
+                "%s is in %d groups\nJoin which?" % (peer, n) if n > 1
+                else "Join %s's group?" % peer)
+        except Exception:
+            pass
+        self._refresh_adopt()
+        try:
+            self._adopt_panel.remove_flag(lv.obj.FLAG.HIDDEN)
+            self._adopt_panel.move_foreground()
+        except Exception:
+            pass
+        # Keep the banner above the panel (it was built after the panel).
+        if self._banner_bg is not None:
+            try:
+                self._banner_bg.move_foreground()
+            except Exception:
+                pass
+
+    def _refresh_adopt(self):
+        state = (self._adopt_row, tuple(self._adopt_ticked))
+        if state == self._adopt_last:
+            return
+        self._adopt_last = state
+        for i, row in enumerate(self._adopt_rows):
+            if i >= len(self._adopt_groups):
+                try:
+                    row.add_flag(lv.obj.FLAG.HIDDEN)
+                except Exception:
+                    pass
+                continue
+            try:
+                row.remove_flag(lv.obj.FLAG.HIDDEN)
+                row.set_text("%s[%s] %s" % (
+                    ">" if i == self._adopt_row else " ",
+                    "x" if self._adopt_ticked[i] else " ",
+                    self._adopt_groups[i]))
+                row.set_style_text_color(
+                    _col(COL_NEAR if i == self._adopt_row else COL_NONE), 0)
+            except Exception:
+                pass
+
+    def _close_adopt(self):
+        self._adopt_open = False
+        self._adopt_groups = []
+        self._adopt_ticked = []
+        try:
+            self._adopt_panel.add_flag(lv.obj.FLAG.HIDDEN)
+        except Exception:
+            pass
+        # A long B press is detected across ticks; if the user was still holding
+        # B when the prompt closed, clear that state or it falls straight through
+        # into the phone-setup window.
+        self._b_down_ms = None
+        self._b_long = False
+
+    def _handle_adopt_buttons(self):
+        """Drive the prompt. Returns True if it consumed this tick's input.
+
+        B is read here with _edge() instead of _handle_b_button() (which is
+        skipped while the prompt is up): the two keep independent state
+        (self._prev vs _b_down_ms/_b_long), so they can't corrupt each other.
+        """
+        if self._edge("a"):
+            self._wake()
+            if self._adopt_groups:
+                self._adopt_row = (self._adopt_row + 1) % len(self._adopt_groups)
+            self._refresh_adopt()
+            return True
+        if self._edge("b"):
+            self._wake()
+            if self._adopt_groups:
+                i = self._adopt_row
+                self._adopt_ticked[i] = not self._adopt_ticked[i]
+            self._refresh_adopt()
+            return True
+        if self._edge("y"):
+            self._wake()
+            chosen = [g for g, t in zip(self._adopt_groups, self._adopt_ticked) if t]
+            self._close_adopt()
+            if chosen:
+                self._adopt_groups_now(chosen)
+            return True
+        return False
+
+    def _adopt_groups_now(self, chosen):
+        """Join `chosen`, persist, and bring the beacon up under the new groups."""
+        before = list(self._config.get("groups") or [])
+        merged, dropped = merge_groups(before, chosen)
+        added = merged[len(before):]          # what actually fit, in order
+        if not added:
+            if dropped:
+                self._show_banner("Already in %d groups (max %d)"
+                                  % (len(before), MAX_GROUPS))
+            return
+        self._save_config("groups", merged)
+        was_off = self._unconfigured
+        self._load_config()
+        # A Configure-me badge can't reach a swap (Y is intercepted there), so in
+        # practice the nametag already exists — but the call is idempotent, so be
+        # safe rather than clever.
+        self._swap_setup_for_nametag()
+        # Go on the air. If a beacon was already running it must be restarted to
+        # advertise the new group set: end() then let the main loop begin() once
+        # any setup session is down — the same active(False)/begin() cycle
+        # onPause/onResume performs routinely, and ensure_radio()'s stale-handle
+        # self-heal covers the GATT table it clears.
+        if not was_off:
+            try:
+                self._ble.end()
+            except Exception:
+                pass
+        self._pending_begin = True
+        joined = ", ".join(added)
+        if dropped:
+            self._show_banner("Joined %s (%d didn't fit, max %d)"
+                              % (joined, dropped, MAX_GROUPS))
+        else:
+            self._show_banner("Joined %s ✓ — restart app for pills" % joined)
+
+    # --------------------------------------------------------- on-badge settings editor
+    def _skip_setup(self):
+        """"Skip for now" on Configure-me: drop to the nametag under the
+        auto-nickname. Persisted, so the badge doesn't nag on every boot — the
+        "no group yet" hint on the nametag is a gentler standing reminder."""
+        self._setup_skipped = True
+        self._save_config("setup_skipped", True)
+        # Release the radio the Configure-me screen was advertising on. Nothing
+        # else wants it on a group-less badge (no beacon), and leaving NimBLE
+        # powered for the rest of the session is a pointless battery drain.
+        # Same order onPause uses: stop the session, then power down.
+        self._stop_setup()
+        try:
+            self._exch.radio_off()
+        except Exception:
+            pass
+        self._swap_setup_for_nametag()
+        if self._controls_lbl is not None:
+            try:
+                self._controls_lbl.set_text(self._controls_text())
+            except Exception:
+                pass
+        self._show_banner("You can set up later: hold B, or START")
+
+    def _open_settings(self):
+        """Launch the OS settings editor for our config (no phone, no internet).
+
+        MicroPythonOS owns the input modality here: touch on the 2026 badge,
+        button-navigated focus + the LVGL keyboard on the button-only 2024 one —
+        which is why this needs no board branching. Imported lazily so an older
+        OS build without SettingsActivity degrades to "the button does nothing"
+        rather than breaking the app.
+
+        SharedPreferences is used purely as a TRANSFER BUFFER: config.json stays
+        the single source of truth, seeded here and harvested in onResume.
+        """
+        try:
+            from mpos import Intent, SettingsActivity
+            try:
+                from mpos import SharedPreferences
+            except ImportError:          # docs show both spellings
+                from mpos.config import SharedPreferences
+        except Exception:
+            self._show_banner("On-badge setup needs a newer OS")
+            return
+        try:
+            prefs = SharedPreferences(FULLNAME)
+            seed = config_to_settings(self._config)
+            editor = prefs.edit()
+            for k, v in seed.items():
+                editor.put_string(k, v)
+            editor.commit()
+            self._settings_prefs = prefs
+            self._settings_pending = True
+            intent = Intent(activity_class=SettingsActivity)
+            intent.putExtra("prefs", prefs)
+            intent.putExtra("settings", [
+                {"title": "Your name", "key": "name",
+                 "placeholder": "Shown big on the badge"},
+                {"title": "Groups", "key": "groups",
+                 "placeholder": "Comma-separated, e.g. Makerspace Baasrode",
+                 "note": "Everyone in a group must type it the SAME way."},
+                {"title": "Alert sound", "key": "sound", "ui": "radiobuttons",
+                 "ui_options": [("On", "on"), ("Off", "off")]},
+                {"title": "Alert range", "key": "rssi_floor", "ui": "dropdown",
+                 "ui_options": [(label, label) for label, _ in RANGE_PRESETS]},
+                {"title": "Banner seconds", "key": "banner_s", "ui": "slider",
+                 "min": 1, "max": 15},
+            ])
+            self.startActivity(intent)
+        except Exception:
+            self._settings_pending = False
+            self._show_banner("Couldn't open on-badge setup")
+
+    def _harvest_settings(self):
+        """Merge the editor's prefs back into config.json and apply.
+
+        Runs on the onResume after the editor Activity finishes. Every value
+        goes through settings_to_config -> sanitize_config, the same validator
+        the phone page uses, so a partial or junk harvest can't corrupt or wipe
+        anything: absent keys fall back to the on-disk config.
+        """
+        self._settings_pending = False
+        prefs = self._settings_prefs
+        self._settings_prefs = None
+        if prefs is None:
+            return
+        try:
+            got = {}
+            for k in SETTINGS_KEYS:
+                try:
+                    v = prefs.get_string(k, None)
+                except Exception:
+                    v = None
+                if v is not None:
+                    got[k] = v
+            if not got:
+                return
+            try:
+                with open(APP_DIR + "/config.json", "r") as f:
+                    base = json.load(f)
+            except Exception:
+                base = {}
+            cfg = settings_to_config(got, base)
+            _atomic_write_json(APP_DIR + "/config.json", cfg)
+        except Exception:
+            self._show_banner("Couldn't save settings")
+            return
+        # Reload NOW, not via _reload_pending alone: this runs inside onResume,
+        # just before onResume decides whether to begin() the beacon and with
+        # which groups. Deferring the reload to the main loop would start the
+        # radio on the pre-edit group set and leave it stale until an app
+        # restart — exactly the thing someone editing their groups is fixing.
+        was_setup_screen = self._show_setup_screen()
+        try:
+            self._load_config()
+        except Exception:
+            pass
+        if was_setup_screen and not self._show_setup_screen():
+            self._swap_setup_for_nametag()
+        # Still hand off to the usual path for the in-place label refresh and
+        # the "Config saved" banner (idempotent — it reloads the config again).
+        self._reload_pending = True
 
     # ------------------------------------------------------------------ BLE phone setup
     def _setup_url(self, bid):
@@ -1406,8 +1877,10 @@ class Fri3dFriends(Activity):
     def _open_setup_window(self):
         # Configured badge: open a bounded (SETUP_WINDOW_MS) setup window. The
         # session suspends the proximity radio and resumes it on close.
-        if (self._unconfigured or self._exchanging or self._setup_open or
-                self._setup_task is not None):
+        # A skipped, group-less badge MAY open it — that is one of the two ways
+        # back to setup after "skip for now" (the other is START).
+        if (self._show_setup_screen() or self._exchanging or self._setup_open or
+                self._setup_task is not None or self._adopt_open):
             return
         self._setup_open = True
         self._setup_win_deadline = time.ticks_add(time.ticks_ms(), SETUP_WINDOW_MS)
@@ -1602,6 +2075,12 @@ class Fri3dFriends(Activity):
         # build) and create the nametag widgets next to them. No
         # setContentView either: re-submitting the screen pushes the OS stack
         # and re-fires this Activity's own onPause/onResume mid-update.
+        #
+        # IDEMPOTENT: since v0.9.0 there are three callers (a phone save, "skip
+        # for now", and adopting a group after a swap) and they can follow each
+        # other. Running twice would build a SECOND nametag on top of the first.
+        if self._name_lbl is not None:
+            return
         for wdg in self._setup_widgets:
             try:
                 wdg.add_flag(lv.obj.FLAG.HIDDEN)
@@ -1619,7 +2098,7 @@ class Fri3dFriends(Activity):
         # setup-window overlay were never built — build them now (create-once).
         if self._setup_hint_lbl is not None:
             try:
-                self._setup_hint_lbl.set_text("hold B: phone setup")
+                self._setup_hint_lbl.set_text(self._hint_text())
             except Exception:
                 pass
         if self._overlay is None:

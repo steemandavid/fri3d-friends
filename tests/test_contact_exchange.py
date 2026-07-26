@@ -187,3 +187,43 @@ def test_add_caps_and_evicts_oldest():
     assert len(store) == 3
     names = [r["name"] for r in store]
     assert names == ["n2", "n3", "n4"]      # two oldest-appended dropped, order kept
+
+
+# ---------------------------------------------------------------------------
+# v0.9.0 — "Groups" survives envelope truncation
+# ---------------------------------------------------------------------------
+
+def test_groups_field_survives_truncation():
+    # The receiver needs "Groups" to offer "join my friend's group" -- the only
+    # zero-typing path into a group. Before v0.9.0 it was appended last by
+    # _outgoing_contact's setdefault and was therefore the FIRST field dropped.
+    fields = {"Bio%d" % i: "x" * 60 for i in range(20)}
+    fields["Groups"] = "Makerspace Baasrode, Fri3d Volunteers"
+    data = build_contact_envelope("David", fields)
+    assert len(data) <= MAX_CONTACT_BYTES
+    out = parse_contact_envelope(data)
+    assert out["name"] == "David"
+    assert out["fields"]["Groups"] == "Makerspace Baasrode, Fri3d Volunteers"
+    assert len(out["fields"]) < len(fields)          # other fields did get dropped
+
+
+def test_groups_dropped_last_but_name_still_wins():
+    # Even a Groups value too big to ever fit must not cost us the name.
+    fields = {"Groups": "G" * 4000}
+    out = parse_contact_envelope(build_contact_envelope("David", fields))
+    assert out["name"] == "David"
+
+
+def test_unprotected_fields_kept_when_everything_fits():
+    fields = {"Email": "a@b.c", "Groups": "Alpha"}
+    out = parse_contact_envelope(build_contact_envelope("David", fields))
+    assert out["fields"] == fields
+
+
+def test_protect_is_overridable():
+    # The protection is by NAME, not by position -- MicroPython does not
+    # guarantee dict ordering, so position-based logic would be non-deterministic.
+    fields = {"Keep": "k" * 40, "Drop": "d" * 600}
+    out = parse_contact_envelope(
+        build_contact_envelope("D", fields, protect=("Keep",)))
+    assert "Keep" in out["fields"]

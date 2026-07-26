@@ -145,7 +145,7 @@ Non-connectable legacy advertising, one Manufacturer-Specific AD structure
 | Logo decode | ✅ | `set_src("S:…/logo.png")` succeeds with registered fs_driver; placeholder fallback path coded. |
 | Concurrent adv+scan | ✅ | 7 s concurrent run, no NimBLE crash. |
 | Hardware-API probe | ✅ | addr (public, stable), lights/buzzer/buttons/battery all confirmed; **backlight absent → dim feature dropped+noted**. |
-| Off-device unit tests | ✅ | `pytest tests/` → **30 passed**. |
+| Off-device unit tests | ✅ | `pytest tests/` → **118 passed** (v0.9.0). |
 | Single-badge smoke (advertise) | ✅ | Host bleak scanner received `34:85:18:AB:DF:0E rssi −75 ver 1 gids [0xa07b] name "Alex YOURCALL"` — full HSNT payload correct on-air. |
 | Proximity logic (round-trip, disjoint, multi, signature, eviction, re-alert) | ✅ | 17 on-device checks through the **real** `parse_payload → intersect → seen → arrivals → eviction` path (synthetic-but-correct HSNT packets fed to the real IRQ handler). |
 | Real badge **scan RX** | ✅ | `gap_scan` IRQ fires on real advertisements (raw counts); non-HSNT adverts correctly ignored. |
@@ -490,8 +490,10 @@ background.
 - **Handoff needs no coordination calls**: the app's `begin()` replaces the
   service's identical adv on open; the app's teardown `active(False)` is undone
   by the next watchdog poll (≤5 s beacon gap) after exit.
-- **Unconfigured badge stays silent** in the background too
-  (`load_beacon_config` mirrors `_load_config`'s unconfigured rule).
+- **Badge with no groups stays silent** in the background too
+  (`load_beacon_config` mirrors `_load_config`'s rule — since v0.9.0 that rule is
+  GROUPS ONLY; a blank name falls back to the same auto-nickname the app shows,
+  so the background beacon and the app never advertise different names).
 - **Watchdog survivability**: the loop catches `BaseException` (only
   `CancelledError` passes) around body *and* sleep — a USB-console Ctrl-C is
   delivered as `KeyboardInterrupt` to whatever coroutine is running and must
@@ -503,3 +505,124 @@ background.
   on a badge can knock its adv off the air for ≤30 s (self-heals).
 - **Boot-only start**: the service activates on the next reboot after
   install/update; an AppStore update does not hot-swap a running service.
+
+## 13. On-badge onboarding (v0.9.0) — auto-nickname, group adoption, on-badge editor
+
+Answers GitHub issue #4: before this, a fresh badge was **inert** until someone
+with an internet-connected smartphone loaded the GitHub-Pages setup page. At Fri3d
+Camp most kids don't have a data plan, so the badge's whole value was gated behind
+a phone. Three independent routes now remove that gate; none needs a phone.
+
+### 13.1 The gate split
+
+`_load_config` used to end with `self._unconfigured = (not cfg["name"]) or (not ids)`.
+Since v0.9.0 the name is **always** populated (see 13.2), so the rule is
+**groups only**: `self._unconfigured = not ids`.
+
+- **Groups are never auto-assigned.** A shared default group would make every
+  badge in the camp match every other badge — constant arrival buzzers and a
+  meaningless friends list. No group still means "stay off the air", which keeps
+  the README's silence promise intact.
+- A second flag, `setup_skipped` (persisted in `config.json`), decides whether the
+  blocking Configure-me screen is shown. `_show_setup_screen()` = `_unconfigured
+  and not _setup_skipped` — this is what the *screen* and the *hold-B / START*
+  gates key off; `_unconfigured` alone still gates the *radio*.
+- The rule lives in three places that must agree: `fri3d_friends._load_config`,
+  `beacon_service.load_beacon_config`, and `ble_setup.sanitize_config`'s name
+  branch.
+
+### 13.2 Auto-nickname (`identity.py`)
+
+`auto_nickname(machine.unique_id())` → `"Otter 42"`: a 64-word animal list × 100,
+indexed by an FNV-1a fold of the chip's fused id.
+
+- **Derived, never persisted.** The function is pure and deterministic, so the
+  name is stable across reboots without a flash write — which means it can never
+  fight a phone-side save, and wiping `config.json` restores the same nickname.
+- **Deliberately unlike `Fri3d-XXXX`.** The Bluetooth setup id comes from the BLE
+  MAC, readable only once the radio is active — and a group-less badge never
+  powers the radio. `machine.unique_id()` needs no radio but returns the *base*
+  MAC, which differs from the BLE MAC by a small fixed offset. Two nearly-equal
+  ids that disagree reads as a bug, so the nickname is a visibly different *kind*
+  of name instead. Nobody expects "Otter 42" to equal "Fri3d-A3F2".
+- Collisions (6400 combinations) are harmless: the nickname is a display name,
+  never an identity — matching is on group hashes.
+
+### 13.3 Adopting a friend's group from a Y-swap
+
+The swap envelope already carried group names in cleartext: `_outgoing_contact()`
+injects `"Groups": ", ".join(groups)`. v0.9.0 uses it.
+
+- **Truncation bug fixed.** `_outgoing_contact` adds `Groups` via `setdefault`, so
+  it landed at the *end* of the dict — and `build_contact_envelope` pops from the
+  end when the envelope exceeds `MAX_CONTACT_BYTES`. `Groups` was therefore the
+  **first** field sacrificed, silently breaking adoption for anyone with a full
+  contact card. Worse, MicroPython doesn't guarantee dict ordering, so *which*
+  field died wasn't deterministic. It is now protected **by name**
+  (`PROTECTED_FIELDS`) and dropped last.
+- Pure helpers in `ble_proximity.py`: `parse_groups_field` (split the comma
+  string), `new_groups_from` (what the peer offers that we lack, deduped via
+  `normalize_group`), `merge_groups` (append + 5-group cap, returns `dropped`).
+- **The prompt is deferred, not inline.** `_do_exchange` only sets
+  `self._pending_adopt`; `_exchanging` is still True at that point and
+  `_handle_buttons` swallows every edge while busy, so prompting there would
+  render a panel nobody could answer. The main loop opens it on the next tick —
+  the same idiom as `_reload_pending` / `_pending_begin`.
+- **Multi-select**, because a friend can be in several groups: all offered groups
+  start ticked (so the common single-group case is one `Y`), `A` moves the
+  highlight, `B` toggles, `Y` joins. Rows are `MAX_GROUPS` pre-built hidden labels,
+  `set_text`-only — never created or deleted per prompt (landmine #1). The tick is
+  `[x]`/`[ ]` **text**, not `lv.checkbox`: the app registers no LVGL input device,
+  so a real widget would need a focus group that doesn't exist.
+- While the prompt is up `_handle_b_button` is skipped and B is read via `_edge`;
+  they keep independent state (`_prev` vs `_b_down_ms`/`_b_long`) so they can't
+  corrupt each other, but `_close_adopt` must reset `_b_down_ms` or a still-held B
+  falls straight through into the phone-setup window.
+- On accept: `_save_config("groups", …)` → `_load_config()` → `_pending_begin`.
+  A badge that was already beaconing gets an `end()` first, so it re-advertises
+  the new group set (the same `active(False)`→`begin()` cycle `onPause`/`onResume`
+  runs routinely; `ensure_radio`'s stale-handle self-heal covers the cleared GATT
+  table). Group **pills** still only re-lay-out on the next app start.
+
+### 13.4 On-badge settings editor
+
+Entry: **START** — otherwise unused, and plain **GPIO 0 on both boards**, so
+`_held` special-cases it ahead of the 2026 expander map (which has no START
+index). Also reachable as `A: set up on badge` on the Configure-me screen.
+
+- Uses MicroPythonOS's own `SettingsActivity`, so **one code path covers both
+  boards**: the OS supplies touch on 2026 and button-navigated focus + the LVGL
+  keyboard on 2024 (its focus helper explicitly supports "keyboard, hardware
+  buttons, or a rotary encoder"). Hand-rolling a list would have meant hand-rolling
+  focus, since this app polls raw buttons and registers no indev.
+- Imported lazily inside `try/except`, so an older OS build degrades to "the
+  button says so" rather than breaking the app.
+- **`config.json` stays the single source of truth.** `SharedPreferences` is only
+  a transfer buffer: `config_to_settings()` seeds it before launching,
+  `settings_to_config()` harvests it on return and merges through the *same*
+  `sanitize_config` the phone page uses — so a partial or junk harvest can't wipe
+  a field (absent keys fall back to the on-disk config).
+- `settings_to_config` exists for the two mappings `sanitize_config` can't do:
+  the radiobutton's **`"on"`/`"off"` string** (feeding that straight in would be a
+  bug — `bool("off")` is `True`) and banner **seconds → ms**.
+- **Alert range is a dropdown of the §5.1 presets**, not a raw dBm slider: it's
+  the documented guidance in plain language, and it avoids asking an LVGL slider
+  to carry a negative range. `range_label()` snaps any hand-edited dBm to the
+  nearest preset so the row is never blank.
+- Contact fields are deliberately **not** in the editor — arbitrarily many, and
+  long. That's what the phone page is for.
+- **Lifecycle:** launching a sub-Activity fires our `onPause`→`onStop`
+  (`_teardown_ble()`, main loop cancelled) and returns through `onResume`. That's
+  the ordinary app-switch path and `_entered` prevents a splash replay. The
+  harvest runs **early in `onResume`, before the `begin()` decision**, and reloads
+  the config itself — deferring it to the main loop would start the beacon on the
+  pre-edit group set.
+
+### 13.5 New radio teardown path
+
+`BLEProximity.end()` early-returns when proximity never held the radio. A badge
+with no groups never calls `begin()`, so once a group-less badge could Y-swap
+(v0.9.0) there was no way to power BLE down afterwards. `ContactExchange.radio_off()`
+is that switch: stop adv/scan, disconnect, `active(False)`, drop the cached
+handles and notify `SetupService.on_radio_off()`. Called from `_teardown_ble()`
+and from "skip for now".
