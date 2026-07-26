@@ -1,3 +1,267 @@
+# !Fri3d Friends — Gotcha (Assassin) game: design + implementation plan — 2026-07-26
+
+Design-only session. Produced **`Implementation_Plan_Gotcha_20260726.md`** (~1090
+lines), a hand-off-ready plan for adding a camp-wide game of
+[Assassin/Gotcha](https://en.wikipedia.org/wiki/Assassin_(game)) to the app for Fri3d
+Camp (badges handed out **14 August 2026**). **No code was written and no application
+file was modified.** Target version v0.10.0.
+
+The plan was built through three rounds of interview; the decisions below are settled
+(D1–D20 in the plan), not proposals.
+
+## Architecture
+
+Three tiers. **BLE does the physical game, HTTP does the bookkeeping.**
+
+| Tier | Role |
+|---|---|
+| Backend (new) | Authority: roster, ring, kills, scoring, game state, anti-cheat |
+| Badge (`gotcha.py`, new) | Radar, kill handshake, alarm, offline event queue |
+| Web pages (new, static) | Player card, 4 leaderboards, host admin console |
+
+**BLE gossip was considered and rejected**: a camp site produces hot pockets, dead
+zones and connectivity islands: an epidemic protocol demos well with 3 badges and
+disintegrates at 700. Badges poll one endpoint every **5 min** (D13) — chosen to
+protect the BLE scan, which `DESIGN.md` §3 calls load-bearing.
+
+## The three mechanisms that make it work
+
+1. **Kill proof = commitment–reveal ("the soul").** Each badge generates 16 random
+   bytes per life and uploads only `sha256(soul)`. The secret is released *only* over
+   a completed kill handshake, so holding the preimage proves two badges were metres
+   apart. Verifiable with nothing but sha256, and **no key distribution to 700
+   badges**. The badge also receives its target's commitment, so it can verify a kill
+   **offline**.
+2. **Target inheritance rides the handshake** (D10). The victim hands over
+   `{soul, tgt:{pid,name,commitment}}` in one payload, so inheritance works in a WiFi
+   dead zone with no server round-trip. The backend reconciles later.
+3. **Perishable streaks** (D4). Bounties on leaders would otherwise make "hide your
+   badge in a tent" the dominant strategy. A streak holds 3 h after your last kill,
+   then decays 1/hour; totals never decay. Decay is derived server-side from
+   `last_kill_at` (idempotent), so a powered-off badge decays fastest — it cannot even
+   dodge.
+
+## Gameplay
+
+- Assigned target, hunted via an RSSI radar bar. **MENU** attacks at close range; the
+  victim's badge **screams** and has ~5 s to break range. **3 dodges per assassin per
+  life**, then the next attack is instant (answers "run away forever"). 60 s cooldown
+  between attempts.
+- **Respawn (30 min), not elimination** — eliminating a 9-year-old at 09:30 Friday for
+  a flat battery is a punishment for logistics, not a game.
+- **Bounties**: streak ≥ 3 makes you fair game for everyone, worth double.
+- **No kill-rate cooldown** (D16): table sweeps are legal and earn the story. Consequence
+  recorded in the plan: `MAX_KILLS_PER_HOUR` must **flag, not block**.
+- Four leaderboards: individual total/streak, group total/per-member (min 3 members).
+  Group membership is snapshotted at kill time; inflating a roster dilutes your own
+  per-member average, which is the anti-stuffing mechanism.
+- **Alive/dead shown on the nametag and in the beacon** (D11) — deliberate social
+  mechanic: check someone's badge to see if they're safe to approach.
+- **Night truce 22:00–08:00** (D7), host truce button, safe zones as printed rules
+  (the badge has no positioning).
+
+## Findings from reading the existing code
+
+- **`parse_payload` ignores trailing bytes** (`ble_proximity.py:154`) — so a game block
+  can be appended backward-compatibly. Became moot once backward compatibility was
+  waived (D8), which allowed a single clean **HSNT v2** beacon (new `blocks` bitmask
+  byte + optional 5-byte game block after the name) instead of time-multiplexing two
+  adverts at 2 Hz. **That deleted the riskiest Phase 0 item.**
+- 🐛 **`BLEProximity`'s `seen` table has no size cap.** Invisible with 3 badges;
+  unbounded RAM growth plus a lengthening IRQ-path loop at 700. **Must be fixed
+  regardless of Gotcha** (LRU, ~64 entries).
+- **MENU is mapped nowhere** (`BTN_2024`/`BTN_2026_EXP` cover only a/b/y; MENU is
+  GPIO 45 / expander idx 5, present only in `BTN_2024_DIAG`) — free for the attack
+  gesture on both boards.
+- `mpos.DownloadManager.post_url()`/`download_url()` are async and aiohttp-backed —
+  no hand-rolled `urequests`, and no repeat of the blocking-`ntptime` hazard.
+- `WifiService.is_connected()` returns **True in hotspot mode with no internet**, so a
+  reachability check is necessary, not redundant. MicroPython has no ICMP — use a TCP
+  connect.
+
+## Power budget — the uncomfortable finding
+
+**Both badge generations carry a 2000 mAh LiPo** (2024 per `fri3dbadge2024/BADGE.md`;
+2026 confirmed identical this session). Datasheet arithmetic, **not measured**:
+
+| Scenario | Draw | Runtime (~1700 mAh usable) |
+|---|---|---|
+| App as it exists today, no WiFi | ~150 mA | **~11 h** |
+| App + Gotcha, WiFi always on, no power save | ~240 mA | **~7 h** |
+| App + Gotcha, WiFi with DTIM power save | ~175 mA | ~9.5 h |
+
+**The app already does not last a 16-hour waking day** — that is a pre-existing
+property, not something Gotcha introduces. Three roughly equal consumers: CPU ~40 mA,
+BLE scan at 50 % duty ~50 mA, display/backlight ~50 mA.
+
+Two levers identified, both now Phase 0 spikes:
+- **Scan duty.** `DESIGN.md` §3's load-bearing part is *passing explicit
+  `interval_us`/`window_us` at all* (that is what disables NimBLE's duplicate filter),
+  **not** the 50 % ratio. Dropping to ~12.5 % should save ~37 mA.
+- **Screen blanking on the 2024**, which has no backlight API — nobody has tried a
+  GC9307 sleep command directly. Highest-value power fix in the project if it works.
+
+Charging is assumed (D20); the design does not depend on either lever succeeding.
+
+## One app, not two (D19)
+
+Gotcha is **integrated into !Fri3d Friends**, not a separate app. NimBLE gives one adv
+set, one IRQ, and `gatts_register_services` is **one-shot per power-on** — two apps
+cannot share the radio, and `beacon_service.py` already runs a `screen_stack` watchdog
+to arbitrate ownership with the Activity; a second app's boot service would be a third
+claimant. Structurally decisive: the game block lives *inside* the HSNT beacon, and one
+31-byte advert cannot be owned by two applications. Isolation is achieved with **lazy
+imports** (`gotcha.py` loaded only when a live game is detected) and try/except-wrapped
+entry points, so a Gotcha fault degrades to "no game", never "no nametag". A second
+Activity in the same package was considered and rejected.
+
+## Deployment
+
+Ubuntu laptop brought to camp, published via **Tailscale Funnel** or Cloudflare Tunnel.
+
+⚠️ **Plain Tailscale is unusable by badges** — they cannot run a WireGuard client.
+**Funnel** is the required feature (publishes a tailnet service on a public HTTPS URL).
+Both are outbound-only, which is essential: behind camp NAT there is no port forward,
+so DDNS alone cannot work. Load is trivial (700 ÷ 300 s ≈ **2.3 req/s**).
+
+Fri3d confirmed they **pre-load the `fri3d-badge` SSID onto badges**, so the app
+manages **no WiFi credentials at all** — it only checks connectivity and reports it.
+No credential in the repo, the `.mpk`, or any config file.
+
+## Known risks carried into implementation
+
+| Risk | Severity |
+|---|---|
+| WiFi/BLE coexistence degrading the load-bearing scan | High — Phase 0 gates everything |
+| TLS heap fragmentation over a 4-day run (ESP32 handshakes cost tens of KB; cert verification may be off) | High — Phase 0 soak, 1000 syncs |
+| Background GATT + radio handoff (`beacon_service` must host the victim side) | High — most fragile area |
+| Unbounded `seen` table at 700 badges | High — fix regardless |
+| Battery (above) | High |
+| Group exclusion makes targets unfindable | Medium — watch median time-to-first-kill |
+
+## Privacy stance
+
+**Location tracking is explicitly out of scope** (D17). AP-association and
+witness-graph location hints were both designed, costed, and **rejected** — they would
+work, and they are location tracking of children. Stalled hunts get a "last seen by
+anyone: N min ago" freshness figure plus a 6 h auto-reassign, using only data already
+collected. On-by-default enrollment (D2) is paired with a mandatory first-run consent
+screen and a three-second badge-side exit (MENU long-press).
+
+## Repository housekeeping
+
+- **Restored `changelog.md`.** The working tree held only the v0.9.0 entry (94 lines);
+  1031 lines of history (v0.8.1 back to the 2026-07-07 plan-phasing entry) had been
+  truncated in a previous session and never committed. Recovered with
+  `git show HEAD:changelog.md` and re-appended below the v0.9.0 entry. No content lost
+  in either direction.
+- The uncommitted **v0.9.0 work from a previous session** (13 modified files +
+  `identity.py`, `test_identity.py`, `tools/deploy.sh`, `tools/serialcap.py`) was
+  **deliberately left unstaged** — it is not this session's work and is still
+  hardware-unverified.
+
+## Open items
+
+- **A2 (only blocking question left):** can Fri3d route the badge VLAN to the on-site
+  laptop? If yes, internet leaves the critical path and **the TLS risk and Phase 0
+  item 2 both disappear.** Non-blocking by design — the endpoint logic tries a LAN
+  address first and falls back to the public URL, so it can be answered on arrival.
+- **A4:** measure all five power scenarios on both boards with an inline USB meter.
+- v0.9.0 remains **not hardware-verified**; 118/118 host tests pass.
+# !Fri3d Friends — v0.9.0: on-badge onboarding (auto-nickname, group adoption, on-badge editor) — 2026-07-22
+
+Answers **GitHub issue #4** (ThomasFarstrike): the app *required* an
+internet-connected smartphone. A fresh badge showed a blocking "Configure me" QR
+screen pointing at GitHub Pages and — worse — **never started the proximity
+beacon**, so its owner couldn't even be seen by friends who were set up. At Fri3d
+Camp most kids don't have a data plan. Three independent routes now remove that
+gate; none needs a phone. Also closed **issue #1** (BadgeHub icon) earlier the
+same day.
+
+## 1. Auto-nickname (`identity.py`, new)
+
+`auto_nickname(machine.unique_id())` -> `"Otter 42"` (64 animals x 100, FNV-1a
+fold of the fused chip id). **Derived, never persisted**: pure and deterministic,
+so it's stable across reboots without a flash write, can't fight a phone-side
+save, and survives wiping `config.json`.
+
+Deliberately *unlike* the Bluetooth `Fri3d-XXXX` id. That one comes from the BLE
+MAC, readable only once the radio is active — and a group-less badge never powers
+the radio. `machine.unique_id()` needs no radio but returns the *base* MAC, which
+differs by a small fixed offset; two nearly-equal ids that disagree reads as a
+bug, so the nickname is a different *kind* of name instead.
+
+**The gate split:** `_unconfigured` was `(not name) or (not ids)`; it is now
+**groups only**. Groups are never auto-assigned — a shared default would make
+every badge match every other badge and turn the arrival buzzer into camp-wide
+noise. A new persisted `setup_skipped` flag drives `_show_setup_screen()`.
+
+## 2. Adopting a friend's group from a Y-swap
+
+The swap envelope already carried group names in cleartext (`_outgoing_contact`
+injects `"Groups"`). Now the receiver offers to join them — the easiest *and* most
+reliable way into a group, since names are matched exactly and a typo means you
+silently never match anyone.
+
+**Bug found and fixed while wiring it:** `setdefault` put `Groups` at the end of
+the dict, and `build_contact_envelope` pops from the end on overflow — so `Groups`
+was the **first** field sacrificed, silently breaking adoption for anyone with a
+full contact card. And MicroPython doesn't guarantee dict ordering, so *which*
+field died wasn't even deterministic. Now protected **by name**.
+
+Multi-select, because a friend can be in several groups: all offered groups start
+ticked (single-group case = one `Y`), **A: next / B: tick / Y: join**. Rows are
+pre-built hidden labels, `set_text`-only; the tick is `[x]`/`[ ]` text rather than
+`lv.checkbox` because the app registers no LVGL indev. The prompt is **deferred**
+out of `_do_exchange` — `_exchanging` is still True there and `_handle_buttons`
+swallows every edge while busy, so an inline prompt would have been unanswerable.
+
+## 3. On-badge settings editor (START)
+
+Built on MicroPythonOS `SettingsActivity`, so **one code path covers both boards**:
+the OS supplies touch on 2026 and button-navigated focus + the LVGL keyboard on
+2024 (its focus helper explicitly supports "keyboard, hardware buttons, or a
+rotary encoder"). Entry is **START** — otherwise unused and plain GPIO 0 on *both*
+boards, so `_held` special-cases it ahead of the 2026 expander map.
+
+`config.json` stays the single source of truth; `SharedPreferences` is only a
+transfer buffer, harvested back through the *same* `sanitize_config` the phone
+page uses. `settings_to_config()` covers the two mappings it can't do: the
+radiobutton `"on"`/`"off"` string (`bool("off")` is `True` — a real trap) and
+banner seconds -> ms. **Alert range is a dropdown of the DESIGN section 5.1 presets**
+rather than a raw dBm slider.
+
+## 4. New radio teardown path
+
+`BLEProximity.end()` early-returns when proximity never held the radio, so once a
+group-less badge could Y-swap there was nothing to power BLE down afterwards.
+Added `ContactExchange.radio_off()`, called from `_teardown_ble()` and from "skip
+for now".
+
+## Files
+
+`identity.py` (new) | `fri3d_friends.py` (gate split, adopt prompt + overlay,
+START, editor launch/harvest, Configure-me hints) | `ble_proximity.py`
+(`parse_groups_field`, `new_groups_from`, `merge_groups`) | `contact_exchange.py`
+(`PROTECTED_FIELDS`, `radio_off`) | `ble_setup.py` (`config_to_settings`,
+`settings_to_config`, `range_label`, `RANGE_PRESETS`) | `beacon_service.py`
+(nickname fallback) | `MANIFEST.JSON` -> 0.9.0 | README + DESIGN section 13.
+
+## Verification
+
+- **Host: 118 tests pass** (was 83). New: `test_identity.py` (determinism,
+  stability, junk input, render-safe wordlist); `merge_groups`/`new_groups_from`
+  (dedup via `normalize_group`, multi-group peers, 5-cap + `dropped`); `Groups`
+  surviving envelope truncation; the full settings<->config mapping. One existing
+  beacon test was **updated, not deleted** — it asserted the old "blank name =
+  unconfigured" rule, which is exactly what changed.
+- **Not yet on hardware.** Every path below still needs a badge:
+  fresh-badge skip -> nametag + nickname stable across reboot; two-badge adoption
+  with a **multi-group** peer; the editor round-trip on **both** a 2024 and a 2026
+  badge (2024 is the button-navigated-focus path and the one at risk); that START
+  isn't claimed by the OS; and that the sub-Activity round-trip doesn't reboot the
+  badge. Phone-setup and swap regressions too.
+
 # !Fri3d Friends — v0.8.1: fix occasional GATT drops (reconnect/resume + no flash I/O in the BLE IRQ) — 2026-07-19
 
 Occasional **"GATT server disconnected"** while loading the stored friends list
