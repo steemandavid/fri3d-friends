@@ -182,10 +182,19 @@ screen and a three-second badge-side exit (MENU long-press).
   truncated in a previous session and never committed. Recovered with
   `git show HEAD:changelog.md` and re-appended below the v0.9.0 entry. No content lost
   in either direction.
-- The uncommitted **v0.9.0 work from a previous session** (13 modified files +
-  `identity.py`, `test_identity.py`, `tools/deploy.sh`, `tools/serialcap.py`) was
-  **deliberately left unstaged** — it is not this session's work and is still
-  hardware-unverified.
+- **Committed the v0.9.0 work from a previous session** (13 modified files +
+  `identity.py`, `test_identity.py`, `tools/deploy.sh`, `tools/serialcap.py`) as its
+  own commit rather than folding it into the design commits — it is a different piece
+  of work and deserved a message recording the `Groups`-truncation bug and the fact
+  that **none of it is hardware-verified yet**.
+- Session commits, all on `feat/contact-swap-splash-portal`:
+
+  | Commit | Contents |
+  |---|---|
+  | `2c48439` | Gotcha plan (first draft) + `changelog.md` history restore |
+  | `3999c87` | Signed-HTTP transport (D21), gameplay intro, rule tuning |
+  | `c621ce4` | v0.9.0 application work (previous session's code) |
+  | `da63e48` | Three-day camp timing (§2.4), streak grace back to 3 h |
 
 ## Open items
 
