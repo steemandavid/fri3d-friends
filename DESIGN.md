@@ -240,6 +240,14 @@ selected at runtime. **Board detect:** `mpos.DeviceInfo.get_hardware_id()` →
 config `"board"` key overrides autodetect. Screen size comes from
 `mpos.DisplayMetrics` (2024: 296×240, 2026: 320×240).
 
+> **v0.10.0 input change.** Interaction is now a single joystick-navigated
+> on-badge menu (joystick = move, A/ENTER = activate, X/back = close). The app no
+> longer polls A/B/Y/START over GPIO — the keypad drives the LVGL focus group
+> (our menu rows are its only members while foregrounded, which also fixes the
+> 2026 OS-drawer bug). The per-button GPIO details and the `_held`/`_edge` poller
+> described below in this section and in §9 reflect the **pre-v0.10.0** input
+> layer and are kept as historical/low-level reference.
+
 | | 2024 | 2026 |
 |---|---|---|
 | Buttons A/B/X/Y/MENU | direct GPIO 39/40/38/41/45 (active-low, pull-up) | **CH32X035 I²C expander** `mpos.io_expander.digital` idx A=7, B=6, X=9, Y=8, MENU=5 (active-high) |

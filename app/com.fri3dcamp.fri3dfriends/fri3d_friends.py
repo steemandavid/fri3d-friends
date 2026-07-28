@@ -4,23 +4,28 @@
 # Fri3d Camp 2026 badge (both ESP32-S3 + MicroPythonOS). Shows your name (big,
 # scrolls when long) and your group(s) as full-width coloured pills, and quietly
 # alerts you when another badge sharing one of your groups comes within Bluetooth
-# range. Press A for a per-friend panel; B mutes; X quits.
+# range.
 #
-# Controls:
-#   A      = toggle the friends-nearby detail panel
-#   B      = mute / unmute the alert buzzer  (persisted; label reflects state)
-#   X      = (OS) quit to the launcher
-# (START is intentionally unused.)
+# Interaction is a single on-badge MENU navigated with the joystick (v0.10.0),
+# which also fixes the 2026 OS-drawer bug: the badge keypad drives the shared
+# default LVGL focus group, and a button press against an EMPTY group falls back
+# to the OS top bar (the drawer pops open). Our menu rows/buttons are that
+# group's ONLY members while we are foregrounded, so the keypad drives them, not
+# the bar. We write no navigation/key-mapping code -- LVGL moves focus on the
+# joystick and fires CLICKED on ENTER for free.
+#   joystick up/down = move highlight (native LVGL focus)
+#   A   (ENTER)      = activate the focused row
+#   X   (back)       = close the topmost overlay, or quit if none is open
 #
-# Board differences are abstracted at runtime (2024: direct-GPIO buttons + GPIO46
-# buzzer + 296x240; 2026: CH32X035 I2C-expander buttons + GPIO38 buzzer + 320x240
-# + backlight). See DESIGN.md "2024 vs 2026".
+# Board differences are abstracted at runtime (2024: GPIO46 buzzer + 296x240;
+# 2026: GPIO38 buzzer + 320x240 + backlight). See DESIGN.md "2024 vs 2026".
 
 import os
 import sys
 import math
 import time
 import json
+import gc
 import asyncio
 
 APP_DIR = "/apps/com.fri3dcamp.fri3dfriends"
@@ -48,10 +53,6 @@ FULLNAME = "com.fri3dcamp.fri3dfriends"
 # Static Web-Bluetooth setup page (GitHub Pages). The badge shows a QR of this
 # URL + its own id so a phone lands on the right badge in the chooser.
 SETUP_URL_BASE = "https://steemandavid.github.io/fri3d-friends/setup/"
-
-# A configured badge opens a setup window with a LONG press of B (short press
-# still toggles mute). START opens the on-badge settings editor (v0.9.0).
-SETUP_HOLD_MS = 1500
 
 
 def _read_version():
@@ -115,6 +116,19 @@ try:
 except Exception:
     W, H = 296, 240
 
+# The on-badge menu (v0.10.0): a single joystick-navigated list that replaced
+# the old A/B/Y/START button-legend. Geometry for the nametag's "Menu" affordance
+# button and the menu overlay rows. Uses W/H, so defined AFTER the display metrics.
+MENU_BTN_W = 96
+MENU_BTN_H = 20
+MENU_BTN_Y = H - 24                 # bottom of the nametag
+MENU_PAD = 10                       # overlay side margin
+MENU_W = W - 2 * MENU_PAD
+MENU_TITLE_Y = 10
+MENU_ROWS_TOP = 44
+MENU_ROW_H = 30
+MENU_MAX = 5                        # Vrienden / Ruilen / Geluid / Telefoon / Instellingen
+
 BANNER_MS_DEFAULT = 5000
 TICK_MS = 30
 
@@ -154,13 +168,8 @@ PILL_H = 22
 PILL_GAP = 4
 MAX_PILLS = 4
 
-CONTROLS_TOP = H - 16
-
-# Button hardware (see DESIGN.md "2024 vs 2026").
-START_PIN = 0
-BTN_2024 = {"a": 39, "b": 40, "y": 41}    # direct GPIO (active-low, pull-up)
-BTN_2024_DIAG = (0, 38, 39, 40, 41, 45)   # raw-GPIO pins logged for diagnostics
-BTN_2026_EXP = {"a": 7, "b": 6, "y": 8}   # mpos.io_expander.digital index (active-high)
+# Buzzer GPIO (see DESIGN.md "2024 vs 2026"). Buttons are no longer polled
+# directly: the keypad drives the LVGL focus group, so no pin maps remain.
 BUZZER_PIN_2024 = 46
 BUZZER_PIN_2026 = 38
 
@@ -234,9 +243,13 @@ class Fri3dFriends(Activity):
         self._sound = True
         self._banner_ms = BANNER_MS_DEFAULT
         self._detail = False
-        self._btn_pins = {}
-        self._pin_prev = {}
-        self._prev = {}
+        # Focus-group bookkeeping (the drawer fix). _all_focusables = every
+        # focusable we build (clean teardown target); _focus_objs = the reachable
+        # set for the current state; _focus_held = False while paused.
+        self._all_focusables = []
+        self._focus_objs = []
+        self._focus_held = False
+        self._focus_hl = None     # resolved focus-highlight helper (add_focus_border)
         self._task = None
         self._t0 = 0
         self._last_input_ms = 0
@@ -268,11 +281,8 @@ class Fri3dFriends(Activity):
         self._setup = SetupService(APP_DIR, self._exch, on_saved=self._reload_config)
         self._exch.attach_setup(self._setup)
         self._setup_task = None
-        self._setup_open = False          # True while a configured-badge window runs
-        self._b_down_ms = None            # B-button press timestamp (long-press detect)
-        self._b_long = False              # this B press already opened a setup window
-        self._setup_info_lbl = None       # Configure-me: "Fri3d-XXXX  code NNNN"
-        self._setup_hint_lbl = None       # nametag footer: "hold B: phone setup"
+        self._setup_open = False          # True while a configured-badge setup window runs
+        self._setup_info_lbl = None       # Configure-me info/hint line
         self._setup_last = None
         self._setup_next_ms = 0
         self._setup_win_deadline = 0
@@ -294,11 +304,13 @@ class Fri3dFriends(Activity):
         self._pending_adopt = None        # (peer_name, [group, ...]) once a swap offers new groups
         self._adopt_groups = []           # the offered groups while the prompt is up
         self._adopt_ticked = []           # parallel list of bools
-        self._adopt_row = 0               # highlighted row
+        self._adopt_count = 0             # number of group rows currently shown
         self._adopt_open = False
         self._adopt_panel = None          # create-once prompt overlay
         self._adopt_title_lbl = None
-        self._adopt_rows = []
+        self._adopt_rows = []             # focusable group rows (lv.button)
+        self._adopt_row_labels = []       # parallel label per group row
+        self._adopt_join = None           # the "Meedoen" confirm button
         self._adopt_last = None
         # On-badge settings editor (MicroPythonOS SettingsActivity).
         self._settings_prefs = None
@@ -313,7 +325,18 @@ class Fri3dFriends(Activity):
         self._detail_panel = None
         self._detail_header = None
         self._detail_rows = []
-        self._controls_lbl = None
+        # On-badge menu (v0.10.0). _menu_btn is the nametag's single focusable
+        # affordance (also keeps the focus group non-empty so the OS drawer
+        # can't grab a press); _menu is the create-once overlay.
+        self._menu_btn = None
+        self._menu = None
+        self._menu_rows = []              # pre-built lv.button rows
+        self._menu_row_labels = []
+        self._menu_actions = []           # action key per shown row
+        self._menu_count = 0              # number of rows currently shown
+        self._menu_open = False
+        self._cfg_rows = []               # Configure-me mini-menu focusable rows
+        self._setup_close_btn = None      # setup-window overlay "Sluiten" focusable
         self._friends_last = None
         self._detail_header_last = None
         self._batt_last = None
@@ -380,58 +403,128 @@ class Fri3dFriends(Activity):
         except Exception:
             pass
 
-    # ------------------------------------------------------------------ buttons
-    def _setup_buttons(self):
-        from machine import Pin
-        self._btn_pins = {}
-        self._pin_prev = {}
-        if self._is_2026:
-            # 2026 reads A/B/Y via mpos.io_expander -- but START is plain GPIO 0
-            # on BOTH boards (DESIGN.md "2024 vs 2026"), and the expander map has
-            # no START index, so claim that one pin here too.
-            try:
-                self._btn_pins["p%d" % START_PIN] = Pin(START_PIN, Pin.IN, Pin.PULL_UP)
-                self._pin_prev[START_PIN] = 1
-            except Exception:
-                pass
-            return
-        for gp in BTN_2024_DIAG:
-            try:
-                self._btn_pins["p%d" % gp] = Pin(gp, Pin.IN, Pin.PULL_UP)
-                self._pin_prev[gp] = 1
-            except Exception:
-                pass
-
-    def _held(self, name):
-        if name == "start":
-            # Raw GPIO 0, active-low, on both boards.
-            p = self._btn_pins.get("p%d" % START_PIN)
-            try:
-                return p is not None and p.value() == 0
-            except Exception:
-                return False
-        if self._is_2026:
-            idx = BTN_2026_EXP.get(name)
-            if idx is None:
-                return False
-            try:
-                return bool(mpos.io_expander.digital[idx])
-            except Exception:
-                return False
-        gp = BTN_2024.get(name)
-        if gp is None:
-            return False
-        p = self._btn_pins.get("p%d" % gp)
+    # ------------------------------------------------------- focus group (drawer fix)
+    # The badge keypad drives the shared DEFAULT LVGL focus group. While our app
+    # is foregrounded that group is otherwise EMPTY, so any press would fall back
+    # to the OS top bar and pop the drawer. We keep our own focusables as the
+    # group's only members -> the keypad drives them, never the bar. Membership is
+    # reconciled to the active state's set on every transition and dropped on
+    # pause so the launcher / editor get a clean group.
+    def _bind_event(self, obj, cb, ev):
+        # add_event_cb takes (cb, filter, user_data) on current LVGL builds;
+        # older bindings take (cb, filter). Try both so a signature mismatch
+        # can't crash the whole UI build.
         try:
-            return p is not None and p.value() == 0
+            obj.add_event_cb(cb, ev, None)
+            return
         except Exception:
-            return False
+            pass
+        try:
+            obj.add_event_cb(cb, ev)
+        except Exception:
+            pass
 
-    def _edge(self, name):
-        cur = self._held(name)
-        prev = self._prev.get(name, False)
-        self._prev[name] = cur
-        return name if (cur and not prev) else ""
+    def _make_focusable(self, obj):
+        """Build-time: mark `obj` as one of our focusables. Adds a focus
+        highlight (mpos.ui.add_focus_border on this build, or a rolled-our-own
+        border fallback if no helper exists) and resets the dim timer on FOCUSED
+        so joystick moves alone keep the screen awake. Registered in
+        _all_focusables so teardown removes exactly our objects, never another
+        component's."""
+        if self._focus_hl is not None:
+            try:
+                self._focus_hl(obj)
+            except Exception:
+                self._focus_hl = None   # broken helper -> roll our own below
+        if self._focus_hl is None:
+            self._bind_event(obj, lambda e: self._set_focus_border(obj, True), lv.EVENT.FOCUSED)
+            self._bind_event(obj, lambda e: self._set_focus_border(obj, False), lv.EVENT.DEFOCUSED)
+        self._bind_event(obj, self._on_focused_wake, lv.EVENT.FOCUSED)
+        self._all_focusables.append(obj)
+
+    def _set_focus_border(self, obj, on):
+        # Rolled-our-own focus highlight (only used when the OS helper is absent).
+        try:
+            obj.set_style_border_width(3 if on else 0, 0)
+            if on:
+                obj.set_style_border_color(_col(COL_NEAR), 0)
+                obj.set_style_border_opa(lv.OPA.COVER, 0)
+        except Exception:
+            pass
+
+    def _resolve_focus_highlight(self):
+        # This OS exposes the helper as mpos.ui.add_focus_border (the pre-0.15
+        # name); newer builds also re-export it as mpos.add_focus_highlight. Try
+        # both; if neither exists _make_focusable rolls its own border.
+        self._focus_hl = None
+        try:
+            from mpos.ui import add_focus_border
+            self._focus_hl = add_focus_border
+        except Exception:
+            try:
+                from mpos import add_focus_highlight
+                self._focus_hl = add_focus_highlight
+            except Exception:
+                self._focus_hl = None
+
+    def _on_focused_wake(self, e):
+        self._wake()
+
+    def _focus_first(self):
+        if self._focus_objs:
+            try:
+                lv.group_focus_obj(self._focus_objs[0])
+            except Exception:
+                pass
+
+    def _apply_focus(self):
+        g = lv.group_get_default()
+        if not g:
+            return
+        # Remove EVERY focusable we ever built, then re-add only the active set.
+        # This LVGL build exposes removal as the top-level lv.group_remove_obj
+        # (there is no group.remove_obj method), and add_focus_border enrols
+        # objects at build time, so a plain diff would leak stale hidden rows.
+        for o in self._all_focusables:
+            try:
+                lv.group_remove_obj(o)
+            except Exception:
+                pass
+        if not self._focus_held:
+            return
+        for o in self._focus_objs:
+            try:
+                g.add_obj(o)
+            except Exception:
+                pass
+
+    def _set_focus(self, objs):
+        """Make the keypad's reachable set EXACTLY `objs` for the current state."""
+        self._focus_objs = list(objs)
+        self._apply_focus()
+        self._focus_first()
+
+    def _establish_focus(self):
+        """Re-derive the focus set for the current foreground state (on resume,
+        after _release_focus emptied the group)."""
+        self._focus_held = True
+        if self._menu_open:
+            objs = self._menu_rows[:self._menu_count]
+        elif self._adopt_open:
+            objs = self._adopt_rows[:self._adopt_count] + [self._adopt_join]
+        elif self._setup_open:
+            objs = [self._setup_close_btn]
+        elif self._show_setup_screen():
+            objs = list(self._cfg_rows)
+        else:
+            objs = [self._menu_btn]
+        self._set_focus(objs)
+
+    def _release_focus(self):
+        """onPause/onStop/onDestroy: empty the group of our objects. The active
+        set stays in _focus_objs so onResume can re-establish the current state."""
+        self._focus_held = False
+        self._apply_focus()
 
     def _wake(self):
         self._last_input_ms = time.ticks_ms()
@@ -545,28 +638,47 @@ class Fri3dFriends(Activity):
         s = (s or "").strip()
         return s if len(s) <= n else s[: max(1, n - 3)] + "..."
 
-    def _controls_text(self):
-        # Blank on the Configure-me screen — none of these apply there, and that
-        # layout puts its own "A: op badge / Y: nu overslaan" hint here.
-        if self._show_setup_screen():
-            return ""
-        # "B:mute" while unmuted, "B:unmute" while muted.
-        return "A:lijst  B:%s  Y:ruil" % ("stil" if self._sound else "geluid")
+    def _build_menu_button(self, scr):
+        # The nametag's single focusable affordance: a "Menu" pill at the bottom.
+        # It is the only object in the focus group on the nametag (so the OS
+        # drawer can't grab a press), and pressing A/ENTER opens the menu. On the
+        # 2026 touch badge a tap works too (buttons are clickable).
+        btn = lv.button(scr)
+        btn.set_size(MENU_BTN_W, MENU_BTN_H)
+        btn.set_pos((W - MENU_BTN_W) // 2, MENU_BTN_Y)
+        try:
+            btn.set_style_bg_color(_col(COL_PANEL), 0)
+            btn.set_style_bg_opa(lv.OPA.COVER, 0)
+            btn.set_style_radius(MENU_BTN_H // 2, 0)
+            btn.set_style_border_width(1, 0)
+            btn.set_style_border_color(_col(COL_CARD_LINE), 0)
+            btn.set_style_shadow_width(0, 0)
+        except Exception:
+            pass
+        mlbl = lv.label(btn)
+        mlbl.set_text("Menu")
+        mlbl.set_style_text_color(_col(COL_HINT), 0)
+        mlbl.set_style_text_font(lv.font_montserrat_14, 0)
+        try:
+            mlbl.center()
+        except Exception:
+            pass
+        self._make_focusable(btn)
+        self._bind_event(btn, self._on_menu_btn_clicked, lv.EVENT.CLICKED)
+        self._menu_btn = btn
 
     # ------------------------------------------------------------------ pills (full width, stacked)
     def _place_pills(self, scr):
+        # Build MAX_PILLS pill slots ONCE at fixed positions; _refresh_pills
+        # populates / hides them in place as the group set changes. Pre-building
+        # (never creating/deleting per change) dodges the "deleting live widgets
+        # crashes this build" landmine, so a freshly-added group's pill appears
+        # immediately with no reboot.
         self._pills = []
-        groups = self._own_table[:MAX_PILLS]
-        y = PILL_TOP
         pw = W - 2 * PILL_MARGIN_X
-        if not groups:
-            self._friends_top = PILL_TOP
-            return
-        for gname, gid in groups:
-            hue, _ = _sig_from_id(gid)
-            r, g, b = _hsv(hue, s=0.6, v=0.5)
-            col = (r << 16) | (g << 8) | b
-            pill = self._rbox(scr, PILL_MARGIN_X, y, pw, PILL_H, col, radius=PILL_H // 2)
+        for i in range(MAX_PILLS):
+            pill = self._rbox(scr, PILL_MARGIN_X, PILL_TOP + i * (PILL_H + PILL_GAP),
+                              pw, PILL_H, COL_NONE, radius=PILL_H // 2)
             try:
                 pill.set_style_border_width(1, 0)
                 pill.set_style_border_color(_col(0xFFFFFF), 0)
@@ -574,7 +686,7 @@ class Fri3dFriends(Activity):
             except Exception:
                 pass
             lbl = lv.label(pill)
-            lbl.set_text(gname)
+            lbl.set_text("")
             lbl.set_style_text_color(_col(0xFFFFFF), 0)
             lbl.set_style_text_font(lv.font_montserrat_16, 0)
             try:
@@ -586,9 +698,42 @@ class Fri3dFriends(Activity):
                 lbl.align(lv.ALIGN.LEFT_MID, 8, 0)
             except Exception:
                 lbl.set_pos(8, 4)
+            pill.add_flag(lv.obj.FLAG.HIDDEN)
             self._pills.append((pill, lbl))
-            y += PILL_H + PILL_GAP
-        self._friends_top = y + 2
+        self._refresh_pills()
+
+    def _refresh_pills(self):
+        # Populate the pre-built pill slots from the current group set and tuck
+        # the friends line under whichever pills are showing. Safe any time after
+        # _place_pills -- including right after a live group add (adopt / save).
+        if not self._pills:
+            self._friends_top = PILL_TOP
+            return
+        groups = self._own_table[:MAX_PILLS]
+        n = len(groups)
+        for i, (pill, lbl) in enumerate(self._pills):
+            if i < n:
+                gname, gid = groups[i]
+                hue, _ = _sig_from_id(gid)
+                r, g, b = _hsv(hue, s=0.6, v=0.5)
+                col = (r << 16) | (g << 8) | b
+                try:
+                    pill.set_style_bg_color(_col(col), 0)
+                    lbl.set_text(gname)
+                    pill.remove_flag(lv.obj.FLAG.HIDDEN)
+                except Exception:
+                    pass
+            else:
+                try:
+                    pill.add_flag(lv.obj.FLAG.HIDDEN)
+                except Exception:
+                    pass
+        self._friends_top = (PILL_TOP + n * (PILL_H + PILL_GAP) + 2) if n else PILL_TOP
+        if self._friends_lbl is not None:
+            try:
+                self._friends_lbl.set_y(self._friends_top)
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------ detail panel
     def _make_detail_row(self, panel, index, card_w):
@@ -759,87 +904,140 @@ class Fri3dFriends(Activity):
             self._build_nametag(scr)
         self._clock_lbl = self._label(scr, CLOCK_X, CLOCK_Y, "--:--", COL_BATT,
                                       font=lv.font_montserrat_14)
-        # Footer hint (was the WiFi-portal URL). Blank on the Configure-me
-        # screen, which already explains itself.
-        hint = "" if self._show_setup_screen() else self._hint_text()
-        self._setup_hint_lbl = self._label(scr, 0, CONTROLS_TOP - 14, hint, COL_BATT,
-                                           font=lv.font_montserrat_12, center=True)
-        self._controls_lbl = self._label(scr, 0, CONTROLS_TOP, self._controls_text(),
-                                         COL_NONE, font=lv.font_montserrat_12, center=True)
-        if not self._show_setup_screen():
-            self._build_setup_overlay(scr)
+        # Create-once overlays (hidden; never deleted -- deleting live widgets
+        # hard-crashes this build). Built for both layouts: a Configure-me badge
+        # reaches the setup window via its "Telefoon-setup" row, so it needs the
+        # setup overlay too, and will swap to the nametag (menu overlay) later.
+        self._build_menu(scr)
+        self._build_setup_overlay(scr)
         self._build_adopt_panel(scr)
         self._build_banner(scr)
 
-    def _hint_text(self):
-        """The nametag footer hint: BOTH ways to reach setup. START is otherwise
-        undiscoverable, and it is the only route that needs no phone at all."""
-        return "hou B: telefoon-setup   START: op badge"
+    def _build_menu(self, scr):
+        # The on-badge menu overlay: a full-screen panel with a title, a column
+        # of MENU_MAX pre-built lv.button rows (only ever set_text + hidden/shown
+        # -- never created/deleted per open), and a footer hint. Each row is
+        # focusable (joystick moves focus natively, A fires CLICKED). Hidden until
+        # _open_menu populates and shows it.
+        ov = self._rbox(scr, 0, 0, W, H, COL_BG, radius=0)
+        try:
+            ov.set_style_border_width(2, 0)
+            ov.set_style_border_color(_col(COL_HINT), 0)
+            ov.remove_flag(lv.obj.FLAG.SCROLLABLE)
+        except Exception:
+            pass
+        self._label(ov, 0, MENU_TITLE_Y, "Menu", COL_HINT,
+                    font=lv.font_montserrat_24, center=True)
+        self._menu_rows = []
+        self._menu_row_labels = []
+        for i in range(MENU_MAX):
+            row = lv.button(ov)
+            row.set_size(MENU_W, MENU_ROW_H)
+            row.set_pos(MENU_PAD, MENU_ROWS_TOP + i * MENU_ROW_H)
+            try:
+                row.set_style_bg_color(_col(COL_CARD), 0)
+                row.set_style_bg_opa(lv.OPA.COVER, 0)
+                row.set_style_radius(8, 0)
+                row.set_style_border_width(0, 0)
+                row.set_style_shadow_width(0, 0)
+                row.set_style_pad_all(0, 0)
+            except Exception:
+                pass
+            lbl = lv.label(row)
+            lbl.set_text("")
+            lbl.set_style_text_color(_col(COL_NAME), 0)
+            lbl.set_style_text_font(lv.font_montserrat_16, 0)
+            try:
+                lbl.align(lv.ALIGN.LEFT_MID, 10, 0)
+            except Exception:
+                lbl.set_pos(10, 4)
+            self._make_focusable(row)
+            self._bind_event(row, self._make_menu_cb(i), lv.EVENT.CLICKED)
+            row.add_flag(lv.obj.FLAG.HIDDEN)
+            self._menu_rows.append(row)
+            self._menu_row_labels.append(lbl)
+        self._label(ov, 0, H - 18, "joystick: kies   X: terug", COL_BATT,
+                    font=lv.font_montserrat_12, center=True)
+        ov.add_flag(lv.obj.FLAG.HIDDEN)
+        self._menu = ov
 
     def _show_setup_screen(self):
         """True when the blocking Configure-me screen should be shown: no group
         AND the user hasn't chosen "skip for now" (persisted as `setup_skipped`).
         A skipped badge falls through to a normal nametag under its auto-nickname
-        — the point of issue #4 — and can still set up later via B / START."""
+        — the point of issue #4 — and can still set up later via the menu
+        (Telefoon-setup / Instellingen)."""
         return self._unconfigured and not self._setup_skipped
 
     def _build_setup(self, scr):
-        # First-run "Stel me in" layout. Every widget is tracked in
-        # _setup_widgets so a save (over BLE) can HIDE (never delete — deleting
-        # live widgets/screens crashes this build) the lot and swap to the
-        # nametag in place. No WiFi needed: a phone connects over Bluetooth to
-        # the static Web-Bluetooth page (SETUP_URL_BASE); the QR carries the URL
-        # incl. ?badge=XXXX so the browser chooser shows exactly this badge.
-        info = self._label(scr, 0, 206, "bluetooth starten...", COL_NEAR,
-                           font=lv.font_montserrat_16, center=True)
+        # First-run "Stel me in" layout, redesigned (v0.10.0) as a 3-row
+        # mini-menu: Op badge instellen / Telefoon-setup / Overslaan. Every
+        # widget is tracked in _setup_widgets so a save (over BLE) can HIDE
+        # (never delete -- deleting live widgets crashes this build) the lot and
+        # swap to the nametag in place. The phone-setup QR lives in the
+        # setup-window overlay (opened by the "Telefoon-setup" row): the 240px
+        # screen can't fit three rows AND a scannable QR together.
+        info = self._label(scr, 0, 184, "geen telefoon? kies 'Op badge instellen'",
+                           COL_NONE, font=lv.font_montserrat_12, center=True)
         self._setup_info_lbl = info
         self._setup_widgets = [
-            self._label(scr, 0, 4, "Stel me in", COL_HINT, font=lv.font_montserrat_24, center=True),
-            self._label(scr, 0, 30, "scan met je telefoon (bluetooth)", COL_NONE,
+            self._label(scr, 0, 36, "Stel me in", COL_HINT,
+                        font=lv.font_montserrat_24, center=True),
+            self._label(scr, 0, 66, "kies een optie", COL_NONE,
                         font=lv.font_montserrat_14, center=True),
             info,
-            # No phone / no internet? Two ways out (issue #4). A opens the
-            # on-badge editor; Y drops straight to the nametag under the
-            # auto-nickname and remembers the choice.
-            self._label(scr, 0, CONTROLS_TOP, "A: op badge   Y: nu overslaan",
-                        COL_HINT, font=lv.font_montserrat_12, center=True),
         ]
-        # QR of the setup-page URL, on a white tile (the margin doubles as the
-        # QR quiet zone). Hidden until the badge id is known (radio up); fed by
-        # _refresh_setup. More vertical room now the portal footer line is gone.
-        try:
-            box = self._rbox(scr, (W - 150) // 2, 54, 150, 150, 0xFFFFFF, radius=6)
-            qr = lv.qrcode(box)
-            qr.set_size(124)
-            qr.set_dark_color(_col(0x000000))
-            qr.set_light_color(_col(0xFFFFFF))
-            qr.center()
-            box.add_flag(lv.obj.FLAG.HIDDEN)
-            self._qr = qr
-            self._qr_box = box
-            self._setup_widgets.append(box)
-        except Exception:      # no lv.qrcode in this build: text line still shows
-            self._qr = None
-            self._qr_box = None
+        self._cfg_rows = []
+        cfg_items = [("Op badge instellen", "settings"),
+                     ("Telefoon-setup", "phone"),
+                     ("Overslaan", "skip")]
+        cw = W - 2 * MENU_PAD
+        for i, (label, action) in enumerate(cfg_items):
+            row = lv.button(scr)
+            row.set_size(cw, MENU_ROW_H)
+            row.set_pos(MENU_PAD, 88 + i * MENU_ROW_H)
+            try:
+                row.set_style_bg_color(_col(COL_CARD), 0)
+                row.set_style_bg_opa(lv.OPA.COVER, 0)
+                row.set_style_radius(8, 0)
+                row.set_style_border_width(0, 0)
+                row.set_style_shadow_width(0, 0)
+                row.set_style_pad_all(0, 0)
+            except Exception:
+                pass
+            lbl = lv.label(row)
+            lbl.set_text(label)
+            lbl.set_style_text_color(_col(COL_NAME), 0)
+            lbl.set_style_text_font(lv.font_montserrat_16, 0)
+            try:
+                lbl.align(lv.ALIGN.LEFT_MID, 10, 0)
+            except Exception:
+                lbl.set_pos(10, 4)
+            self._make_focusable(row)
+            self._bind_event(row, self._make_cfg_cb(action), lv.EVENT.CLICKED)
+            self._setup_widgets.append(row)
+            self._cfg_rows.append(row)
 
     def _build_setup_overlay(self, scr):
-        # Configured-badge setup window overlay: a full-screen panel with the
-        # setup QR + on-screen code + countdown. Built ONCE and hidden; shown
-        # while a window is open and hidden again on close (never deleted —
-        # landmine #1). Sits below the banner (built after this).
+        # Setup window overlay: a full-screen panel with the setup QR + on-screen
+        # code + countdown + a "Sluiten" focusable. Built ONCE and hidden (never
+        # deleted). The Sluiten button gives the keypad a target while the window
+        # is open so the OS drawer can't grab a press (plan risk #4); A closes the
+        # window, as does X (onBackPressed). Sits below the banner (built after).
         ov = self._rbox(scr, 0, 0, W, H, COL_BG, radius=0)
         try:
             ov.set_style_border_width(2, 0)
             ov.set_style_border_color(_col(COL_HINT), 0)
+            ov.remove_flag(lv.obj.FLAG.SCROLLABLE)
         except Exception:
             pass
         self._label(ov, 0, 6, "Telefoon-setup", COL_HINT, font=lv.font_montserrat_24, center=True)
         self._label(ov, 0, 34, "scan met je telefoon (bluetooth)", COL_NONE,
                     font=lv.font_montserrat_14, center=True)
         try:
-            box = self._rbox(ov, (W - 140) // 2, 54, 140, 140, 0xFFFFFF, radius=6)
+            box = self._rbox(ov, (W - 128) // 2, 50, 128, 128, 0xFFFFFF, radius=6)
             qr = lv.qrcode(box)
-            qr.set_size(116)
+            qr.set_size(108)
             qr.set_dark_color(_col(0x000000))
             qr.set_light_color(_col(0xFFFFFF))
             qr.center()
@@ -848,28 +1046,49 @@ class Fri3dFriends(Activity):
         except Exception:
             self._overlay_qr = None
             self._overlay_qr_box = None
-        self._overlay_code_lbl = self._label(ov, 0, 200, "", COL_NEAR,
+        self._overlay_code_lbl = self._label(ov, 0, 182, "", COL_NEAR,
                                              font=lv.font_montserrat_16, center=True)
-        self._overlay_count_lbl = self._label(ov, 0, 222, "", COL_NONE,
+        self._overlay_count_lbl = self._label(ov, 0, 200, "", COL_NONE,
                                               font=lv.font_montserrat_12, center=True)
+        close = lv.button(ov)
+        close.set_size(96, 22)
+        close.set_pos((W - 96) // 2, 212)
+        try:
+            close.set_style_bg_color(_col(COL_PANEL), 0)
+            close.set_style_bg_opa(lv.OPA.COVER, 0)
+            close.set_style_radius(11, 0)
+            close.set_style_border_width(1, 0)
+            close.set_style_border_color(_col(COL_CARD_LINE), 0)
+            close.set_style_shadow_width(0, 0)
+        except Exception:
+            pass
+        clbl = lv.label(close)
+        clbl.set_text("Sluiten")
+        clbl.set_style_text_color(_col(COL_HINT), 0)
+        clbl.set_style_text_font(lv.font_montserrat_14, 0)
+        try:
+            clbl.center()
+        except Exception:
+            pass
+        self._make_focusable(close)
+        self._bind_event(close, self._on_setup_close_clicked, lv.EVENT.CLICKED)
+        self._setup_close_btn = close
         ov.add_flag(lv.obj.FLAG.HIDDEN)
         self._overlay = ov
 
     def _build_adopt_panel(self, scr):
-        # Post-swap "join my friend's group(s)?" prompt. Same create-once/hide
-        # discipline as _build_setup_overlay: MAX_GROUPS rows are built now and
-        # only ever set_text()'d + hidden/shown — never created or deleted per
-        # prompt (deleting live widgets hard-crashes this build).
-        #
-        # The tick is drawn as "[x]"/"[ ]" text rather than an lv.checkbox: the
-        # app registers no LVGL input device (every button is polled in _loop),
-        # so a real widget would need a focus group that doesn't exist.
+        # Post-swap "join my friend's group(s)?" prompt, rebuilt (v0.10.0) as
+        # focusable lv.button rows: A toggles a group's tick, a final "Meedoen"
+        # row confirms -> _adopt_groups_now. Same create-once/hide discipline
+        # (deleting live widgets hard-crashes this build). The tick is "[x]"/"[ ]"
+        # text in the row label; the OS focus highlight marks the selected row.
         pw = W - 24
         pn = self._rbox(scr, (W - pw) // 2, 24, pw, H - 56, COL_PANEL, radius=10)
         try:
             pn.set_style_border_width(2, 0)
             pn.set_style_border_color(_col(COL_NEAR), 0)
             pn.set_style_pad_all(4, 0)
+            pn.remove_flag(lv.obj.FLAG.SCROLLABLE)
         except Exception:
             pass
         self._adopt_title_lbl = lv.label(pn)
@@ -879,26 +1098,62 @@ class Fri3dFriends(Activity):
         self._adopt_title_lbl.set_width(pw - 16)
         self._adopt_title_lbl.set_pos(6, 4)
         self._adopt_rows = []
-        # Rows start below a TWO-line title ("<peer> zit in N groepen\nWelke
-        # meedoen?"): montserrat_16 is ~19 px/line, so a 2-line title reaches
-        # ~y=44. Start rows at 50 so they never overlap the "Welke meedoen?"
-        # line. 5 rows x 20 px -> last row ~y=130, clear of the footer at ~158.
+        self._adopt_row_labels = []
+        rw = pw - 16
+        # Rows start below a TWO-line title (montserrat_16 ~19 px/line -> 2 lines
+        # reach ~y=44); start at 50. 5 rows x 20 px -> last row ~y=130, then the
+        # Meedoen row at ~154, clear of the panel bottom.
         for i in range(MAX_GROUPS):
-            row = lv.label(pn)
-            row.set_text("")
-            row.set_style_text_color(_col(COL_NONE), 0)
-            row.set_style_text_font(lv.font_montserrat_14, 0)
+            row = lv.button(pn)
+            row.set_size(rw, 20)
             row.set_pos(6, 50 + i * 20)
             try:
-                row.set_width(pw - 16)
-                row.set_long_mode(lv.label.LONG_MODE.DOT)
+                row.set_style_bg_color(_col(COL_CARD), 0)
+                row.set_style_bg_opa(lv.OPA.COVER, 0)
+                row.set_style_radius(6, 0)
+                row.set_style_border_width(0, 0)
+                row.set_style_shadow_width(0, 0)
+                row.set_style_pad_all(0, 0)
             except Exception:
                 pass
+            lbl = lv.label(row)
+            lbl.set_text("")
+            lbl.set_style_text_color(_col(COL_NAME), 0)
+            lbl.set_style_text_font(lv.font_montserrat_14, 0)
+            try:
+                lbl.set_width(rw - 12)
+                lbl.set_long_mode(lv.label.LONG_MODE.DOT)
+                lbl.align(lv.ALIGN.LEFT_MID, 6, 0)
+            except Exception:
+                lbl.set_pos(6, 2)
+            self._make_focusable(row)
+            self._bind_event(row, self._make_adopt_cb(i), lv.EVENT.CLICKED)
             row.add_flag(lv.obj.FLAG.HIDDEN)
             self._adopt_rows.append(row)
-        # y/w are panel-relative (panel is pw x H-56).
-        self._label(pn, 0, (H - 56) - 26, "A: verder   B: vink   Y: meedoen", COL_HINT,
-                    font=lv.font_montserrat_12, center=True, w=pw - 16)
+            self._adopt_row_labels.append(lbl)
+        join = lv.button(pn)
+        join.set_size(rw, 22)
+        join.set_pos(6, 50 + MAX_GROUPS * 20 + 4)
+        try:
+            join.set_style_bg_color(_col(COL_BANNER), 0)
+            join.set_style_bg_opa(lv.OPA.COVER, 0)
+            join.set_style_radius(8, 0)
+            join.set_style_border_width(0, 0)
+            join.set_style_shadow_width(0, 0)
+            join.set_style_pad_all(0, 0)
+        except Exception:
+            pass
+        jlbl = lv.label(join)
+        jlbl.set_text("Meedoen")
+        jlbl.set_style_text_color(_col(COL_NEAR), 0)
+        jlbl.set_style_text_font(lv.font_montserrat_16, 0)
+        try:
+            jlbl.center()
+        except Exception:
+            pass
+        self._make_focusable(join)
+        self._bind_event(join, self._on_adopt_join_clicked, lv.EVENT.CLICKED)
+        self._adopt_join = join
         pn.add_flag(lv.obj.FLAG.HIDDEN)
         self._adopt_panel = pn
 
@@ -948,6 +1203,10 @@ class Fri3dFriends(Activity):
         for i in range(6):
             self._make_detail_row(self._detail_panel, i, dpw)
         self._detail_panel.add_flag(lv.obj.FLAG.HIDDEN)
+
+        # The nametag's single focusable affordance (opens the menu). Built once
+        # with the nametag (also from _swap_setup_for_nametag).
+        self._build_menu_button(scr)
 
     def _build_banner(self, scr):
         # Alert banner (hidden), on top.
@@ -1067,7 +1326,7 @@ class Fri3dFriends(Activity):
     # ------------------------------------------------------------------ lifecycle
     def onCreate(self):
         self._load_config()
-        self._setup_buttons()
+        self._resolve_focus_highlight()
         self._setup_buzzer()
         self._setup_display()
         self._name_font = self._load_name_font()
@@ -1080,6 +1339,10 @@ class Fri3dFriends(Activity):
         self._build_idle(self._scr)
         self._splash_scr = self._build_splash(self._scr)
         self.setContentView(self._scr)
+        # add_focus_border enrols every focusable in the default group at build
+        # time; onResume's _establish_focus reconciles it to exactly the active
+        # state's set, so nothing needs doing here (the activity isn't
+        # interactive until resume).
 
     def onResume(self, screen):
         super().onResume(screen)
@@ -1099,20 +1362,20 @@ class Fri3dFriends(Activity):
                                 self._config["rssi_floor"])
             except Exception:
                 pass
-        elif self._show_setup_screen():
-            # Configure-me on screen: run the BLE setup service so a phone can
-            # configure us over Bluetooth (no proximity radio runs).
-            self._start_configure_setup()
-        # else: a SKIPPED, group-less badge — no proximity beacon (nothing to
-        # match on) and no standing setup advertising. The radio comes up on
-        # demand for a Y-swap or a held-B setup window, and _teardown_ble()
-        # powers it back down.
+        # A group-less badge (Configure-me or skipped) brings the radio up on
+        # demand: a contact swap or a "Telefoon-setup" window; _teardown_ble()
+        # powers it back down. No standing proximity beacon (nothing to match on).
+        # Re-establish our focusables as the default group's only members (the
+        # group was emptied by _release_focus on pause so the launcher/editor
+        # got a clean group).
+        self._establish_focus()
         if not self._entered and self._splash_task is None:
             self._splash_task = TaskManager.create_task(self._splash_then_enter())
         self._task = TaskManager.create_task(self._loop())
 
     def onPause(self, screen):
         super().onPause(screen)
+        self._release_focus()
         self._stop_task()
         self._stop_setup()
         self._teardown_ble()
@@ -1125,6 +1388,7 @@ class Fri3dFriends(Activity):
             pass
 
     def onStop(self, screen):
+        self._release_focus()
         self._stop_task()
         self._stop_setup()
         self._teardown_ble()
@@ -1135,6 +1399,7 @@ class Fri3dFriends(Activity):
             pass
 
     def onDestroy(self, screen):
+        self._release_focus()
         self._stop_task()
         self._stop_setup()
         self._teardown_ble()
@@ -1189,7 +1454,11 @@ class Fri3dFriends(Activity):
                 now = time.ticks_ms()
                 dt = time.ticks_diff(now, last)
                 last = now
-                self._handle_buttons()
+                # Post-swap adopt prompt: open once the swap task has finished.
+                # (Was driven from _handle_buttons; the raw-poll model is gone.)
+                if (self._pending_adopt is not None and not self._exchanging and
+                        not self._menu_open and self._setup_task is None):
+                    self._open_adopt()
                 # During a contact swap, keep the loop out of the radio's way:
                 # skip the periodic refreshers — especially _update_leds, whose
                 # WS2812 lights.write() disables IRQs and starves the short GATT
@@ -1245,109 +1514,6 @@ class Fri3dFriends(Activity):
             except Exception:
                 pass
             await asyncio.sleep_ms(TICK_MS)
-
-    def _handle_buttons(self):
-        # B is press-and-hold aware: a SHORT press toggles mute (on release), a
-        # LONG press (>= SETUP_HOLD_MS) opens the phone-setup window on a
-        # configured badge. A and Y stay simple edge triggers. All actions are
-        # suppressed during a swap or an open setup window (a WS2812 LED write or
-        # an lvgl toggle would starve the short GATT link — field bug 2).
-        busy = self._exchanging or self._setup_open or self._setup_task is not None
-
-        # --- prompts, handled BEFORE the busy gate ------------------------
-        # Both of these live on screens where `busy` is (or has just been) True,
-        # so they would never see an edge if they waited their turn below.
-        if self._adopt_open:
-            self._handle_adopt_buttons()
-            return
-        if self._pending_adopt is not None and not self._exchanging:
-            # The swap task has finished; safe to prompt now.
-            self._open_adopt()
-            return
-        if self._show_setup_screen():
-            # Configure-me: A opens the on-badge editor, Y skips to the nametag.
-            # No phone or internet needed for either (issue #4).
-            # Poll BOTH every tick — `or` would short-circuit and leave the
-            # other button's edge state stale, faking a press on a later tick.
-            a_ev = self._edge("a")
-            y_ev = self._edge("y")
-            if a_ev:
-                self._wake()
-                self._open_settings()
-            elif y_ev:
-                self._wake()
-                self._skip_setup()
-            self._handle_b_button(True)      # keep press state coherent, no action
-            return
-        if self._edge("start"):
-            # START is otherwise unused on both boards, and is plain GPIO 0 on
-            # each — the one free gesture for the on-badge editor.
-            if not busy:
-                self._wake()
-                self._open_settings()
-                return
-
-        self._handle_b_button(busy)
-        for name in ("a", "y"):
-            ev = self._edge(name)
-            if not ev:
-                continue
-            if self._setup_open:
-                # Any A/Y press closes the setup window early.
-                self._wake()
-                self._stop_setup()
-                return
-            if busy:
-                continue
-            self._wake()
-            if ev == "y":
-                # A group-less badge MAY swap: that is how it adopts a friend's
-                # group without typing (v0.9.0). ContactExchange.ensure_radio()
-                # brings the radio up on demand and _teardown_ble() now calls
-                # exch.radio_off(), so there is a teardown path even when
-                # proximity.begin() was never called.
-                self._exch_task = TaskManager.create_task(self._do_exchange())
-            elif ev == "a":
-                self._detail = not self._detail
-                if self._detail_panel is not None:
-                    try:
-                        if self._detail:
-                            self._detail_panel.remove_flag(lv.obj.FLAG.HIDDEN)
-                        else:
-                            self._detail_panel.add_flag(lv.obj.FLAG.HIDDEN)
-                    except Exception:
-                        pass
-
-    def _handle_b_button(self, busy):
-        held = self._held("b")
-        prev_down = self._b_down_ms is not None
-        now = time.ticks_ms()
-        if held and not prev_down:
-            self._b_down_ms = now                 # press started
-            self._b_long = False
-        elif held and prev_down:
-            # Long-press threshold: open the setup window once, mid-hold.
-            if (not self._b_long and not busy and not self._show_setup_screen() and
-                    time.ticks_diff(now, self._b_down_ms) >= SETUP_HOLD_MS):
-                self._b_long = True
-                self._wake()
-                self._open_setup_window()
-        elif not held and prev_down:
-            was_long = self._b_long
-            self._b_down_ms = None
-            self._b_long = False
-            if busy or was_long:
-                return                            # long-press already acted
-            # Short press -> toggle mute.
-            self._wake()
-            self._sound = not self._sound
-            self._save_config("sound", self._sound)
-            self._flash_leds(*_hsv(0 if not self._sound else 120))
-            if self._controls_lbl is not None:
-                try:
-                    self._controls_lbl.set_text(self._controls_text())
-                except Exception:
-                    pass
 
     def _drain_arrivals(self):
         if self._unconfigured:
@@ -1525,6 +1691,11 @@ class Fri3dFriends(Activity):
         self._exchanging = True
         t0 = time.ticks_ms()
         try:
+            # BLE + LVGL share the ESP32's limited heap. Defragment before the
+            # radio-heavy swap window so a malloc mid-exchange is less likely to
+            # fail and panic-reboot the badge (the swap otherwise works most of
+            # the time; this is a mitigation, not a confirmed root cause).
+            gc.collect()
             self._show_banner("contacten ruilen...")
             self._wake()
             name = self._config.get("name", "") or "Anoniem"
@@ -1581,9 +1752,9 @@ class Fri3dFriends(Activity):
         """Queue the "join my friend's group(s)?" prompt after a swap.
 
         Only QUEUES it: we're still inside _do_exchange with self._exchanging
-        True, and _handle_buttons swallows every edge while busy, so prompting
-        here would render a panel nobody could answer. The main loop picks the
-        flag up once the swap task has finished — same deferral idiom as
+        True, so prompting here would render a panel whose focusable rows would
+        fight the swap for the radio. The main loop picks the flag up once the
+        swap task has finished — same deferral idiom as
         _reload_pending / _pending_begin.
         """
         # Clear first: a swap that offers nothing new must not leave an EARLIER
@@ -1604,13 +1775,13 @@ class Fri3dFriends(Activity):
         if not groups or self._adopt_panel is None:
             return
         self._adopt_groups = groups[:MAX_GROUPS]
-        # Pre-ticked: the common case is a friend with one group, which should
-        # then be a single Y press. Unticking is the exception.
-        self._adopt_ticked = [True] * len(self._adopt_groups)
-        self._adopt_row = 0
+        # Unchecked by default: the user explicitly ticks the group(s) they want
+        # to join, so nothing is joined silently or by accident.
+        self._adopt_ticked = [False] * len(self._adopt_groups)
+        self._adopt_count = len(self._adopt_groups)
         self._adopt_open = True
         self._adopt_last = None
-        n = len(self._adopt_groups)
+        n = self._adopt_count
         try:
             self._adopt_title_lbl.set_text(
                 "%s zit in %d groepen\nWelke meedoen?" % (peer, n) if n > 1
@@ -1629,9 +1800,11 @@ class Fri3dFriends(Activity):
                 self._banner_bg.move_foreground()
             except Exception:
                 pass
+        # Drive the group rows + Meedoen; the OS focus highlight marks the row.
+        self._set_focus(self._adopt_rows[:n] + [self._adopt_join])
 
     def _refresh_adopt(self):
-        state = (self._adopt_row, tuple(self._adopt_ticked))
+        state = tuple(self._adopt_ticked)
         if state == self._adopt_last:
             return
         self._adopt_last = state
@@ -1644,12 +1817,9 @@ class Fri3dFriends(Activity):
                 continue
             try:
                 row.remove_flag(lv.obj.FLAG.HIDDEN)
-                row.set_text("%s[%s] %s" % (
-                    ">" if i == self._adopt_row else " ",
+                self._adopt_row_labels[i].set_text("[%s] %s" % (
                     "x" if self._adopt_ticked[i] else " ",
                     self._adopt_groups[i]))
-                row.set_style_text_color(
-                    _col(COL_NEAR if i == self._adopt_row else COL_NONE), 0)
             except Exception:
                 pass
 
@@ -1657,42 +1827,181 @@ class Fri3dFriends(Activity):
         self._adopt_open = False
         self._adopt_groups = []
         self._adopt_ticked = []
+        self._adopt_count = 0
         try:
             self._adopt_panel.add_flag(lv.obj.FLAG.HIDDEN)
         except Exception:
             pass
-        # A long B press is detected across ticks; if the user was still holding
-        # B when the prompt closed, clear that state or it falls straight through
-        # into the phone-setup window.
-        self._b_down_ms = None
-        self._b_long = False
+        # Back to the nametag (or Configure-me) affordance.
+        self._establish_focus()
 
-    def _handle_adopt_buttons(self):
-        """Drive the prompt. Returns True if it consumed this tick's input.
+    def _make_adopt_cb(self, i):
+        def cb(e):
+            self._on_adopt_group_clicked(i)
+        return cb
 
-        B is read here with _edge() instead of _handle_b_button() (which is
-        skipped while the prompt is up): the two keep independent state
-        (self._prev vs _b_down_ms/_b_long), so they can't corrupt each other.
-        """
-        if self._edge("a"):
-            self._wake()
-            if self._adopt_groups:
-                self._adopt_row = (self._adopt_row + 1) % len(self._adopt_groups)
-            self._refresh_adopt()
+    def _on_adopt_group_clicked(self, i):
+        self._wake()
+        if 0 <= i < len(self._adopt_ticked):
+            self._adopt_ticked[i] = not self._adopt_ticked[i]
+        self._refresh_adopt()
+
+    def _on_adopt_join_clicked(self, e):
+        self._wake()
+        chosen = [g for g, t in zip(self._adopt_groups, self._adopt_ticked) if t]
+        # Closes the prompt either way; only joins the ticked groups, so picking
+        # Meedoen with nothing checked just silently quits the screen.
+        self._close_adopt()
+        if chosen:
+            self._adopt_groups_now(chosen)
+
+    # ------------------------------------------------------- on-badge menu (v0.10.0)
+    def _on_menu_btn_clicked(self, e):
+        self._wake()
+        self._open_menu()
+
+    def _make_menu_cb(self, i):
+        def cb(e):
+            self._on_menu_row_clicked(i)
+        return cb
+
+    def _on_menu_row_clicked(self, i):
+        self._wake()
+        action = self._menu_actions[i] if 0 <= i < len(self._menu_actions) else None
+        self._do_menu_action(action)
+
+    def _open_menu(self):
+        # Build the item list for the current state, populate the rows, show the
+        # overlay and hand the keypad the rows. Suppressed during the splash and
+        # any BLE-owned state (a swap / setup window owns the radio).
+        if not self._entered:
+            return
+        if (self._menu_open or self._exchanging or self._setup_open or
+                self._setup_task is not None or self._adopt_open):
+            return
+        items = [
+            ("Vrienden dichtbij", "detail"),
+            ("Contact ruilen", "swap"),
+            ("Geluid: %s" % ("aan" if self._sound else "uit"), "mute"),
+            ("Telefoon-setup", "setup"),
+            ("Instellingen", "settings"),
+        ]
+        self._menu_actions = [act for _, act in items]
+        self._menu_count = len(items)
+        for i in range(MENU_MAX):
+            if i < self._menu_count:
+                try:
+                    self._menu_row_labels[i].set_text(items[i][0])
+                    self._menu_rows[i].remove_flag(lv.obj.FLAG.HIDDEN)
+                except Exception:
+                    pass
+            else:
+                try:
+                    self._menu_rows[i].add_flag(lv.obj.FLAG.HIDDEN)
+                except Exception:
+                    pass
+        self._menu_open = True
+        if self._menu is not None:
+            try:
+                self._menu.remove_flag(lv.obj.FLAG.HIDDEN)
+                self._menu.move_foreground()
+            except Exception:
+                pass
+        # Keep the banner above the overlay (it was built after it).
+        if self._banner_bg is not None:
+            try:
+                self._banner_bg.move_foreground()
+            except Exception:
+                pass
+        self._set_focus(self._menu_rows[:self._menu_count])
+
+    def _close_menu(self):
+        self._menu_open = False
+        if self._menu is not None:
+            try:
+                self._menu.add_flag(lv.obj.FLAG.HIDDEN)
+            except Exception:
+                pass
+        self._set_focus([self._menu_btn])
+
+    def _do_menu_action(self, action):
+        if action == "detail":
+            self._close_menu()
+            self._toggle_detail()
+        elif action == "swap":
+            self._close_menu()
+            self._exch_task = TaskManager.create_task(self._do_exchange())
+        elif action == "mute":
+            # Toggle in place: stay in the menu and reflect the new state on the
+            # row label so the user sees it flip.
+            self._toggle_mute()
+            try:
+                idx = self._menu_actions.index("mute")
+                self._menu_row_labels[idx].set_text(
+                    "Geluid: %s" % ("aan" if self._sound else "uit"))
+            except Exception:
+                pass
+        elif action == "setup":
+            self._close_menu()
+            self._open_setup_window()
+        elif action == "settings":
+            self._close_menu()
+            self._open_settings()
+
+    def _make_cfg_cb(self, action):
+        def cb(e):
+            self._do_cfg_action(action)
+        return cb
+
+    def _do_cfg_action(self, action):
+        # Configure-me mini-menu: the three ways off the first-run screen.
+        self._wake()
+        if action == "settings":
+            self._open_settings()
+        elif action == "phone":
+            self._open_setup_window()
+        elif action == "skip":
+            self._skip_setup()
+
+    def _toggle_detail(self):
+        self._detail = not self._detail
+        if self._detail_panel is not None:
+            try:
+                if self._detail:
+                    self._detail_panel.remove_flag(lv.obj.FLAG.HIDDEN)
+                else:
+                    self._detail_panel.add_flag(lv.obj.FLAG.HIDDEN)
+            except Exception:
+                pass
+
+    def _toggle_mute(self):
+        self._sound = not self._sound
+        self._save_config("sound", self._sound)
+        self._flash_leds(*_hsv(0 if not self._sound else 120))
+
+    def _on_setup_close_clicked(self, e):
+        # Close the setup window from its "Sluiten" button (A) -- the same thing
+        # X does via onBackPressed. Restore the prior state's focus.
+        self._wake()
+        self._stop_setup()
+        self._establish_focus()
+
+    def onBackPressed(self, screen):
+        # X = back/close. Close the topmost overlay before letting the framework
+        # finish (quit) the activity. Returning True consumes the press and keeps
+        # us foregrounded; returning False (nothing open) quits to the launcher.
+        if self._menu_open:
+            self._close_menu()
             return True
-        if self._edge("b"):
-            self._wake()
-            if self._adopt_groups:
-                i = self._adopt_row
-                self._adopt_ticked[i] = not self._adopt_ticked[i]
-            self._refresh_adopt()
-            return True
-        if self._edge("y"):
-            self._wake()
-            chosen = [g for g, t in zip(self._adopt_groups, self._adopt_ticked) if t]
+        if self._adopt_open:
             self._close_adopt()
-            if chosen:
-                self._adopt_groups_now(chosen)
+            return True
+        if self._setup_open:
+            self._stop_setup()
+            self._establish_focus()
+            return True
+        if self._detail:
+            self._toggle_detail()
             return True
         return False
 
@@ -1709,7 +2018,8 @@ class Fri3dFriends(Activity):
         self._save_config("groups", merged)
         was_off = self._unconfigured
         self._load_config()
-        # A Configure-me badge can't reach a swap (Y is intercepted there), so in
+        self._refresh_pills()      # show the new pill(s) immediately, no reboot
+        # A Configure-me badge can't reach a swap (it has no menu), so in
         # practice the nametag already exists — but the call is idempotent, so be
         # safe rather than clever.
         self._swap_setup_for_nametag()
@@ -1729,31 +2039,24 @@ class Fri3dFriends(Activity):
             self._show_banner("%s erbij (%d paste niet, max %d)"
                               % (joined, dropped, MAX_GROUPS))
         else:
-            self._show_banner("%s erbij - herstart de app" % joined)
+            self._show_banner("%s erbij" % joined)
 
     # --------------------------------------------------------- on-badge settings editor
     def _skip_setup(self):
-        """"Skip for now" on Configure-me: drop to the nametag under the
+        """\"Overslaan\" on Configure-me: drop to the nametag under the
         auto-nickname. Persisted, so the badge doesn't nag on every boot — the
-        "no group yet" hint on the nametag is a gentler standing reminder."""
+        \"no group yet\" hint on the nametag is a gentler standing reminder."""
         self._setup_skipped = True
         self._save_config("setup_skipped", True)
-        # Release the radio the Configure-me screen was advertising on. Nothing
-        # else wants it on a group-less badge (no beacon), and leaving NimBLE
-        # powered for the rest of the session is a pointless battery drain.
-        # Same order onPause uses: stop the session, then power down.
+        # Power down any radio a setup window may have brought up; nothing else
+        # wants it on a group-less badge (no beacon). Idempotent + safe if none.
         self._stop_setup()
         try:
             self._exch.radio_off()
         except Exception:
             pass
         self._swap_setup_for_nametag()
-        if self._controls_lbl is not None:
-            try:
-                self._controls_lbl.set_text(self._controls_text())
-            except Exception:
-                pass
-        self._show_banner("Later instellen: hou B, of START")
+        self._show_banner("Later instellen via Menu")
 
     def _open_settings(self):
         """Launch the OS settings editor for our config (no phone, no internet).
@@ -1859,42 +2162,14 @@ class Fri3dFriends(Activity):
     def _setup_url(self, bid):
         return SETUP_URL_BASE + "?badge=" + bid
 
-    def _start_configure_setup(self):
-        # Unconfigured badge, app foreground: run the setup GATT service so a
-        # phone can configure us over Bluetooth (no proximity radio is running,
-        # so the setup service owns the radio for the whole Configure-me screen).
-        if self._setup_task is not None:
-            return
-        try:
-            self._setup_task = TaskManager.create_task(self._run_configure_setup())
-        except Exception:
-            self._setup_task = None
-
-    async def _run_configure_setup(self):
-        me = asyncio.current_task()
-        try:
-            # No proximity to suspend, no timeout: runs until cancelled (screen
-            # change / save) — request_stop() ends it after a successful save.
-            await self._setup.run("configure", proximity=None, timeout_ms=None)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            pass
-        finally:
-            # Only clear the handle if it still points at THIS task: the splash->
-            # main setContentView re-fires onPause/onResume, which cancels this
-            # session and starts a fresh one — a blind `= None` here would clobber
-            # the new session's live handle (breaking teardown-on-pause + gates).
-            if self._setup_task is me:
-                self._setup_task = None
-
     def _open_setup_window(self):
-        # Configured badge: open a bounded (SETUP_WINDOW_MS) setup window. The
-        # session suspends the proximity radio and resumes it on close.
-        # A skipped, group-less badge MAY open it — that is one of the two ways
-        # back to setup after "skip for now" (the other is START).
-        if (self._show_setup_screen() or self._exchanging or self._setup_open or
-                self._setup_task is not None or self._adopt_open):
+        # Open a bounded (SETUP_WINDOW_MS) setup window. On a configured badge
+        # the session suspends the proximity radio and resumes it on close; on a
+        # Configure-me / skipped badge (no proximity running) it simply brings
+        # the radio up for the window. Reached from the menu's "Telefoon-setup"
+        # item and Configure-me's "Telefoon-setup" row.
+        if (self._exchanging or self._setup_open or
+                self._setup_task is not None or self._adopt_open or self._menu_open):
             return
         self._setup_open = True
         self._setup_win_deadline = time.ticks_add(time.ticks_ms(), SETUP_WINDOW_MS)
@@ -1921,6 +2196,10 @@ class Fri3dFriends(Activity):
                 self._setup_task = None
             self._hide_setup_overlay()
             self._led_last = None
+            # On a clean close (timeout) hand focus back to the prior state. (On
+            # cancel-via-pause _focus_held is already False; onResume restores.)
+            if self._focus_held:
+                self._establish_focus()
             try:
                 self._show_banner("Setup gesloten")
             except Exception:
@@ -1952,6 +2231,10 @@ class Fri3dFriends(Activity):
                 pass
         self._setup_last = None
         self._overlay_qr_last = None
+        # Give the keypad a target while the window is open (the Sluiten button)
+        # so the OS drawer can't grab a press.
+        if self._setup_close_btn is not None:
+            self._set_focus([self._setup_close_btn])
 
     def _hide_setup_overlay(self):
         if self._overlay is not None:
@@ -2049,9 +2332,9 @@ class Fri3dFriends(Activity):
         # whichever activity owns the new screen — even when that's `self`
         # again), which would tear down and duplicate the very state we're in
         # the middle of updating (portal, main-loop task, BLE). So name +
-        # contact + runtime settings apply live; group pills, the friends
-        # nametag layout and the on-air beacon (name/groups) update on the next
-        # app start.
+        # contact + runtime settings AND group pills apply live (pills via
+        # _refresh_pills); only the on-air beacon's group set waits for the next
+        # app start (restarting BLE live is the risky part avoided here).
         if self._exchanging:
             self._reload_pending = True
             return
@@ -2065,11 +2348,7 @@ class Fri3dFriends(Activity):
                 self._name_lbl.set_text(self._config.get("name", ""))
             except Exception:
                 pass
-        if self._controls_lbl is not None:
-            try:
-                self._controls_lbl.set_text(self._controls_text())
-            except Exception:
-                pass
+        self._refresh_pills()
         if was_unconfigured and not self._unconfigured:
             # First-time setup just completed over BLE. Hand the radio from the
             # setup session to the proximity feature WITHOUT the two advertising
@@ -2077,8 +2356,8 @@ class Fri3dFriends(Activity):
             # its save-grace (so the phone can read back the saved config), so we
             # DON'T begin proximity here. Instead flag it — the main loop starts
             # proximity once the setup session has fully ended (_setup_task None).
-            # The Y-swap gate stays closed while _setup_task is not None
-            # (see _handle_buttons), so Y can't find a half-up radio in between.
+            # The "Contact ruilen" menu item opens a swap task only while no
+            # setup task is running, so a swap can't find a half-up radio.
             self._pending_begin = True
             self._swap_setup_for_nametag()
         self._show_banner("Instellingen opgeslagen")
@@ -2108,13 +2387,8 @@ class Fri3dFriends(Activity):
             self._build_nametag(self._scr)
         except Exception:
             pass
-        # This badge started unconfigured, so the nametag footer hint and the
-        # setup-window overlay were never built — build them now (create-once).
-        if self._setup_hint_lbl is not None:
-            try:
-                self._setup_hint_lbl.set_text(self._hint_text())
-            except Exception:
-                pass
+        # The setup-window overlay and menu overlay are always built in
+        # _build_idle, so they already exist; the guard is just a safety net.
         if self._overlay is None:
             try:
                 self._build_setup_overlay(self._scr)
@@ -2129,3 +2403,5 @@ class Fri3dFriends(Activity):
                     self._banner_bg.move_to_index(-1)
                 except Exception:
                     pass
+        # Hand the keypad the nametag's new menu affordance.
+        self._establish_focus()

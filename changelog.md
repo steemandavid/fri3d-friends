@@ -1,3 +1,126 @@
+# !Fri3d Friends — v0.10.0 joystick-menu shipped (implemented + on-device debug) — 2026-07-28
+
+Implemented `Implementation_Plan_Menu_20260728.md` (the joystick-menu redesign +
+2026 OS-drawer fix), debugged it live on the three connected badges, and packaged
+v0.10.0 for BadgeHub. All on `feat/contact-swap-splash-portal`. Version bumped
+0.9.0 → 0.10.0. 118 host tests stay green throughout.
+
+Badges (by stable serial-id; board type is NOT in the serial — see memory
+`badge-usb-ports`): `90706901bac80000` & `1cdbd49d9de40000` = 2026,
+`348518acfac00000` = 2024.
+
+## 1. The menu redesign (plan §4a–4e), all in `fri3d_friends.py`
+
+- **Focus-group helpers (the drawer fix):** `_make_focusable` (uses
+  `mpos.ui.add_focus_border`), `_apply_focus`/`_set_focus`/`_establish_focus`/
+  `_release_focus`. Our focusables are the default LVGL group's *only* members
+  while foregrounded → the keypad drives them, never the OS bar. Membership is
+  reconciled per state-change and emptied on pause (launcher/editor get a clean
+  group).
+- **Menu overlay + nametag affordance:** `_build_menu` (create-once `MENU_MAX`
+  `lv.button` rows) + a bottom "Menu" pill (`_build_menu_button`). `_open_menu`/
+  `_close_menu`/`_do_menu_action` wire the 5 items (Vrienden dichtbij / Contact
+  ruilen / Geluid / Telefoon-setup / Instellingen) to existing methods.
+- **`onBackPressed`** returns `True` to close an overlay, `False` to quit — so X
+  closes the menu without quitting (the OS-level back hook; the app never polled
+  X). This was the key mechanism, confirmed from the MPOS app-lifecycle docs.
+- **Adopt prompt → focusable rows** (lv.button + a "Meedoen" confirm row);
+  deleted `_handle_adopt_buttons`.
+- **Configure-me → 3-row mini-menu** (Op badge instellen / Telefoon-setup /
+  Overslaan). The 240px screen can't fit 3 rows + a scannable QR, so the
+  phone-setup QR now opens in the setup-window overlay via *Telefoon-setup*
+  (drops the old "always advertising on Configure-me" behaviour — a phone pairs
+  only after selecting it).
+- **Removed the raw-poll input model:** `_handle_buttons`, `_handle_b_button`,
+  `_held`, `_edge`, `_setup_buttons`, all `BTN_*`/`START_PIN`/`SETUP_HOLD_MS`
+  maps, `_start_configure_setup`/`_run_configure_setup`, and the
+  `_controls_*`/`_hint_*` legend. AST-verified: 22 new methods in, 10 old gone.
+
+## 2. On-device debugging — three real bugs found after deploy
+
+Deployed only the 2 changed files (`fri3d_friends.py` + `MANIFEST.JSON`) via
+`tools/deploy.sh` to preserve each badge's `config.json`. Verified by reproducing
+`import`/build/focus logic on the badges over `mpremote` (the REPL is healthy at
+the launcher; an app running with BLE up wedges USB-CDC — recover with one
+`mpremote reset`, or `sudo usbreset <bus>/<dev>` for a deep wedge).
+
+- **"could not load app"** = `NameError: name 'H' isn't defined` at import. The
+  new MENU geometry constants referenced `H`/`W` but were placed where
+  `SETUP_HOLD_MS` used to be — ~60 lines **before** `H`/`W` are defined by the
+  `mpos.DisplayMetrics` block. (py_compile can't catch it; my first on-device
+  "build" check missed it because it called `_build_idle` directly, not
+  `onCreate`.) Fix: moved the block after the metrics definition.
+- **Three firmware-vs-docs API gaps** (this MicroPythonOS build predates
+  docs.micropythonos.com — saved to memory `mpos-firmware-api-gaps`):
+  - no `mpos.add_focus_highlight` → use **`mpos.ui.add_focus_border`**;
+  - the focus group has `add_obj` but **no `remove_obj`/`focus_obj`** → use
+    top-level **`lv.group_remove_obj(o)`** / **`lv.group_focus_obj(o)`**;
+  - guarded `add_event_cb` with a `_bind_event` helper (3-arg then 2-arg).
+- **"threw an exception, it might be glitchy"** = `AttributeError: ...has no
+  attribute '_strip_focus'`. `onCreate` called `self._strip_focus()` (a method I
+  referenced but never defined — I named it `_release_focus`). It threw on the
+  *last* line of `onCreate`, after the screen was built → the OS loaded the
+  screen but warned; the 2026 OS recovered, the 2024 OS quit on dismiss (exactly
+  the user's report). Fix: removed the redundant call (`onResume`'s
+  `_establish_focus` already reconciles the group). Verified `CREATE_OK` on
+  badges 1 & 2.
+
+## 3. UX fixes from user feedback
+
+- **Adopt prompt defaults unchecked.** `[True]*…` → `[False]*…` (join nothing by
+  accident). "Meedoen" with nothing checked now **silently quits** the prompt
+  (per user: no hint, no join). Verified on badge 2.
+- **Live pill refresh.** A newly-added group's pill no longer waits for a reboot:
+  `_place_pills` now pre-builds `MAX_PILLS` slots once; `_refresh_pills()`
+  updates label/colour/visibility in place and repositions the friends line (same
+  safe pattern as the detail rows — no widget create/delete, dodging the
+  "deleting live widgets crashes" landmine). Wired into `_adopt_groups_now` and
+  `_apply_reload`. Verified on badge 1: adding a group rendered a 4th pill
+  immediately (friends line 162→188). Banner changed from "…herstart de app" to
+  "…erbij".
+- **Contact ruilen intermittent reboot** (badge 1, 2 of ~many tries). `_do_exchange`
+  + the BLE swap are fully try/except-guarded (errors log to `exch.log`), so a
+  reboot is a **C-level ESP32 panic** (heap exhaustion / NimBLE race), not a
+  Python error. Added `gc.collect()` before the radio-heavy window as a
+  low-risk mitigation. **Not a confirmed fix** — pinning it needs the
+  Guru-Meditation backtrace from serial while a 2-badge swap runs.
+
+## 4. BadgeHub package v0.10.0
+
+Built per README "Build & publish" (deterministic zip, `touch -t 202501010000`,
+sorted `zip -X -r -0`). Staged to `/storage/fileshare/com.fri3dcamp.fri3dfriends/`
+(the user's pickup folder), all consistency-checked (sha):
+
+| file | purpose |
+|---|---|
+| `com.fri3dcamp.fri3dfriends_0.10.0.mpk` | Create-Project upload (single top-level folder; in-pkg MANIFEST 0.10.0; icon `icon_64x64.png`) |
+| `metadata.json` | manual-refresh path (version 0.10.0, executable matches, long_description synced to the menu model) |
+| `icon-64x64.png` | manual-refresh path — **hyphen** name per README issue #1 (icon_map `{"64x64":"icon-64x64.png"}`); sha-identical to the in-pkg icon |
+
+Corrected stale memory `badgehub-publish-fileshare` (it had the pre-issue-#1
+underscore icon name). Note: re-uploading the `.mpk` to an *existing* BadgeHub
+project does **not** refresh metadata/icon — clean path is delete+recreate from
+the `.mpk`, fallback is manually re-uploading icon + metadata.json.
+
+## 5. Docs
+
+README controls/setup sections rewritten to the menu model (joystick/A/X, the
+menu-item table, the drawer-fix note, Configure-me mini-menu, live pill refresh).
+DESIGN.md §7 flagged with a v0.10.0 input-change note (its per-button GPIO /
+`_held`/`_edge` details are retained as pre-v0.10.0 reference).
+
+## Notes / follow-ups
+
+- **Interactive checks still owed (can't be automated):** tap-to-launch on each
+  badge (no more "could not load app"), and confirm joystick moves highlight / A
+  activates / X closes / **no OS drawer** on any press.
+- **Contact ruilen reboot:** to pin, capture badge 1's raw serial during a
+  2-badge swap and decode the backtrace. `gc.collect` mitigation is live on all 3.
+- All 3 badges deployed with `RESET=1` (clears the cached `sys.modules` so the
+  next launch loads v0.10.0) and left at the launcher.
+
+---
+
 # !Fri3d Friends — on-badge v0.9.0 testing → 2026 OS-drawer diagnosis → joystick-menu redesign plan — 2026-07-28
 
 On-hardware test of v0.9.0 on the dev badges, which surfaced a 2026-only input

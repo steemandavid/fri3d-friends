@@ -23,11 +23,11 @@ network**: the phone talks Bluetooth straight to the badge. Scan the QR the badg
 shows to open the page; a 4-digit code on the badge gates access.
 
 **No phone? No internet? The badge works on its own.** A brand-new badge names
-itself (something like *Otter 42*) and goes straight to a working nametag — press
-**Y** on the first screen to skip setup. From there you can join a friend's group
-just by swapping with them (**Y**, no typing), or edit everything on the badge
-itself with **START**. The phone page is the comfortable option, never a
-requirement.
+itself (something like *Otter 42*) and goes straight to a working nametag — pick
+**Overslaan** on the first screen to skip setup. From there you can join a
+friend's group just by swapping with them (**Contact ruilen** in the menu, no
+typing), or edit everything on the badge via the menu's **Instellingen**. The
+phone page is the comfortable option, never a requirement.
 
 It's **generic and redistributable**: any hackerspace/makerspace can flash it and
 set their own group name(s) and member name by editing one file (no code changes)
@@ -117,9 +117,9 @@ Edit **`/apps/com.fri3dcamp.fri3dfriends/config.json`**:
 
 ## Setup on the badge itself (no phone, no internet)
 
-Press **START** (or **A** on the first-run screen) to open the on-badge editor. It
-uses MicroPythonOS's own settings UI, so it works on **both badges** — tap-and-type
-on the 2026 badge's touchscreen, and button-navigated focus plus the on-screen
+Open the menu → **Instellingen** to open the on-badge editor. It uses
+MicroPythonOS's own settings UI, so it works on **both badges** — tap-and-type on
+the 2026 badge's touchscreen, and button-navigated focus plus the on-screen
 keyboard on the button-only 2024 badge.
 
 | Setting | How you edit it |
@@ -155,12 +155,12 @@ at Fri3d Camp where badges and phones sit on different SSIDs/subnets.
   out briefly and rotate the code.
 - **Edit & save.** Change your name / groups / runtime settings and add/remove
   free-form contact fields, then **Save** — the badge applies name + contact +
-  runtime settings live (group changes need an app restart, as before). Switch to
-  the **Contacts** tab to view received contacts and **download** them as JSON.
-- **Opening setup on a configured badge:** **hold B for ~1.5 s** (a short B press
-  still toggles mute). This opens a **2-minute** setup window (QR + code + a
-  countdown); press **A/Y** to close it early. Proximity pauses during the window
-  and resumes when it closes.
+  runtime settings live, and group pills refresh live too. Switch to the
+  **Contacts** tab to view received contacts and **download** them as JSON.
+- **Opening setup on a configured badge:** pick **Telefoon-setup** in the menu.
+  This opens a **2-minute** setup window (QR + code + a countdown); pick
+  **Sluiten** (or press **X**) to close it early. Proximity pauses during the
+  window and resumes when it closes.
 - **Browsers:** works in **Chrome/Edge** (Android + desktop). **iPhone/iPad**:
   Safari has no Web Bluetooth — the page detects this and points you at the free
   **Bluefy** browser (the same page works there unchanged).
@@ -220,23 +220,38 @@ away, but the coloured **pills** only re-lay-out on the next app start.
 > - **Scan the QR**, connect, enter the on-screen code, fill in your name and
 >   group(s), and save: the badge **switches to the nametag and goes on the air
 >   immediately** — no reboot needed.
-> - **A — set up on badge:** opens the on-badge editor (see below). No phone.
-> - **Y — skip for now:** drops straight to a working nametag under the badge's
->   **auto-nickname**. Remembered, so you're not asked again. You can still join a
->   group later by swapping with a friend, or set up via **B** / **START**.
+> The first-run screen is a 3-row menu: pick **Op badge instellen** to open the
+> on-badge editor (no phone), **Telefoon-setup** for the QR, or **Overslaan** to
+> drop straight to a working nametag under the badge's **auto-nickname**
+> (remembered, so you're not asked again). You can still join a group later by
+> swapping with a friend, or set up via the menu.
 
 ## Controls
 
-| Button | Action |
-|---|---|
-| **A** | Open the friends-nearby panel (cards: name · shared group · signal bars · dBm · age) |
-| **B** | Short press: mute / unmute the alert buzzer (saved). **Hold ~1.5 s:** open the phone-setup window (Bluetooth) |
-| **Y** | Swap contacts with another badge nearby (they press **Y** too, within ~5 s) |
-| **X** | *(handled by the OS)* quit to the launcher / OS menu |
-| **START** | Open the **on-badge settings editor** (name, groups, sound, alert range, banner) |
+Everything is reached from one **on-badge menu** (joystick to move, **A** to
+choose, **X** to close). On the nametag, press **A** (or tap **Menu** on the 2026
+touchscreen) to open it:
 
-While the "join a group?" prompt is up after a swap, the buttons are **A: next ·
-B: tick · Y: join**.
+| Menu item | Action |
+|---|---|
+| **Vrienden dichtbij** | Toggle the friends-nearby panel (cards: name · shared group · signal bars · dBm · age) |
+| **Contact ruilen** | Swap contacts with a nearby badge (they pick it too, within ~5 s) |
+| **Geluid: aan/uit** | Mute / unmute the alert buzzer (saved; the label reflects the state) |
+| **Telefoon-setup** | Open the phone-setup window (Bluetooth QR + code) |
+| **Instellingen** | Open the on-badge settings editor (name, groups, sound, range, banner) |
+
+| Input | Action |
+|---|---|
+| Joystick ↑ / ↓ | move the highlight |
+| **A** (ENTER) | activate the highlighted row (or open the menu from the nametag) |
+| **X** (back) | close the current overlay; if nothing is open, quit to the launcher |
+
+This menu model also fixes a 2026-badge bug where a button press could pop the OS
+top-bar/drawer: the keypad drives our menu rows (the focus group's only members
+while the app is foregrounded), never the OS bar. After a swap, the "join a
+group?" prompt is the same kind of list — tick the group(s) you want, then
+**Meedoen** (groups start **unchecked**, so nothing is joined by accident; **X**
+cancels).
 
 At launch a **3-second splash** shows the app name, version, "by David Steeman"
 and the Makerspace Baasrode logo, then the nametag appears.
@@ -249,9 +264,8 @@ when none. On a new arrival, a banner appears for ~5 s (`banner_ms`), the LEDs
 flash, and a short buzzer sting plays — with a **colour + tone unique to the
 shared group** (derived from the group hash, so you can recognise *which* group
 just arrived without reading the screen). Several arrivals in one window coalesce
-into one banner ("Alice + 2 more nearby"). Press **A** for a per-friend panel
-(name, shared group, signal bars, dBm, seconds since last seen); press **B** to
-mute.
+into one banner ("Alice + 2 more nearby"). Adding a group (via a swap or the
+editor) makes its pill appear immediately — no reboot.
 
 **Friend LEDs:** each nearby friend also gets their own badge LED, slowly and
 dimly **breathing that friend's group colour** (friend 1 → LED 1, friend 2 →
