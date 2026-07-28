@@ -1,9 +1,41 @@
 # Implementation Plan — Gotcha (Assassin) game for !Fri3d Friends
 
-**Date:** 2026-07-26 (rev. 2, same day) · **Status:** design agreed, not implemented · **Target version:** v0.10.0
+**Date:** 2026-07-26 · **rev. 5, 2026-07-28** · **Status:** ready for implementation · **Target version:** v0.11.0 (v0.10.0 shipped 2026-07-28 as the joystick-navigation release)
 **Camp:** **Friday 14 – Sunday 16 August 2026**, badges handed out Friday morning.
 Roughly **37 hours of playable time** once the 22:00–08:00 truce is excluded (§2.4).
 Everything must ship before then.
+
+## Start here (for the implementing session)
+
+*Rev. 5, 2026-07-28. The readiness review (`Plan_Review_Gotcha_20260728.md`) is
+fully folded into this document — the review file is history and rationale, not
+an override. This plan is self-contained.*
+
+1. **Read, in order:** this preamble → "The game, in plain language" → §0 and
+   the D1–D31 table → `DESIGN.md` §1, §3, §9, §10, §12 → `README.md` "Controls"
+   and `changelog.md` (2026-07-28, v0.10.0) → the code
+   (`app/com.fri3dcamp.fri3dfriends/`).
+2. **The base app is v0.10.0** (commit `5df769b`): input is the LVGL
+   focus-group model — joystick moves focus, **A** activates the focused row,
+   **X** = `onBackPressed`. There is **no raw button polling** anywhere; all
+   Gotcha input is specified against this model (D29, §5.7, §8.4). Use the
+   existing helpers (`_make_focusable`, `_set_focus`, `_establish_focus`,
+   `_release_focus`, `_bind_event`) and mind the firmware API gaps recorded in
+   the changelog: `mpos.ui.add_focus_border` (not `add_focus_highlight`), and
+   top-level `lv.group_remove_obj` / `lv.group_focus_obj` (the group object has
+   no such methods on this build).
+3. **Do not relitigate D1–D31.** Phase order is §11. Do §14.2 **A5** (the
+   AppStore-update wipe test — the cheapest high-value test in this document)
+   and the Phase 0 spikes first.
+4. **Open inputs that do not block Phases 0–4:** register the DNS name and
+   confirm the DNS host supports API-driven DNS-01 issuance (needed by Phase 5,
+   §6.1); the arrival-day check that badges resolve the name with the uplink
+   down (§6.1); measurements A4/A6 (§14.2); the ceremony slot (§14.4).
+5. Where prose and a table disagree on a number, **the table wins**. Code
+   references were verified 2026-07-28 against v0.10.0; trust symbol names over
+   line numbers.
+
+---
 
 This plan is written to be handed to an implementer who has *not* been part of the
 design conversation. It assumes familiarity with `DESIGN.md` (especially §3 BLE
@@ -23,6 +55,17 @@ explicitly.
 > **version/hotfix path** (§8.10, D27). Its **separate child/adult target chains** were considered and replaced by
 > **personal quiet hours** (§10.4a, D25), which solve the same real problem without
 > recording anyone's age. Its **"finale mode"** remains open and is not designed here.
+
+> **Revision 5 (2026-07-28)** integrates the full readiness review
+> (`Plan_Review_Gotcha_20260728.md`) and rebases the plan on the **v0.10.0
+> joystick/focus-navigation release** (commit `5df769b`), which shipped while this
+> plan was under review: all input is LVGL-focus-group driven (joystick + **A** +
+> **X**), the raw button layer this plan previously extended no longer exists, and
+> the base-app Dutch translation has shipped. New decisions **D29–D31** (input
+> model; no `witnesses[]`; on-site server + low-TTL DNS, backend-served pages).
+> Response signing moved into a body envelope (§6.2); the peer-table admission
+> filter and LRU pinning specified (§4); backend fixed to FastAPI+SQLite in
+> `server/` (§9); `DORMANT_H` settled at 12 h (§2.4).
 
 **Read the next section first.** Everything after it is engineering; none of it makes
 sense until you know what the game feels like to play.
@@ -48,6 +91,10 @@ to fill — stronger as you get closer, fading as you drift away. It cannot poin
 a direction. It only ever tells you *warmer* or *colder*, which means finding someone
 is a matter of walking around, watching the bar, and paying attention to faces.
 
+The badge also tells you which way you are going: the ping bends upward while you are
+getting closer and downward while you are losing them, so you can course-correct on the
+move without stopping to look.
+
 You do not have to stare at the screen for this. The row of lights on the front of your
 badge *is* the radar: dark when there is nothing, then one blue light when your target
 is somewhere around, then two, then three — quickening and turning amber as you close —
@@ -58,6 +105,16 @@ Most of the time the lights are dark and your target is somewhere else entirely 
 site. So you carry on with your day, and every so often one of them flickers blue, and
 you look up.
 
+And once you are genuinely close, the badge starts to **ping** — a short, dry sonar
+note, in time with the lights. It is slow at first, one every second or so, and it
+quickens and rises as you close, until it is going four times a second and the row is
+solid red and the person is standing right in front of you. You can hunt by ear, badge
+in your pocket, without looking at anything.
+
+It also means the people around you can hear it. A badge pinging faster and faster in a
+crowd is not a subtle object, and if your target knows the sound, they know something is
+coming before they know it is you.
+
 ### Picking them out of a crowd
 
 The radar gets you to a group of thirty people around a fire. Then it stops helping:
@@ -65,8 +122,8 @@ your badge knows your target is *here*, within a few metres, and cannot tell you
 of the thirty they are. Names are on badges, but you are not going to read thirty
 badges without it being obvious what you are doing.
 
-So you press **MENU**, and their badge — and only theirs — **lights up bright gold for
-two seconds and chirps.**
+So you press **A**, and their badge — and only theirs — **lights up bright gold for
+a couple of seconds and chirps.**
 
 Now you know. And so do they, because it is their badge that just went off in their
 hand, and they can see you looking. Revealing is not free: you have spent your surprise
@@ -81,7 +138,7 @@ watching you.
 ### The kill
 
 When you are close enough — a few metres, near enough to touch them — you press
-**MENU** again. It is the same button that revealed them; once you are near enough to
+**A** again. It is the same button that revealed them; once you are near enough to
 kill, that is what it does, and your badge says so before you press it.
 
 Their badge immediately starts **screaming.** Red screen, siren, `UNDER ATTACK — RUN!`
@@ -92,7 +149,7 @@ They have **five seconds** to get away from you. Not out of the building — jus
 enough, about ten metres, and broken away. If they manage it, they have dodged, and
 your badge tells you they escaped. You have to wait a minute before you can try again.
 
-But they only get away **once.** The second time you press MENU on the same person,
+But they only get away **once.** The second time you press A on the same person,
 there is no escape and no timer — their badge says **NO ESCAPE**, and they are gone. So
 a dodge is a reprieve, a moment of pure adrenaline in the middle of a crowd, and not a
 strategy. Nobody outruns this game.
@@ -171,8 +228,9 @@ crew. Being in several groups is fine; you count for all of them.
 
 ### If you would rather not
 
-Hold **MENU** and you are out, in about three seconds, no phone and no explanation
-needed. Rejoin whenever you like — your total is waiting for you.
+Open the badge menu and choose **Stoppen** — three presses, a few seconds, no phone
+and no explanation needed. Rejoin the same way whenever you like — your total is
+waiting for you.
 
 ---
 
@@ -182,9 +240,9 @@ Add an optional camp-wide game of **Assassin/Gotcha**
 ([rules](https://en.wikipedia.org/wiki/Assassin_(game))) to the !Fri3d Friends app.
 
 Each enrolled player is assigned one **target**. You hunt your target physically,
-using your badge as a **radar** (BLE RSSI). In a crowd you press **MENU** to
+using your badge as a **radar** (BLE RSSI). In a crowd you press **A** to
 **reveal** — their badge flashes gold, which tells you which person they are and tells
-them they have been found. Closer still, MENU **attacks**: the victim's badge
+them they have been found. Closer still, **A attacks**: the victim's badge
 **screams** and they get a few seconds to **run out of range**. Kill your target and
 you inherit theirs. Death is a 30-minute respawn, not an elimination.
 
@@ -224,7 +282,7 @@ metres of me right now" — and never for gossiping global state.
 | D18 | **The app manages no WiFi credentials at all** (§7) | Fri3d pre-loads the `fri3d-badge` SSID onto the badge (confirmed 2026-07-26), so `auto_connect()` handles it on boot. The app only *checks* connectivity and reports it. No credential in the repo, the `.mpk`, or any config file. |
 | D19 | **Integrated into !Fri3d Friends, not a separate app** (§8.6) | One BLE stack, one adv set, one one-shot `gatts_register_services`, one IRQ. Two apps cannot share the radio, and the game block lives *inside* the HSNT beacon. Isolation is achieved with lazy imports and a hard interface instead (§8.6). |
 | D20 | **Charging is assumed** (§8.7, §14.3) | The app cannot last a 16-hour waking day in any configuration, and power banks are ubiquitous at a hacker camp. Battery-aware degradation below 20 % is still built; the design does not depend on the power levers succeeding. |
-| D21 | **Plain HTTP with HMAC-signed requests and responses** (§6.2) | The game needs authenticity, not secrecy — kill proofs are self-authenticating and scores are published. Certificate verification is likely off on this build, so TLS would have given encryption without authenticity. One HTTPS call at enrollment bootstraps the key; everything after is signed plain HTTP. Removes the per-sync 40 KB allocation. **Constrains deployment: Tailscale Funnel is HTTPS-only and is therefore ruled out for the sync path.** |
+| D21 | **Plain HTTP with HMAC-signed requests and responses** (§6.2) | The game needs authenticity, not secrecy — kill proofs are self-authenticating and scores are published. Certificate verification is likely off on this build, so TLS would have given encryption without authenticity. One HTTPS call at enrollment bootstraps the key; everything after is signed plain HTTP. Removes the per-sync 40 KB allocation. Deployment fit is settled by D31: the server exposes :80 and :443 directly. |
 | D22 | **Reveal — the last ten metres** (§5.7) | RSSI walks you into a crowd and then stops helping. Reveal makes your target's badge flash, at the cost of telling them they have been found. Pure BLE, works offline, and it is the mechanic that stops the endgame of every hunt being "squint at thirty lanyards". |
 | D23 | **The whole LED strip becomes the hunt radar; the friend LEDs are removed** (§8.8) | The badge must be readable at a glance with the screen dark — which is what makes §8.7's biggest power lever (blanking the display) survivable. A **bar** (length + colour) is legible at several metres in a way a single colour-coded dot is not. No information is lost: the friends panel and group pills still show everyone nearby. Average LED draw *falls*, because the bar is dark whenever the target is out of range. |
 | D24 | **Spawn and join protection** (§5.8) | Respawning next to your killer, or joining into the middle of a scrum, should not mean dying instantly. 90 s, forfeited the moment you attack. |
@@ -232,6 +290,9 @@ metres of me right now" — and never for gossiping global state.
 | D26 | **All user-facing text is Dutch** (§8.9) | Fri3d Camp is a Belgian/Dutch-language event and much of the audience is children, for whom English rules text is a real barrier at exactly the moment the game needs to be understood instantly. This covers the existing app, not just Gotcha: the whole UI is translated. **ASCII-only** — the built-in lvgl fonts do not carry accented glyphs (§8.9). |
 | D27 | **No OTA. Server-side hotfixes first, an AppStore nudge as the escape hatch** (§8.10) | D8's "no backward compatibility required" expires the moment badges are handed out on Friday morning; after that every change is a live migration across a population you cannot fully reach. Every tunable is already server-pushed (§5.4), so most fixes need no app update at all. Writing a self-updater for 700 badges in three weeks, with brick risk, is a bad trade. |
 | D28 | **Training mode: mutual opt-in, everything real except the consequences** (§5.9) | Rule 5 gives one dodge per assassin per life, so without practice every player's first escape is also their only one. Both sides opt in HXCG-style, so reveal and dodging are both genuinely rehearsable and no covert-probe capability is created. Isolated from real state by a target *override*, a disposable soul and presentation-only death. **Exempt from truce and quiet hours** — both parties consented, social responsibility, as with rule 14. Late phase, droppable. |
+| D29 | **All Gotcha input rides the v0.10.0 focus-navigation model** (§5.7, §8.4) | v0.10.0 (shipped 2026-07-28) deleted raw button polling and moved the app to LVGL focus-group navigation: joystick + **A** (activate) + **X** (back via `onBackPressed`). The hunt is a focusable **hunt strip** whose A-action escalates with proximity; everything else is menu rows. No new input mechanisms, no raw pins, no chords. |
+| D30 | **No `witnesses[]` in v1** (§9.5, §13) | It was the only telemetry field whose plaintext exposure (D21) revealed anything the game does not already publish, and the soul proof plus rate/graph heuristics carry anti-cheat without it. The event schema tolerates the key, so it can be revived by an app update if farming actually appears. |
+| D31 | **On-site server behind a fixed public IP, addressed by a low-TTL DNS name; the backend serves the web pages** (§6.1, §9.1) | Fri3d routes a public IP to the game laptop on site; the IP is not known in advance, so the `.mpk` ships **hostnames only** and the A record is repointed on arrival (Ward, 2026-07-28: *"werk bij voorkeur met een DNS met lage TTL"*; ports 80/443 open internally and externally). Pages are served by the backend over Let's Encrypt HTTPS (**DNS-01**), same origin as the API — no CORS, no mixed content. Tunnels (Cloudflare/Tailscale) are moot. |
 
 ---
 
@@ -244,10 +305,10 @@ Everything here is enforced by the backend unless marked *social*.
    never tells you who is hunting *you*. Your target is **almost never** someone from
    one of your own groups.
 2. **To find them in a crowd — Reveal.** When your target is near but you cannot tell
-   *which* person they are, press **MENU**: their badge flashes gold and chirps for
+   *which* person they are, press **A**: their badge flashes gold and chirps for
    two seconds. It also tells them they have been found. One reveal every **2
    minutes**, and none during a truce.
-3. **To kill:** get within a few metres of your target and press **MENU** again. Hold
+3. **To kill:** get within a few metres of your target and press **A** again. Hold
    the proximity for **5 seconds**. Their badge will scream — that is the point.
 4. **To survive:** if your badge screams, **run.** Break line of sight and get
    ~10 metres away within 5 seconds and you have dodged. *No running indoors, near
@@ -284,8 +345,9 @@ Everything here is enforced by the backend unless marked *social*.
     tents while a workshop is running, and first aid. Not enforced by the badge —
     enforced by not being a jerk. **Training (§5.9) is exempt from the truce** because
     you both agreed to it — so at night, practise away from the tents and mute your badge.
-15. **Opting out:** press and hold **MENU** on your badge, or use the web page. You
-    can rejoin later; your total is preserved.
+15. **Opting out:** open the badge menu → **Gotcha** → **Stoppen met Gotcha**, or use
+    the web page. A few seconds, no phone needed. You can rejoin the same way later;
+    your total is preserved.
 
 **What the lights mean** (§8.8) — the whole LED strip is the radar, readable with the
 screen off. *Rules-card wording is Dutch (§8.9); English gloss in italics.*
@@ -439,11 +501,10 @@ Every duration constant should be read against that budget, not against a vague
 | `STREAK_GRACE_S` | 3 h | 8 % | Fine. A leader must produce roughly every three hours to hold the crown. |
 | `STREAK_DECAY_S` | 2 h | — | A streak of 7 survives 3 + 14 = **17 playable hours**, about half the camp. Deliberate: the crown should be losable but not evaporate overnight. |
 | `TARGET_STALE_H` | 6 h | 16 % | Acceptable, but consider 4 h — six hours of hunting a ghost is a big slice of a 37-hour game. |
-| `DORMANT_H` | 24 h | **65 %** | ⚠️ **Too long. Recommend 12 h.** With truce hours excluded, 24 h of *playable* time is nearly two real days — a badge switched off on Friday night would not be spliced out of the ring until Sunday, stranding its hunter for most of the event. |
+| `DORMANT_H` | **12 h** (settled at rev. 5; was 24 h) | 32 % | At 24 h a badge switched off on Friday night would not be spliced out of the ring until Sunday, stranding its hunter for most of the event. 12 h splices it out within an evening-plus-night while surviving any realistic charging break. |
 
-`DORMANT_H` is the one that is actively wrong at this camp length; the rest merely
-want a second look. All are server-pushed (§5.4), so they can be retuned on Friday
-afternoon once real behaviour is visible.
+`TARGET_STALE_H` stays 6 h for v1. All of these are server-pushed (§5.4), so they
+can be retuned on Friday afternoon once real behaviour is visible.
 
 ---
 
@@ -497,7 +558,7 @@ from starting.**
 | Respawn | Splice in by the same rule, with `SPAWN_PROTECT_S` protection (§5.8). |
 | Opt-out | Splice out immediately; the hunter is reassigned on their next sync. |
 | Target unseen by anyone for `TARGET_STALE_H` (6 h) | Splice out, hunter reassigned. Score preserved; spliced back on return. |
-| No sync for `DORMANT_H` (truce hours excluded) | Splice out as dormant. **See §2.4 — 24 h is too long for a three-day camp; use 12 h.** |
+| No sync for `DORMANT_H` (12 h, truce hours excluded) | Splice out as dormant (§2.4). |
 | Ring down to 2 | They hunt each other. Fine. |
 | Ring down to 1 | `target = null`, badge shows "waiting for players". |
 
@@ -591,13 +652,25 @@ F-15). Keep it defensive and non-raising. All of this is pure and host-testable.
 
 **Peer table:** the existing scanner already delivers every advert. Add the game
 fields to the existing `seen` entries rather than opening a second scanner or a
-second table — one scan, one IRQ, no new radio contention.
+second table — one scan, one IRQ, no new radio contention. **But the admission
+filter must widen:** today `_process_result()` drops any advert that shares no
+group *before* it reaches `_seen` — and a Gotcha target is by design almost never
+in your group (D9), so without this change **the radar never sees the target at
+all**. During a live game, additionally admit beacons carrying a game block when
+they are (a) your current target's `pid`, (b) a bounty player, or (c) wanted for
+the D11 alive/dead display of nearby players. Game-block-admitted peers get the
+same entry shape plus the game fields; the friend-matching logic is unchanged.
 
-> 🐛 **Pre-existing bug this will expose.** `BLEProximity`'s `seen` table has **no size
-> cap**. Invisible with three badges on a bench; with 700 badges it is unbounded RAM
-> growth plus an ever-lengthening loop in `_evict` and `current_peers`, in an IRQ
-> path. **Cap it with an LRU (suggest 64 entries, evict lowest `last_seen`) before the
-> game ships.** This is worth fixing regardless of Gotcha.
+> 🐛 **Pre-existing weakness the widened filter will expose.** `BLEProximity`'s
+> `_seen` table has **no size cap**. Today the shared-group filter keeps it small
+> by accident; once game-block peers are admitted, 700 badges mean unbounded RAM
+> growth plus ever-lengthening `_evict`/`current_peers` loops. (These run on the
+> loop thread via `tick()` — the IRQ itself only appends to the bounded
+> `_pending` queue — so this is a memory/latency problem, not an IRQ one.)
+> **Cap it with an LRU — suggest 64 entries, evict lowest `last_seen` — and pin
+> the current target's entry (and bounty entries) so a dense crowd can never
+> evict the one peer the game is about.** The cap is worth having regardless of
+> Gotcha.
 
 ---
 
@@ -635,7 +708,7 @@ target rides the handshake**, so inheritance works with no network at all.
 ASSASSIN                                  VICTIM
 --------                                  ------
 target in peer table, rssi_ewma >= KILL_RSSI
-press MENU
+press A on the hunt strip
   gap_connect(victim addr)
   write ATTACK{...}                    ->  validate: game running, not truce,
                                            v_pid == me, alive, not already duelling,
@@ -671,6 +744,15 @@ press MENU
 | `REVEAL_RSSI` | −80 dBm | Must be at least this close to reveal (§5.7). Deliberately looser than `KILL_RSSI` — reveal is the approach, not the strike. |
 | `REVEAL_COOLDOWN_S` | 120 | Per hunter, not per target. Backstop against crowd-spamming. |
 | `REVEAL_FLASH_MS` | 2500 | How long the target's badge flashes gold. |
+| `PING_ENABLED` | true | Server-side kill switch for the hunt ping (§8.8.6). |
+| `PING_FROM_SEG` | 3 | First radar-bar segment at which sound starts; below this the bar is silent. Compared against the shared RSSI→fraction mapping (§8.8.2), not a raw LED index, so it means the same proximity on the 4-LED 2024 and the 5-LED 2026. |
+| `PING_MS` | 40 | Length of one ping burst. |
+| `PING_FREQ_FAR` / `PING_FREQ_NEAR` | 1400 / 2400 Hz | Base pitch at `PING_FROM_SEG` and at kill range. |
+| `PING_INTERVAL_NEAR` | 350 | Ping interval at kill range; wider intervals track the LED breathe period. |
+| `PING_BEND_PCT` | 12 % | How far a ping bends up/down to signal the trend (§8.8.2a). |
+| `TREND_ALPHA_FAST` | 0.30 | Fast RSSI EWMA — today's hardcoded `a` in `ble_proximity.py`, now named and tunable. |
+| `TREND_ALPHA_SLOW` | 0.06 | Slow EWMA; `fast − slow` is the trend. |
+| `TREND_DEADBAND_DB` | 1.5 | Below this, report "steady" — without it the arrow and pitch flap while standing still. |
 | `DODGE_LIMIT` | 1 | Dodges per (attacker, victim) pair per life. One reprieve, then the next attempt lands. |
 | `DODGE_DECAY_MS` | 3600000 | Dodge counter reset after 1 h with no attack from that attacker. |
 | `INSTANT_KILL_MS` | 1000 | Hold time once `dodges_left == 0`. |
@@ -696,9 +778,31 @@ on Friday afternoon without reflashing 700 badges.
 Gotcha is a fourth consumer of a radio with **one adv set, one connection slot, one
 IRQ handler**. Extending `DESIGN.md` §9/§10:
 
-- A kill handshake **or a reveal** (§5.7) **cannot** start while `_exchanging` (contact
-  swap), while a setup session/window is open, or while an adopt prompt is up. MENU is
-  ignored with a brief "busy" toast.
+- **Hunter side.** A kill handshake **or a reveal** (§5.7) **cannot** start while
+  `_exchanging` (contact swap), while a setup session/window is open, or while an adopt
+  prompt is up. The hunt strip's A-action is ignored with a brief "busy" toast. This is
+  input arbitration and costs only the hunter, so it can stay broad. (v0.10.0's
+  `_open_menu` already suppresses on this exact list — extend that guard with "duel
+  live" rather than inventing a parallel one.)
+- ⚠️ **Victim side: gate on "a GATT connection is actually live", never on "a window is
+  open."** The two are not the same, and conflating them is an invulnerability exploit:
+
+  | State | Can an attack be served? |
+  |---|---|
+  | Y-swap in flight (`WINDOW_MS` = 5 s) | **No** — a link is genuinely up. True hardware necessity, and 5 s is not exploitable. |
+  | Setup window open, **phone connected** | **No** — the single connection slot is taken. Necessity, for as long as the phone actually talks. |
+  | Setup window open, **nobody connected** | **Yes.** The slot is free. Refusing here is policy, and it hands out up to `SETUP_ABS_CAP_MS` of invulnerability for nothing. |
+  | **Adopt prompt up** | **Yes.** It is a local lvgl overlay that touches no radio at all. |
+
+  > 🐛 **The adopt prompt is the worst invulnerability in the app today, and it is
+  > reachable by accident.** `_adopt_open` still has **no timeout** in v0.10.0 (X
+  > can now dismiss it via `onBackPressed`, but an unattended badge sits on it
+  > indefinitely) — swap with someone, get the "join their group?" panel, never
+  > answer, and you are un-attackable with no phone and no setup session. Two
+  > fixes, both worth doing regardless of Gotcha: **(a)** the responder must not
+  > consult `_adopt_open` at all, and **(b)** the prompt gets a **30 s
+  > auto-dismiss** that declines without joining (the groups are re-offered on the
+  > next swap). An unbounded modal is a bug on its own terms.
 - Y-swap and the setup window are **refused while a duel is live**.
 - **You cannot be attacked while you are attacking.** The single connection slot makes
   simultaneous client+server roles impractical here; the responder answers `BUSY`.
@@ -746,7 +850,7 @@ people around a fire, `rssi_ewma` says your target is *here* and cannot say *whi
 one*. Names are on the badges, but reading thirty chest-height screens is slow,
 conspicuous, and not a thing anyone should be doing at a camp with children at it.
 
-**The mechanic.** With your target inside `REVEAL_RSSI`, press **MENU**: their badge
+**The mechanic.** With your target inside `REVEAL_RSSI`, press **A**: their badge
 flashes **bright gold on every LED for `REVEAL_FLASH_MS` and chirps**, and shows
 `SPOTTED — someone has found you`. You see which badge lit up. They see that they have
 been found.
@@ -770,7 +874,7 @@ HUNTER                                    TARGET
 ------                                    ------
 target in peer table, rssi_ewma >= REVEAL_RSSI
 cooldown elapsed
-press MENU
+press A on the hunt strip
   gap_connect(target addr)
   write REVEAL{g, h_pid, t_pid, nonce}  ->  validate: game running, not truce,
                                             t_pid == me, alive
@@ -795,22 +899,25 @@ press MENU
 - Reported as a `reveal` / `revealed` event pair (§9.3) so the audit page can see
   someone standing in a crowd flashing strangers.
 
-**Button semantics — one button, escalating with distance.** MENU short-press does the
-strongest thing currently available, which is unambiguous because the ladder is
-monotonic in proximity:
+**Action semantics — one press, escalating with distance (D29).** The nametag's
+**hunt strip** is a focusable row (§8.4); pressing **A** on it does the strongest
+thing currently available, which is unambiguous because the ladder is monotonic in
+proximity:
 
-| Target state | MENU short-press |
+| Target state | A on the hunt strip |
 |---|---|
 | within `KILL_RSSI` | **Attack** |
 | within `REVEAL_RSSI`, cooldown clear | **Reveal** |
 | within `REVEAL_RSSI`, cooling down | Radar detail (shows the cooldown) |
-| not detected | Radar detail |
+| not detected | Radar detail / Gotcha screen |
+| own attack in progress | **Abort** the attack (§10.2 — a real tactical choice) |
 
-The screen and the hunt LED always name the action *before* it is pressed — the radar
-strip reads `MENU: reveal` or `MENU: ATTACK`, red LED — so the boundary case (you meant
-to reveal, you were already in kill range) resolves to "you attacked someone you were
+The strip's label and the hunt LED always name the action *before* it is pressed —
+`A: onthullen` or `A: AANVALLEN`, red LED — so the boundary case (you meant to
+reveal, you were already in kill range) resolves to "you attacked someone you were
 standing next to", which is what you wanted anyway. **Do not add a confirmation
-step**: the whole mechanic is a single press in a crowd.
+step**: the whole mechanic is a single press in a crowd. Focus policy and the X
+button are specified in §8.4.
 
 ### 5.8 Spawn and join protection (D24)
 
@@ -856,9 +963,9 @@ field-proven, and reusing it avoids inventing a second rendezvous. Signalling th
 reserved `gflags` bit rather than a second beacon means no new advertising set and no
 new scan.
 
-Y is taken by the contact swap and MENU by the §5.7 escalation ladder, so training is
-entered from a menu rather than a button chord. That is fine: you are standing next to
-your partner agreeing to do this, so it is not time-critical.
+Under the v0.10.0 input model there are no button chords at all (D29), so training is
+entered from a menu row — `Oefenmodus` on the Gotcha screen (§8.4). That is fine: you
+are standing next to your partner agreeing to do this, so it is not time-critical.
 
 #### 5.9.2 What runs during a session
 
@@ -961,29 +1068,38 @@ mode's value is player-facing (learn to dodge before it counts) and for field-tu
 
 ### 6.1 Where the server runs
 
-An **Ubuntu laptop brought to camp**. Preference order, driven by D21 (§6.2):
+**Settled (D31, 2026-07-28, confirmed with Fri3d infra):** a freshly imaged
+**Ubuntu laptop physically on site**, with a **fixed public IP routed to it** by
+the camp network. Ports **80 and 443 are open, internally and externally**
+(Ward). The tunnel options from earlier revisions (Cloudflare Tunnel, Tailscale
+Funnel) are moot and deleted — there is no NAT problem to tunnel around (see
+rev. 4 in git history if that analysis is ever needed again).
 
-1. **LAN route from the badge VLAN (A2)** — plain HTTP end to end, no internet in the
-   critical path. **Strongly preferred.** Ask the Fri3d infra crew; it is a
-   five-minute firewall change on their side.
-2. **Cloudflare Tunnel** — outbound-only, and it *can* serve plain HTTP on port 80 if
-   "Always Use HTTPS" is disabled. Adds rate limiting and a custom domain.
-3. ~~Tailscale Funnel~~ — **ruled out for the sync path.** Funnel is HTTPS-only
-   (443/8443/10000, TLS terminated by Tailscale), which would force a TLS handshake
-   back onto every sync and undo D21. Still fine for the *enrollment* endpoint.
-
-- ⚠️ **Plain Tailscale is not usable by badges either** — they cannot run a WireGuard
-  client. Only Funnel exposes a tailnet service to ordinary HTTP clients, and Funnel
-  is HTTPS-only, hence the above.
-- Options 1 and 2 are **outbound-only**, which is essential: behind camp NAT there is
-  no port forward to be had, so DDNS alone cannot work.
-- **Consequence of the subnet split:** badge → camp uplink → internet → back to camp →
-  laptop 50 m away. If the camp uplink drops, an on-site server is unreachable — which
-  is the second reason option 1 is preferred. Build the badge to try a configured LAN
-  address first and fall back to the public URL (§6.3), so the choice can be made on
-  arrival.
-- Load is negligible: 700 badges ÷ 300 s = **2.3 req/s**, a few KB each. SQLite and a
-  single process are ample. Run it under systemd with restart-on-failure.
+- **Address by DNS name, never by IP.** The IP may not be known until arrival;
+  Ward's guidance is *"werk bij voorkeur met een DNS met lage TTL"*. Register a
+  name under an own domain with a **low TTL (60–300 s)** and repoint the A
+  record on arrival day. The `.mpk` ships **hostnames only** (§6.3). The HMAC
+  scheme signs `METHOD || PATH`, not the host, so repointing breaks nothing.
+- **Uplink independence:** the server is on site and the ports are open
+  *internally*, so badge → server traffic has an internal path even if the camp
+  uplink fails. **Arrival-day check:** confirm badges still *resolve the DNS
+  name* with the uplink down (if camp DNS only forwards upstream, resolution can
+  fail while routing works); if needed, put the assigned IP literal in the §6.3
+  fallback URL slot once known.
+- **Development environment:** during development the server runs on the
+  author's home LAN behind a Fritz!Box that cannot forward external ports
+  80/443. External forwards **:8066 → :80** and **:8446 → :443** are configured
+  instead. Dev badges on the same LAN use the server's LAN address on :80/:443
+  directly — exactly the §6.3 LAN-first mechanism. Off-LAN access (a phone on
+  mobile data) uses `http://<name>:8066` / `https://<name>:8446`.
+  **Release-checklist item: the dev ports must never appear in a shipped
+  build's defaults.**
+- **TLS: Let's Encrypt via DNS-01, not HTTP-01.** HTTP-01 needs inbound :80,
+  which the dev Fritz!Box cannot provide; DNS-01 issues regardless of
+  reachability and keeps one workflow for home and camp. Confirm the DNS host
+  offers an API certbot can drive — a blocking prerequisite for Phase 5 (§14.1).
+- Load is negligible: 700 badges ÷ 300 s = **2.3 req/s**, a few KB each. SQLite
+  and a single process are ample. Run it under systemd with restart-on-failure.
 
 ### 6.2 Transport: plain HTTP with signed requests (D21)
 
@@ -1009,7 +1125,8 @@ the key. So this is stronger than the realistic HTTPS alternative, not weaker.
 
 ```
 enrollment (ONCE per badge, over HTTPS):
-    badge -> POST https://…/v1/enroll  { badge_key, display_name, groups, commitment }
+    badge -> POST https://…/v1/enroll
+             { badge_key, display_name, groups, commitment, app_version, board }
     server -> { pid, player_key (32 B, hex), game_id }
     Exactly one TLS handshake in the badge's entire life, made early in uptime
     while the heap is clean. Cost is irrelevant; it closes the key-delivery hole.
@@ -1020,13 +1137,24 @@ every request thereafter (plain HTTP):
     X-Nonce: <16 random hex chars>
     X-Sig:   HMAC_SHA256(player_key, METHOD || PATH || X-Ts || X-Nonce || BODY)
 
-every response:
-    X-Sig:   HMAC_SHA256(player_key, STATUS || X-Ts || REQUEST-NONCE || BODY)
-    The badge MUST verify this and discard unsigned or mis-signed responses.
+every response (a JSON envelope in the BODY -- see the note below):
+    { "ts": <unix seconds>, "nonce": "<the request's X-Nonce>", "sig": "<hex>",
+      "payload": { ... } }
+    sig = HMAC_SHA256(player_key, ts || nonce || canonical_json(payload))
+    The badge MUST verify `sig` and that `nonce` matches the nonce it just
+    sent, and discard anything unsigned, mis-signed or nonce-mismatched.
 ```
 
 - **Responses must be signed too.** Without it, a MITM could inject "truce off",
   "you are dead", or a fake target. This is not optional.
+- **Why the response signature lives in the body, not a header:** the badge's
+  HTTP client is `mpos.DownloadManager` (§8.3), whose `post_url`/`download_url`
+  return **the response body only** — no headers, no status code. A header-based
+  response signature would be unverifiable on the badge. The HTTP status is
+  likewise invisible and carries no authority: the badge acts only on the signed
+  payload. Requests keep their `X-*` headers (`headers=` is supported on send).
+  `canonical_json` = keys sorted, no whitespace — a few lines next to the HMAC
+  helper, unit-tested with it.
 - **Replay defence:** server rejects `X-Ts` outside ±10 minutes (generous — badge RTCs
   drift, see `clock_offset_s`, §8.3) and caches seen nonces for that window. The badge
   rejects a response whose signature does not bind the nonce it just sent.
@@ -1044,25 +1172,13 @@ every response:
   blocker to a single handshake at enrollment. No cert pinning, no cert-verification
   question, no per-sync 40 KB allocation on a heap shared with lvgl.
 
-#### ⚠️ Deployment consequence — this constrains §6.1
+#### Deployment fit — resolved by D31
 
-**Tailscale Funnel serves HTTPS only** (443/8443/10000, TLS terminated by Tailscale).
-It **cannot** serve plain HTTP, so choosing D21 rules Funnel out for the sync path.
-The viable combinations are:
-
-| Path | Works with plain HTTP? |
-|---|---|
-| **LAN route (A2)** | ✅ Yes — the clean answer. Plain HTTP end to end. |
-| **Cloudflare Tunnel** | ✅ Yes, if "Always Use HTTPS" is disabled and port 80 is served. |
-| **Tailscale Funnel** | ❌ No — HTTPS only. Would force TLS back onto every sync. |
-
-Enrollment still needs an HTTPS endpoint regardless, so **the server must expose both**
-— HTTPS for `/v1/enroll`, plain HTTP for everything else. On the LAN path, enrollment
-can use a self-signed cert with verification off; the key exchange is then protected
-only against passive sniffing, which combined with a LAN-only route is acceptable.
-
-**This raises the value of A2 (§14.1) from "nice" to "strongly preferred", and makes
-Cloudflare Tunnel the better fallback over Tailscale Funnel.** Update §6.1 accordingly.
+The server exposes **both** faces directly on its public IP: HTTPS on :443
+(`/v1/enroll` and the web pages) and plain HTTP on :80 (everything the badge
+calls, signed). With a real Let's Encrypt certificate (DNS-01, §6.1) the
+enrollment handshake verifies even on clients that do check certificates; the
+badge, which likely does not, loses nothing.
 
 ### 6.2.1 Background: what HTTPS would have cost
 
@@ -1125,15 +1241,17 @@ to: run the `gc.mem_free()` check, confirm one enrollment handshake succeeds, an
 ### 6.3 Endpoint configuration
 
 Two base URLs ship in `config.json`, both changeable from the phone page or the
-on-badge editor without reflashing:
+on-badge editor without reflashing. **They carry hostnames, never IPs (D31).**
 
-| Key | Scheme | Used for |
-|---|---|---|
-| `gotcha.enroll` | **https://** | `/v1/enroll` only — once per badge, to bootstrap `player_key` (§6.2) |
-| `gotcha.api` | **http://** | Everything else, signed |
+| Key | Scheme | Used for | Camp default | Dev value |
+|---|---|---|---|---|
+| `gotcha.enroll` | **https://** | `/v1/enroll` only — once per badge, to bootstrap `player_key` (§6.2) | `https://<name>/` | `https://<lan-ip>/` or `https://<name>:8446/` |
+| `gotcha.api` | **http://** | Everything else, signed | `http://<name>/` | `http://<lan-ip>/` or `http://<name>:8066/` |
 
-The badge tries a configured LAN address first, then the public URL. Both must be
-reachable; the server exposes HTTPS and plain HTTP side by side.
+The badge tries a configured LAN/fallback address first, then the primary URL —
+this is how dev badges reach the home-LAN server, and how an arrival-day IP
+literal can bypass a broken DNS path (§6.1). **The shipped `.mpk` defaults are
+the camp URLs (implicit :80/:443); the :8066/:8446 dev ports must never ship.**
 
 ---
 
@@ -1199,10 +1317,16 @@ TrainingSession                             # §5.9 pairing, session cap, re-ent
                                             # holds training_target as an OVERRIDE, never
                                             # touching the persisted target
 score_preview(...)                          # mirror of §2, optimistic UI only
-menu_action(target, rssi, now, cfg)         # the §5.7 escalation ladder -> attack|reveal|detail
+hunt_action(target, rssi, now, cfg, duel)   # the §5.7 A-ladder -> attack|reveal|detail|abort
 reveal_ready(now, last_reveal_at, cfg)      # REVEAL_COOLDOWN_S
 protected(now, protected_until)             # §5.8
 hunt_bar(state, rssi, now, cfg, n_leds)     # -> [(r,g,b)] * n_leds, the §8.8 radar bar
+rssi_trend(fast, slow, cfg)                 # -> -1 / 0 / +1, §8.8.2a. The single most
+                                            # load-bearing untested assumption in the
+                                            # design -- Phase 0 gates it.
+hunt_ping(state, rssi, trend, now, cfg)     # -> (freq_hz, ms, taps) or None, §8.8.6. Pure and
+                                            # host-testable: same proximity clock as the
+                                            # bar, so the two stay in phase by construction
 ```
 Beacon build/parse lives in `ble_proximity.py` with the rest of the wire format (§4).
 
@@ -1226,7 +1350,7 @@ corrupted by a power-off loses a kid's kills.
   "target": {"pid": 8123, "name": "Otter 42", "commitment": "…", "seen_ago_s": 240},
   "state": {"alive": true, "streak": 2, "total": 5, "respawn_at": null,
             "protected_until": null},
-  "dodges": {"8123": 1},
+  "dodges": {"6301": 1},
   "last_reveal_at": 0,
   "clock_offset_s": -3,
   "queue": [ {"uuid": "…", "type": "kill", …} ],
@@ -1248,12 +1372,12 @@ first, never a `kill` or `killed_by`.
 
 Use `mpos.DownloadManager` — `download_url()` / `post_url(url, data, headers)`, both
 async and aiohttp-backed. **Do not hand-roll `urequests`.** Gate on
-`WifiService.is_connected()` (already used at `fri3d_friends.py:1483`) and wrap every
+`WifiService.is_connected()` (already wrapped by `_wifi_connected()`) and wrap every
 call in `TaskManager.wait_for(..., timeout=10)`.
 
 > ⚠️ **Every** Gotcha HTTP call must be a `TaskManager` task with a timeout, never
 > called from the main tick — the same reason `ntptime.settime()` already runs in a
-> thread (`fri3d_friends.py:1454`).
+> thread (see `_resync_time`/`_ntp_blocking`).
 
 Sync failures are non-events: log, keep the queue, retry with backoff (5 → 10 → 20 min,
 capped), and keep playing on cached state (D6).
@@ -1268,7 +1392,7 @@ child and a screaming badge.
 | Screen | Content |
 |---|---|
 | **Nametag (extended)** | A status chip — `ALIVE · streak 3 · 11 kills` or `DEAD · back 14:32` — plus one target strip: `🎯 Otter 42` and a 5-segment radar bar from `rssi_ewma`. Hidden entirely when not enrolled or no game is running. |
-| Radar detail (MENU short-press, target out of range) | Target name, dBm, **last seen by anyone: 12 min ago** (§10.1), your ranks, nearby bounty players, reveal cooldown remaining. |
+| **Gotcha screen / radar detail** (A on the hunt strip when no target is near, or Menu → `Gotcha`) | Target name, dBm, **last seen by anyone: 12 min ago** (§10.1), your ranks, nearby bounty players, reveal cooldown remaining — plus the focusable rows: `Oefenmodus` (§5.9), demo mode, and `Stoppen met Gotcha` / `Meedoen met Gotcha` (rule 15). |
 | **Revealing** (hunter, §5.7) | `REVEALING — look for the gold badge`, 2.5 s, then back to the radar with the cooldown running. |
 | **Spotted** (target, §5.7) | Gold full-screen, chirp, `SPOTTED — someone has found you`. Deliberately *not* the attack alarm: no siren, no red, no "RUN". It is a warning, and it must not be mistakable for a kill in progress. |
 | **Protected** (§5.8) | White chip `PROTECTED — 43 s`, on the nametag. Shown on the *hunter's* radar strip too, from `gflags` bit4. |
@@ -1283,20 +1407,47 @@ so you can both (a) peer at someone's badge to see if they are safe to walk up t
 (b) see the status of anyone in range on your own friends panel. Add an alive/dead dot
 to the existing friends-panel cards.
 
-**Buttons.** MENU is currently mapped nowhere (`BTN_2024 = {"a":39,"b":40,"y":41}`,
-`BTN_2026_EXP = {"a":7,"b":6,"y":8}`; MENU is GPIO 45 / expander idx 5 and appears only
-in `BTN_2024_DIAG`). Add it to both maps.
+**Input (D29) — everything rides the v0.10.0 focus-navigation model.** The raw
+button layer is gone; the joystick moves LVGL focus, **A** fires `CLICKED` on the
+focused row, **X** invokes `onBackPressed`. Gotcha adds focusables and menu rows
+to the existing machinery — no new input mechanism of any kind:
 
-| Gesture | Action |
-|---|---|
-| MENU short | The §5.7 escalation ladder: **attack** in kill range · **reveal** in reveal range · else radar detail. The label on screen always names the action before it is pressed. |
-| MENU long (≥1.5 s) | Leave / rejoin the game (confirm prompt) |
-| Existing A / B / Y / START | Unchanged (A = detail panel, B = mute / long = setup window, Y = swap, START = exit) |
+- **The hunt strip is a focusable row** on the nametag (build it with
+  `_make_focusable`, like the `Menu` pill). Its label always names its A-action
+  (§5.7): `A: radar`, `A: onthullen`, `A: AANVALLEN`, `A: afbreken` during your
+  own attack. **Focus policy:** when the strip is visible (enrolled, game
+  running) it is the *default* focused object on the nametag; the joystick moves
+  between it and the `Menu` pill. Escalation changes the **label** under your
+  thumb, never the focus — the accepted boundary case stays "you attacked
+  someone you were standing next to" (§5.7).
+- **The main menu grows one row: `Gotcha`** (`MENU_MAX` 5 → 6), opening the
+  Gotcha screen (table above), whose rows are focusables in the adopt-prompt
+  pattern. Opt-out lives there (`Stoppen met Gotcha` + one confirm) — a few
+  seconds, no phone (§13).
+- **First-run consent (§13) is a mini-menu** in the Configure-me pattern
+  (`_do_cfg_action`): `Meedoen` / `Niet meedoen` / `Laat zien wat de badge doet`.
+- **`_establish_focus()` gains the Gotcha states** ahead of the existing ladder:
+  duel screens (no focusables — see next point) → Gotcha screen rows → first-run
+  consent rows → the existing menu/adopt/setup/cfg/nametag ladder. Every
+  open/close routes through `_set_focus`, exactly as v0.10.0 does.
+- **`onBackPressed` ordering:** duel screens (attacking, under attack, killed,
+  dodged, spotted) **consume X and do nothing** — a victim cannot dismiss the
+  alarm, and an assassin aborts with A, deliberately (one button, one meaning,
+  §10.2). Then: Gotcha screen closes → the existing chain (menu → adopt → setup
+  → detail) → quit.
+- **`_open_menu`'s suppression list gains "duel live"**; the hunt strip's
+  A-action is suppressed by the same list (§5.5).
+- Use `_bind_event` (never raw `add_event_cb`) and the changelog-noted firmware
+  APIs: `mpos.ui.add_focus_border`, top-level `lv.group_remove_obj` /
+  `lv.group_focus_obj`. The 2026 touch screen gets tap support on all of this
+  for free (rows are `lv.button`s).
 
 **Demo mode.** A `Show me what the badge does` entry on the first-run screen (§13) and
-in the radar detail screen: it walks the whole colour language and both sounds — blue,
+in the radar detail screen: it walks the whole colour language and every sound — blue,
 amber, red, the gold reveal flash and chirp, the attack siren, the green kill flash,
-the dead pulse — with a one-line caption each, in about fifteen seconds. Borrowed
+the dead pulse, and **the hunt ping at all three rates** (§8.8.6, the sound players most
+need to recognise and otherwise first hear while it matters) — with a one-line caption
+each, in about twenty seconds. Borrowed
 straight from the other proposal, and it is the cheapest thing in this document: it
 runs entirely off `_flash_leds` and the existing buzzer, needs no game, no network and
 no enrollment, and it means the first time a nine-year-old hears the siren is not the
@@ -1312,17 +1463,17 @@ every Gotcha widget once in `onCreate` and toggle `add_flag`/`remove_flag(lv.obj
 | File | Change |
 |---|---|
 | `gotcha.py` | **new** — incl. `TrainingSession` (§5.9) and `version_lt` (§8.10) |
-| `fri3d_friends.py` | MENU map + the §5.7 escalation handler, Gotcha widgets, duel + reveal + spotted + protected UI, status chip, demo mode, **`_update_leds()` rewritten as the §8.8 radar bar — friend LEDs removed**, main-loop tick, sync task, connectivity check (§7), arbitration guards |
+| `fri3d_friends.py` | The focusable **hunt strip** + §5.7 A-ladder handler, the `Gotcha` menu row (`MENU_MAX` 6) + Gotcha screen, focus/`onBackPressed` extensions (§8.4), Gotcha widgets, duel + reveal + spotted + protected UI, status chip, demo mode, first-run consent mini-menu, **`_update_leds()` rewritten as the §8.8 radar bar — friend LEDs removed**, the §8.8.6 hunt ping + sound priority ladder, main-loop tick, sync task, connectivity check (§7), arbitration guards |
 | `ble_proximity.py` | **HSNT v2** build/parse + name budget; game fields on peer entries; **LRU cap on `seen`** |
 | `contact_exchange.py` | Register the Gotcha service in `_ensure_services()`; hand handles to `GotchaResponder` |
 | `beacon_service.py` | Victim-side responder (attack **and** reveal) + protection state + sync in the background (D3); v2 beacon; LED-only rendering of §8.8 |
 | `ble_setup.py` | `sanitize_config` accepts `gotcha` (incl. `quiet`, clamped per §10.4a); expose enroll state over the setup GATT |
-| `MANIFEST.JSON` | → 0.10.0. **The version string is now load-bearing** (§8.10.3) — bump it on every release or the fleet histogram and the update nudge both lie. |
-| `docs/gotcha/index.html` | **new** — player card + 4 leaderboards |
-| `docs/gotcha/admin/index.html` | **new** — host console |
-| `tests/test_gotcha.py` | **new** |
+| `MANIFEST.JSON` | → 0.11.0 (0.10.0 is the shipped navigation release). **The version string is now load-bearing** (§8.10.3) — bump it on every release or the fleet histogram and the update nudge both lie. |
+| `server/` | **new** — FastAPI + SQLite backend (D31, §9): API, scoring, ring, admin console, **and the player/admin pages it serves itself** (templates or static files under `server/`; `docs/` is *not* the deployment path — it is GitHub Pages, whose HTTPS origin cannot call a plain-HTTP API). Runs under systemd. |
+| `tests/test_gotcha.py` | **new** — badge pure half (§8.1) |
+| `tests/test_server.py` | **new** — backend + the Phase 1 badge-simulator fixture (§11) |
 | `tests/test_ble_proximity.py` | v2 format, name budget, block presence |
-| `DESIGN.md` | new §14; **§11 (friend LEDs) rewritten as the radar bar**; note the Dutch-UI rule (§8.9) |
+| `DESIGN.md` | new Gotcha section; **§11 (friend LEDs) rewritten as the radar bar**; the §8.4 focus-ladder additions noted in the v0.10.0 input section |
 | `README.md` | Gotcha section + the network caveat (§13) |
 
 ### 8.6 Why this is one app, not two (D19)
@@ -1424,8 +1575,8 @@ and 7 h is the difference between "charge overnight" and "charge at lunchtime to
 
    | Level | Behaviour |
    |---|---|
-   | **20 %** | On-screen notice + orange LED hint. Drop scan duty, stretch `SYNC_S` to 600 s, stop the friend LED breathe (hunt LED stays — it is the game). |
-   | **10 %** | Second notice, explicitly worded: *"find a power bank — you can still be killed while charging."* Blank the screen harder (2026 only, §8.7 lever 1). |
+   | **20 %** | On-screen notice + a one-off orange blink on the last LED. Drop scan duty, stretch `SYNC_S` to 600 s, drop the hunt ping. |
+   | **10 %** | Second notice, explicitly worded: *"find a power bank — you can still be killed while charging."* The last-LED orange double-blink becomes persistent (once a minute, §8.8.3). Blank the screen harder (2026 only, §8.7 lever 1). |
    | **5 %** | Final notice. Sync once immediately to flush the event queue **before** the badge dies, so a kill landed at 4 % is not lost. Then minimum everything. |
    | **0 %** | The badge stops. The player keeps their score, keeps their streak (it decays on wall-clock like anyone else's, rule 11), and returns as `dormant` → `protected` (§9.6) when charged. |
 
@@ -1440,13 +1591,16 @@ USB meter, on both board generations.
 
 ---
 
-### 8.8 The LED colour language (D23)
+### 8.8 Reading the badge without the screen — LEDs and sound (D23)
 
 **This is not decoration, it is the power budget.** §8.7 lever 1 says the single
 biggest saving available is blanking the screen — but the radar currently *lives* on
 the screen, so blanking it blinds the hunter and the lever cannot be pulled. Moving the
 hunt onto the LEDs is what makes an aggressive blank-after-inactivity compatible with
 playing the game. Treat this section as a prerequisite for lever 1, not as polish.
+
+§8.8.1–8.8.5 cover the LED radar bar; **§8.8.6 covers the hunt ping**, the sound that
+rides the same proximity clock. Together they are the whole no-screen interface.
 
 #### 8.8.1 The whole strip becomes the radar (replaces the friend LEDs)
 
@@ -1499,7 +1653,78 @@ else changes.**
 
 The breathe *period* shortening as you close is the second redundant cue — quickening is
 noticeable in peripheral vision in a way that a colour change is not. A player who
-learns *"solid red, all of them, means press MENU"* has learned the whole hunt.
+learns *"solid red, all of them, means press A"* has learned the whole hunt.
+
+#### 8.8.2a Warmer or colder — the trend signal ⚠️ *test this first*
+
+**The plan promises this and does not currently deliver it.** The narrative says the
+badge *"only ever tells you warmer or colder"*, but everything specified so far reports
+**absolute** level. In a crowd, absolute RSSI is close to useless for navigation — it is
+dominated by bodies, orientation and multipath. **The derivative is what a hunter
+actually steers on:** did the last three steps help?
+
+**Mechanism — two EWMAs at different time constants.**
+
+```
+fast = (1-af)*fast + af*rssi        # af ~ 0.30  -- this is today's rssi_ewma
+slow = (1-as)*slow + as*rssi        # as ~ 0.06
+trend_db = fast - slow              # > 0 closing, < 0 losing
+```
+
+The fast filter already exists — `ble_proximity.py` line ~521 hardcodes `a = 0.3`. That
+magic number becomes a named, server-tunable constant alongside its new slow twin, and
+the peer entry grows one float (note the interaction with §4's LRU cap).
+
+| `trend_db` | Meaning | Ping | Strip |
+|---|---|---|---|
+| > `TREND_DEADBAND_DB` | closing | each ping **bends up** ~`PING_BEND_PCT` | ▲ |
+| within the deadband | steady | flat ping | · |
+| < −`TREND_DEADBAND_DB` | losing | each ping **bends down** | ▼ |
+
+**The sound version is the one that matters** — a hunter with the badge in a pocket gets
+warmer/colder by ear, which is the whole point of §8.8 and of §8.7 lever 1. Bending a
+PWM tone is free: it is the same two-step frequency write `_sting()` already does.
+
+The deadband is not optional. Without it the arrow and the pitch flap continuously while
+standing still, which is worse than no signal because it reads as movement.
+
+> ⚠️ **A subtlety the live test must settle: these EWMAs are driven per-advert, not per
+> second.** Their time constants are measured in *adverts received*, so when the advert
+> rate drops — distance, a crowded channel, a body in the way — the effective time
+> constant silently stretches and the trend goes sluggish exactly when it is needed
+> most. Either scale `a` by elapsed time per sample, or accept it knowingly. **Do not
+> decide this from a bench.**
+
+##### ⚠️ Phase 0 blocking spike — the whole hunt rests on this
+
+This is the most load-bearing untested assumption in the design: if trend does not track
+real movement, the "warmer or colder" promise fails and the hunt degrades to wandering
+until the bar happens to fill. **It is therefore a Phase 0 item with a go/no-go, not a
+Phase 2 implementation detail** (§11).
+
+**Protocol.** One badge advertising, one logging `rssi`, `fast`, `slow` and `trend_db`
+at ~10 Hz to a file; pull it off and plot on the host. Walk a scripted path:
+
+```
+approach 40 m -> 1 m at a normal pace  |  stand still 30 s  |  retreat 1 m -> 40 m
+cross laterally at 5 m                 |  step behind a tent / container / vehicle
+```
+
+Repeat in **four conditions**, because they fail differently: open field; inside a tent;
+**with people standing between the badges** (2.4 GHz is absorbed by bodies — this is the
+realistic camp case); and with the badge **in a trouser pocket**.
+
+**Success criteria, stated in advance:**
+
+| Test | Pass |
+|---|---|
+| Steady approach / retreat | `trend_db` sign correct in **≥ 80 %** of 2 s windows |
+| Standing still 30 s | **no** sign flips outside the deadband |
+| Body between badges | trend still usable, or the failure is understood and documented |
+| Time constants | a `(af, as, deadband)` triple that satisfies the above in **all four** conditions |
+
+**If it fails**, say so plainly and fall back to the absolute bar alone — and then fix
+the narrative, because §"Finding them" would be describing a game the badge cannot play.
 
 #### 8.8.3 Whole-strip states
 
@@ -1513,7 +1738,9 @@ These override the bar entirely:
 | **You dodged** | green, two blinks | 0.8 | ~900 ms |
 | **You are dead** | all red, slow pulse 2000 ms | 0.20 | until respawn |
 | **You are protected** (§5.8) | all white, steady | 0.30 | 90 s |
-| **Battery ≤ 10 %** (§8.7) | LED n−1 only, orange, double-blink once a minute | 0.30 | — |
+| **Battery low** (§8.7: hint at 20 %, persistent from 10 %) | last LED only, orange, double-blink once a minute | 0.30 | — |
+| **Truce, or either side in quiet hours** | **dark** (§10.4 — detection halts, not just attacks) | — | — |
+| **Contact lost** (§8.8.7) | two amber blinks, then dark | 0.4 | ~600 ms |
 | **No game / not enrolled / opted out** | **dark** | — | — |
 
 Low battery deliberately claims only the **last** LED, so it can coexist with a radar
@@ -1554,6 +1781,115 @@ derivation) is **still needed** — the on-screen group pills use it. Do not rem
 along with the LED code.
 
 ---
+
+#### 8.8.6 The hunt ping — sound on the same clock as the bar
+
+The LED bar already encodes proximity as a **breathe period** (3800 → 700 ms, §8.8.2).
+The ping rides that same clock: **one ping per breathe cycle, in phase with the light.**
+That is the whole trick — the two channels pulse together instead of competing, and a
+player only has to learn one rhythm. (At kill range the strip goes steady red —
+§8.8.4 forbids animating it — so the proximity clock keeps ticking at
+`PING_INTERVAL_NEAR` and only the light stops following it; the double-tap carries
+the rhythm alone.)
+
+Rate is the primary cue, exactly as in real sonar and in a parking sensor: **repetition
+rate is read pre-attentively and pitch is not.** Pitch rises alongside it purely as
+redundancy, the same length-plus-colour argument the bar makes.
+
+| Bar state | Ping interval | Base pitch |
+|---|---|---|
+| segments 1–2 | **silent** (see below) | — |
+| segment 3 (amber) | 1400 ms, in phase with the breathe | 1400 Hz |
+| segment n−1 (amber, fast) | 700 ms | 1800 Hz |
+| all n (red, kill range) | **350 ms**, as a **double-tap** | 2400 Hz |
+
+At kill range the ping becomes a **double-tap** rather than a single note — two bursts
+~70 ms apart. It is the audible "the attack is live now" cue, so a hunter knows they can
+strike without looking at anything.
+
+**Every ping also carries the trend as a pitch bend** (§8.8.2a): bending up while you
+are closing, down while you are losing, flat inside the deadband. Rate says *how close*,
+bend says *getting warmer or colder* — two independent facts on one channel, which is
+the most a single PWM buzzer can carry and exactly the two a hunter needs.
+
+Each ping is a **short falling chirp** — ~40 ms, stepping down from `f` to about
+`0.75 f` — because the existing arrival sting **rises** (`_sting()` goes `freq` then
+`freq × 3/2`). Falling versus rising is distinguishable by ear with no thought at all,
+which matters when both can happen within a second of each other.
+
+**There is a silent floor, and it is the important design decision.** Sound starts only
+at `PING_FROM_SEG` (default 3 of n), not at first detection. §3.3 says the common state
+is a target somewhere on site and nothing to do about it; a badge that pinged for every
+faint detection would ping for hours, 700 of them would build a camp-wide noise floor,
+and the narrative promise that you "carry on with your day" would be a lie. Keeping the
+first two segments silent means **the sound starting is itself information**: it means
+*they are here, now, close.*
+
+**It gives you away, deliberately.** A badge pinging faster and faster in a crowd is
+audible to everyone around it, including the target once they learn the sound. This is
+flavour worth keeping — it is the audible equivalent of the Reveal trade in §5.7, where
+information costs information — but it is a second reason the silent floor matters, and
+a reason `PING_ENABLED` exists as a server-side kill switch (§8.10.1).
+
+**Only the hunter hears it.** The target's badge makes no sound at all; they do not know
+they are hunted (rule 1). The ping is generated entirely from the hunter's own
+`rssi_ewma`, so it needs no radio traffic and works offline.
+
+##### Sound priority — the buzzer is one PWM channel
+
+`_setup_buzzer()` creates a **single `machine.PWM`** (GPIO 46 on 2024, GPIO 38 on 2026).
+There is exactly one tone at a time and **no mixing is possible**, so every sound in the
+game is strictly serialised and needs a stated order:
+
+| Priority | Sound | Behaviour on conflict |
+|---|---|---|
+| 1 | **Attack siren** (you are under attack) | Pre-empts everything; nothing else sounds until the duel resolves |
+| 2 | **Reveal chirp** (you have been spotted) | Pre-empts 3–5 |
+| 3 | Kill / dodge confirmation | Pre-empts 4–5 |
+| 4 | Friend-arrival sting (existing) | Pre-empts the ping |
+| 5 | **Hunt ping** | Lowest. **Skips the beat rather than queueing** — a late ping is worse than no ping, because the whole signal is its rhythm |
+
+Rule for the implementer: the ping must be **droppable**, never buffered. If the buzzer
+is busy when a ping is due, that ping is lost and the next one lands on schedule.
+
+**Other gates**, all of which come free by routing through the existing helper:
+
+- The existing `sound` config key (the menu's `Geluid` toggle) mutes it, like
+  everything else.
+- **Suppressed during a truce and during personal quiet hours** — a badge pinging in a
+  tent at 03:00 is precisely what §10.4 exists to prevent. (Training, per §5.9.5, has no
+  such logic; this is the *real* game's hunt ping.)
+- Silent while dead, while protected, and during a duel (the siren owns the buzzer).
+- Below 20 % battery the ping is the first sound dropped (§8.7 lever 4).
+
+##### Cost: not a power concern, and say so
+
+A 40 ms burst at the fastest rate (350 ms) is ~11 % duty on a PWM buzzer that draws a
+few mA when sounding — **well under 1 mA averaged**, against a ~150 mA baseline (§8.7).
+Buzzer PWM also **does not disable interrupts**, unlike a WS2812 `lights.write()`, so
+unlike the LED bar it is safe to run during a GATT link (§5.5). **Do not optimise the
+ping for power**; if it needs to be dropped, drop it for noise reasons, never for
+battery.
+
+⚠️ One real hazard: `_sting()` is an asyncio coroutine, and `DESIGN.md` §1 records that
+a starved CPU produces "a stretched asyncio buzzer chime". A ping whose timing wanders
+stops reading as a rate at all. Keep the ping task trivial, and treat audible stretching
+as a symptom of a main-loop problem elsewhere rather than something to paper over.
+
+#### 8.8.7 Losing contact
+
+The bar emptying and the ping slowing already say "they are getting away" — that comes
+free from the proximity mapping and needs nothing. What is missing is the *moment*:
+dropping from three metres to nothing reads identically to drifting apart at forty.
+
+**One explicit cue, cheap:** if the bar falls from **≥ `PING_FROM_SEG` to zero** and
+stays there for 3 s, show `KWIJT` on the strip, blink the bar amber twice, and play a
+**falling two-note** (the ping's chirp, twice, dropping). Then dark.
+
+The only state this needs is the highest segment reached in the last few seconds, so it
+costs one integer and a timestamp. **Do not fire it from higher up the bar** — losing a
+faint contact at segment 1 is the normal condition of the game (§3.3) and announcing it
+would make the badge chatter constantly.
 
 ### 8.9 Language — everything the player sees is Dutch (D26)
 
@@ -1613,9 +1949,14 @@ The screens in §8.4, in the wording that should ship:
 | Status chip, alive | `LEEFT · reeks 3 · 11 kills` | *ALIVE · streak 3 · 11 kills* |
 | Status chip, dead | `UIT · terug om 14:32` | *DEAD · back at 14:32* |
 | Target strip | `DOELWIT: Otter 42` | *TARGET* |
-| Radar hint, reveal | `MENU: onthullen` | *MENU: reveal* |
-| Radar hint, attack | `MENU: AANVALLEN` | *MENU: ATTACK* |
+| Hunt strip, no action | `A: radar` | *A: radar detail* |
+| Hunt strip, reveal | `A: onthullen` | *A: reveal* |
+| Hunt strip, attack | `A: AANVALLEN` | *A: ATTACK* |
+| Hunt strip, abort own attack | `A: afbreken` | *A: abort* |
+| Menu row | `Gotcha` | — |
 | Last seen | `laatst gezien: 12 min geleden` | *last seen 12 min ago* |
+| Contact lost (§8.8.7) | `KWIJT` | *lost them* |
+| Target asleep / truce (§10.4) | `WAPENSTILSTAND` | *truce* |
 | Revealing | `ONTHULLEN — zoek de gouden badge` | *look for the gold badge* |
 | Spotted (victim) | `GEZIEN! — iemand heeft je gevonden` | *SPOTTED* |
 | Attacking | `AANVAL OP Otter 42 — BLIJF DICHTBIJ!` | *KEEP CLOSE* |
@@ -1654,13 +1995,18 @@ translated UI feel broken:
 | leaderboard | **klassement** | |
 | group | **groep** | matches the existing UI |
 
-#### 8.9.4 Existing strings to translate
+#### 8.9.4 Existing strings — the base-app translation has SHIPPED
 
-Not new work hidden in a footnote — this is a real pass over ~50 user-visible strings
-in `fri3d_friends.py` (banners, prompts, the setup screen, the on-badge editor), plus
-`ble_setup.py`'s field labels and helper text, plus **`docs/setup/index.html`**, which
-is the phone-facing setup page and is currently English throughout. Anything the player
-reads counts; log messages, exception text and code comments stay English.
+**The v0.10.0 translation pass is done** (commit `fa7b644` + the v0.10.0 release;
+recorded in DESIGN.md §11a.1): `fri3d_friends.py`, `ble_setup.py` and
+`docs/setup/index.html` are Dutch. Do **not** re-plan that work. What remains:
+
+- A handful of English remnants in `fri3d_friends.py` — at rev. 5:
+  `"join my friend's group"`, `"Skip for now"`, `"no group yet"`,
+  `"the button does nothing"`. Grep for stragglers and fix them in passing.
+- All **new** Gotcha strings (§8.9.3, §8.9.5) ship in Dutch from the start.
+- Anything the player reads counts; log messages, exception text and code
+  comments stay English.
 
 #### 8.9.5 Training and update strings
 
@@ -1808,9 +2154,12 @@ trade against a nudge screen and a config push that cover the realistic cases. T
 
 ## 9. Backend contract
 
-Stack unspecified. Requirements: **HTTPS on `/v1/enroll` and plain HTTP on everything
-else** (§6.2), ~2.3 req/s sustained, a small relational store, and something operable
-from a phone at a muddy campsite.
+**Stack (settled at rev. 5): Python / FastAPI + SQLite, in `server/` in this
+repo**, run under systemd (§6.1), tested in the existing pytest suite with a
+**badge-simulator fixture** that drives the HTTP API as N fake badges (the
+Phase 1 harness, §11). Requirements: **HTTPS on `/v1/enroll` and on the web
+pages, plain HTTP on everything else** (§6.2, D31), ~2.3 req/s sustained, and
+something operable from a phone at a muddy campsite.
 
 ### 9.1 Auth
 
@@ -1823,8 +2172,12 @@ from a phone at a muddy campsite.
     unsigned or mis-signed responses — without this, a MITM could inject "truce off"
     or a fake target over plain HTTP.
 - **Player web page:** public data only; the QR encodes
-  `…/gotcha/?badge=XXXX&t=<short-lived read token>` for the private view (your target).
-  The web page is served over HTTPS as normal — D21 governs the *badge* path only.
+  `…/gotcha/?badge=XXXX&t=<short-lived read token>` for the private view (your
+  target). The QR is rendered **on the badge**, in the Gotcha screen, exactly as
+  the setup window already renders its setup QR (`_update_setup_qr` is the
+  pattern); the token rides the sync response.
+  The pages are **served by the backend itself** (D31) over Let's Encrypt HTTPS,
+  same origin as the API — D21 governs the *badge* path only.
 - **Host:** session login on `/admin` over HTTPS, reachable from a phone.
 
 ### 9.2 Player endpoints
@@ -1865,13 +2218,13 @@ Every event carries `uuid`, `pid`, `at` (badge clock, offset-corrected), and `ti
 
 | `type` | Payload | Backend action |
 |---|---|---|
-| `kill` | `victim_pid`, `soul`, `as`, `rssi`, `witnesses[]` | Verify `sha256(soul)`; score §2; repair ring |
+| `kill` | `victim_pid`, `soul`, `as`, `rssi` | Verify `sha256(soul)`; score §2; repair ring. (**No `witnesses[]` in v1** — D30. The parser tolerates the key so an app update can revive it.) |
 | `killed_by` | `attacker_pid`, `new_commitment` | Confirm death, rotate commitment |
 | `dodge` | counterpart pid, `rssi_at_escape` | Decrement `dodges_left`, log |
 | `attack_started` | `victim_pid` | Cooldown bookkeeping, abuse detection |
 | `reveal` | `target_pid`, `rssi` | Log only. Feeds the audit page (§9.5) — someone standing in a crowd flashing strangers shows up here. |
 | `revealed` | `hunter_pid` | Log only. Also a **liveness signal for §10.1**: being revealed proves you were physically near someone, so it refreshes `last_seen`. |
-| `heartbeat` | `alive`, `target_seen_ago_s`, `peers_seen`, `battery`, `groups[]`, `quiet{from,to}`, `app_version` | Liveness, stale-target detection, group snapshot, personal quiet window (§10.4a) so the server can re-check it on ingest |
+| `heartbeat` | `alive`, `target_seen_ago_s`, `peers_seen`, `battery`, `groups[]`, `quiet{from,to}`, `app_version` | Liveness, stale-target detection, group snapshot, personal quiet window (§10.4a) so the server can re-check it on ingest. **Cadence: queued once per `SYNC_S`**, immediately before the sync flush, so every sync carries exactly one. |
 | `optout` / `optin` | — | Splice out of / into the ring |
 
 ### 9.4 Admin endpoints
@@ -1938,14 +2291,18 @@ correct; the backend re-checks everything on ingest.
 **Detected, not prevented.** Sybil farming is the real hole, and D16 (no kill
 cooldown) removes the natural rate limiter, so the detection side has to carry it:
 
-1. **Witness overlap.** Both parties report up to 8 `pid`s seen in the last 60 s. A
-   genuine kill in a crowd shares witnesses with other players' reports; a farm in a
-   tent shares none. **A flag, never an automatic rejection.**
-2. **Rate limits — flag, do not block.** Legitimate table sweeps are explicitly legal
+1. **Rate limits — flag, do not block.** Legitimate table sweeps are explicitly legal
    (D16), so `MAX_KILLS_PER_HOUR` (default 10) marks kills for review rather than
    refusing them. Refusing a real sweep would break the best moment in the game.
-3. **Graph shape.** Mutual-only kill pairs, players who only ever interact with each
-   other, enrollments clustered in time from one IP.
+2. **Graph shape.** Mutual-only kill pairs, players who only ever interact with each
+   other, enrollments clustered in time from one IP, `heartbeat.peers_seen`
+   persistently near zero around a player's kills (a farm in a tent sees nobody).
+
+*(Rev. 1–4 also specified **witness overlap** — both parties reporting up to 8
+nearby `pid`s per kill. **Dropped for v1 by D30**: it was the only field whose
+plaintext exposure revealed anything the game does not already publish. The event
+parser tolerates a `witnesses` key so an app update can revive it if farming
+actually appears.)*
 
 The host can void kills, revive victims, adjust scores and kick. **This is the correct
 posture for a hacker camp:** make cheating possible, visible and socially expensive
@@ -1967,7 +2324,7 @@ with **operational facts about hardware** (Defective, Updating). A badge can be 
 | `active` | yes | yes | Enrolled and past protection | Dies, opts out, goes dormant/stale |
 | `protected` | yes | **no** | Enroll or respawn (§5.8) | 90 s elapse, or they attack |
 | `dead` | **spliced out** | no | Killed | `respawn_at` passes → `protected` |
-| `opted_out` | spliced out | no | Rule 15 (MENU long / web) | Opts back in → `protected` |
+| `opted_out` | spliced out | no | Rule 15 (Gotcha screen / web) | Opts back in → `protected` |
 | `dormant` | spliced out | no | No sync for `DORMANT_H`, truce-adjusted (§2.4 — use 12 h) | Any sync → `protected` |
 | `stale` | **hunts, is not hunted** | no | Not seen by *anyone* for `TARGET_STALE_H` (§10.1) | Seen again by anyone |
 | `kicked` | spliced out | no | Host action | Host action |
@@ -2032,9 +2389,11 @@ ingest.
 | Attack or reveal attempted into someone's personal quiet hours | Refused by the responder; the hunter's badge should not have offered it, since `gflags` bit3 is set on air. **No cooldown charged.** |
 | Player tries to attack *during their own* quiet hours | Blocked badge-side before the connection is attempted, and re-checked server-side on ingest. Symmetry is what stops quiet hours being an invulnerability exploit (§10.4a). |
 | Two assassins on one bounty player | Single slot; second gets `BUSY`. |
-| Victim sitting in a setup window or swap | Attack refused. **Exploit:** camping in a setup window is temporary invulnerability, bounded by the existing 2-min idle / 10-min absolute caps (`DESIGN.md` §10). While a game is running, shorten the absolute cap to 3 min. |
+| Victim sitting in a setup window or swap | Refused **only while a GATT link is actually live** (§5.5) — not merely because a window is open. That shrinks the exposure from `SETUP_ABS_CAP_MS` (10 min) to the seconds a phone is really talking. While a game is running, also shorten the absolute cap to **3 min**. |
+| Victim sitting on an adopt prompt | **Attack proceeds normally.** The prompt touches no radio, so the responder ignores it. The prompt additionally auto-dismisses after 30 s (§5.5). |
 | RSSI spike causes a false dodge | Use the smoothed `rssi_ewma` and require `FLEE_MS` sustained, never a single sample. |
 | Rapid re-attack after a dodge | `ATTACK_COOLDOWN_MS` (60 s) per pair. |
+| **Assassin aborts a live attack** | **Allowed, and treated as a skill.** Press A again during the hold (`A: afbreken`, §5.7): the duel ends, the victim's alarm stops, **no cooldown is charged and the victim's dodge is not consumed.** It is a real tactical choice rather than a free escape — letting a failing attack run to a dodge *burns* the victim's single dodge (rule 5) and makes your next attempt an instant kill, so aborting trades that away to keep attacking now. |
 | Reveal lands while the target is in a duel with someone else | Responder answers `BUSY`; **no cooldown charged** to the hunter. |
 | Target walks out of range between reveal and attack | Nothing special — the reveal already did its job, and the cooldown runs. This is the normal case. |
 | Reveal fires but the target is not wearing the badge visibly | The reveal is spent and the hunter learns nothing. Accepted: it is the same information asymmetry as looking for a face. |
@@ -2051,7 +2410,7 @@ ingest.
 | Queue overflow | Drop oldest non-kill first; never drop a `kill`/`killed_by`. |
 | Duplicate upload | Idempotent on `Event.uuid`. |
 | Only the assassin reports | Accept on soul proof alone; apply the death when the victim returns. |
-| Only the victim reports | `killed_by` names the attacker — credit the kill immediately, dedupe by `(victim_pid, life_id)` when the assassin's copy arrives. |
+| Only the victim reports | `killed_by` names the attacker — credit the kill immediately, dedupe by `(victim_pid, life_id)` when the assassin's copy arrives. `life_id` is a **server-side per-player death counter** (0 at enrollment, +1 per confirmed death); it never crosses the wire — the server derives it from whichever report lands first. |
 | Backend down for hours | Everyone queues. **Dormancy must pause when global sync volume collapses**, or a server outage would mass-dormant the entire camp and shred the ring. |
 | 08:00, everyone powers on at once | **Jitter the sync schedule ±20%** — 700 simultaneous syncs is a self-inflicted DDoS. |
 
@@ -2062,6 +2421,21 @@ ingest.
 - **The siren is suppressed during a truce unconditionally**, even if a duel somehow
   starts. Defence in depth: the failure mode is a screaming badge in a tent full of
   sleeping children.
+- **The hunt ping is suppressed too** (§8.8.6), during both the camp truce and personal
+  quiet hours. A badge pinging steadily at 03:00 is a quieter version of the same
+  failure. (Training mode is the deliberate exception — §5.9.5.)
+- ⚠️ **A truce halts *detection*, not just attacks.** The radar bar goes **dark** and the
+  ping goes silent; the Gotcha strip says `WAPENSTILSTAND` instead of showing range. A
+  halt that still let you watch your target's distance would not be a halt — it would be
+  a scouting window, and the obvious play becomes parking outside someone's tent at
+  07:55 with perfect information. **This is a UI suppression, not a radio change:** the
+  scan keeps running because the base app's friend finder depends on it (§8.6).
+- **The halt is per-pair and evaluated locally.** Your radar for a given target goes dark
+  if **either** side is in a truce or in personal quiet hours. The target's `gflags` bit3
+  `TRUCE` is already on air (§4), so the hunter's badge decides this with no server
+  round-trip and no extra traffic. The strip reads `Otter 42 — slaapt`: you learn *that*
+  they are unavailable, never *where* they are. Bounty banners are suppressed on the
+  same rule.
 - **Streak decay excludes truce hours** — sleeping costs you nothing.
 - **Dormancy accounting pauses during truce plus a 1 h grace**, so a badge switched
   off overnight is not spliced out of the ring by morning.
@@ -2136,8 +2510,10 @@ leaderboard, that is a display-layer opt-in and must not become a gameplay input
 
 ## 11. Phasing
 
-**Phase 0 — hardware spike (blocking).** Three questions, all cheap to answer and all
-capable of invalidating downstream work:
+**Phase 0 — hardware spike (blocking).** Six questions, all cheap to answer and all
+capable of invalidating downstream work. **Do §14.2 A5 (the AppStore-update wipe
+test) first** — it is the cheapest high-value test in this document and it decides
+whether §8.10.4 gets built at all.
 
 1. **WiFi + BLE coexistence.** They share one 2.4 GHz radio and the dense 50 %-duty
    scan is load-bearing (`DESIGN.md` §3). Measure peer-detection rate and `last_seen`
@@ -2151,7 +2527,14 @@ capable of invalidating downstream work:
    `gatts_register_services` call.
 4. **Scan duty reduction** (§8.7 lever 2): does 30 ms/240 ms keep NimBLE's duplicate
    filter off and presence stable? Worth ~37 mA if it does.
-5. **Screen blanking on 2024** (§8.7 lever 1): can the GC9307 be put to sleep
+5. ⚠️ **RSSI trend — "warmer or colder" (§8.8.2a).** **The single most load-bearing
+   untested assumption in the design.** Run the four-condition walk protocol (open
+   field, tent, bodies in between, badge in a pocket) against the stated success
+   criteria, and come out with a `(TREND_ALPHA_FAST, TREND_ALPHA_SLOW,
+   TREND_DEADBAND_DB)` triple that works in all four — or with the knowledge that it
+   does not work. Everything the hunt feels like rests on this, and it is cheap to
+   answer: two badges, a walk, and a plot.
+6. **Screen blanking on 2024** (§8.7 lever 1): can the GC9307 be put to sleep
    directly, given there is no backlight API? Highest-value power fix if yes.
 
 Deliverable: findings appended to `DESIGN.md`, and a go/no-go.
@@ -2159,15 +2542,22 @@ Deliverable: findings appended to `DESIGN.md`, and a go/no-go.
 *(The original spike item "does 2 Hz `adv_data` swapping survive?" is gone — D8 let us
 collapse to a single v2 beacon.)*
 
-**Phase 1 — backend + admin.** API (§9), scoring (§2), ring (§3.2), admin console.
-Fully testable with a simulator; no badge required.
+**Phase 1 — backend + admin.** FastAPI + SQLite in `server/` (§9): API, scoring
+(§2), ring (§3.2), admin console, and the backend-served player/admin pages'
+skeleton. Fully testable with the **badge-simulator pytest fixture** (N fake
+badges driving enroll/sync/events over HTTP); no badge required.
 
 **Phase 2 — badge: connectivity check, enrollment, sync, v2 beacon, radar.** No kills.
-Includes the **LED radar bar replacing the friend LEDs** (§8.8) and **demo mode**, both
-of which are independent of the duel and make Phase 3 far easier to test in the field.
-**Also the Dutch translation pass (§8.9)** — do it before there are three new screens
-of English to retranslate. Training mode is **not** here — see Phase 6. Ends with two badges enrolled, each showing the other as
-target with a live on-screen radar bar *and* a live LED bar.
+Includes the **widened peer admission + pinned LRU** (§4), the **LED radar bar
+replacing the friend LEDs** (§8.8), the **hunt strip + `Gotcha` menu row + focus
+integration** (§8.4, D29), and **demo mode** — all independent of the duel and
+all of which make Phase 3 far easier to test in the field. Includes the **hunt
+ping** (§8.8.6) — it shares the bar's proximity clock, so building it alongside
+costs almost nothing and makes the radar testable by ear in a field. The base-app
+translation has shipped (§8.9.4) — only the new Gotcha strings and the listed
+English remnants are in scope. Training mode is **not** here — see Phase 6. Ends
+with two badges enrolled, each showing the other as target with a live on-screen
+radar bar *and* a live LED bar.
 
 **Phase 3 — the duel and the Reveal.** Handshake, alarm, dodge, soul disclosure,
 inheritance, reporting, plus **Reveal (§5.7)** and **spawn protection (§5.8)**. The core
@@ -2179,8 +2569,10 @@ easier to set up.
 **Phase 4 — background participation** (D3). The fragile one; see §5.6.
 
 **Phase 5 — web pages, and the update path.** Player card, four leaderboards, hit
-list, QR flow. Plus §8.10: version reporting, the `broadcast` banner, the feature kill
-switches, and whatever §14.2's AppStore-update test turns out to require.
+list, QR flow — **served by the backend** (D31), over Let's Encrypt HTTPS
+(DNS-01; the DNS-host API check in §14.1 gates this). Plus §8.10: version
+reporting, the `broadcast` banner, the feature kill switches, and whatever
+§14.2's AppStore-update test turns out to require.
 
 **Phase 6 — scale and soak.** As many badges as can be assembled, running for hours.
 Watch RAM, the peer-table LRU, backend load, and **median time-to-first-kill**
@@ -2202,10 +2594,11 @@ so if the schedule tightens, cut it without renegotiating anything else.
 | Signed plain HTTP: traffic is readable on the camp network | Low | Accepted (D21). Kill proofs are self-authenticating and scores are published; responses are signed so nothing can be injected. Noted in §13. |
 | **Background GATT + radio handoff** (§5.6) | **High** | `ensure_radio` self-heal is the precedent; budget hardware time; be willing to ship Phase 4 late. |
 | Unbounded `seen` table at 700 badges | High | LRU cap — fix regardless of Gotcha. |
-| Camp uplink down → on-site server unreachable | Medium | Ask for the badge-VLAN route (§6.1); D6 means play continues regardless. |
+| Camp uplink down → badges cannot resolve the game hostname | Low | Server is on site with internal routing (D31); the residual risk is DNS resolution — §14.1 A8's arrival-day check, with the IP-literal fallback in §6.3. D6 means play continues regardless. |
 | Kids running into things | **High (real-world)** | Truce, safe-zone rules, "no running" on the card, host truce button. |
 | **Battery: app already gets only ~11 h; Gotcha naively cuts it to ~7 h** | **High** | §8.7. WiFi DTIM power save, reduced scan duty, screen blanking, battery-aware degradation. Measure in Phase 6. |
 | Group exclusion makes targets unfindable | Medium | §3.3, §10.1; watch time-to-first-kill in the soak. |
+| **RSSI trend does not track real movement** | **High** | §8.8.2a. The hunt's core promise ("warmer or colder") is unimplemented today and unproven. **Phase 0 item 4b gates it**, with pass criteria fixed in advance. Fallback is the absolute bar alone — which works, but is a materially worse game and would require rewriting the narrative to stop promising something the badge cannot do. |
 | RSSI at a real camp ≠ RSSI on a bench | Medium | Every threshold is server-tunable live (§5.4). |
 | Sybil / collusion | Low | Detected not prevented (§9.5); host can void and revive. |
 | Badge never joined WiFi; player cannot tell the game is broken | Medium | Explicit `no network — check WiFi in Settings` state (§7), never silent absence. |
@@ -2218,6 +2611,8 @@ so if the schedule tightens, cut it without renegotiating anything else.
 | Training used as a shield | Low | §5.9.4: no connection held open, real attacks honoured between duels and abort the session, beacon flags stay honest, plus the session cap and re-entry cooldown. |
 | Training siren wakes people at night | Low (social) | **Deliberately not coded against** (§5.9.5) — both parties consented, and gating it would mean dragging the truce schedule and personal quiet windows into the training path for no gain. A rules-card line, like rule 14's safe zones. |
 | Removing the friend LEDs is felt as a loss | Low | §8.8.1: no *information* is lost (friends panel + pills are unchanged), the hunt bar is far more legible than one shared LED would have been, and average LED power falls. Revisit only if players actually complain. |
+| **Abort-spam used to harass** (§10.2) | Medium | A free abort means a hunter can make a victim's badge scream repeatedly at no cost. Not prevented: every attempt is already logged as `attack_started` (§9.3) and lands on the audit page, and the behaviour is *extremely* public — your badge is making someone else's badge shriek, in front of people. Consistent with §9.5's stated posture. **If the dry run shows abuse, the fallback is a short (~20 s) cooldown on abort**, which keeps the tactical choice and kills the spam. |
+| **The hunt ping becomes a camp-wide noise floor** | Medium | §8.8.6's silent floor (`PING_FROM_SEG`, default 3 of n) is the main defence — most of the time a target is detected but far, and that state stays silent. `PING_ENABLED` is a server-side kill switch if it is still too much on Friday afternoon. **Judge it in the Phase 6 dry run with a dozen badges in one tent, not on a bench with two.** |
 | The 2024's 4-LED bar reads differently from the 2026's 5 | Low | §8.8.2: the bar is proportional, and colour carries the same signal redundantly. Check both boards in the Phase 6 dry run. |
 
 ---
@@ -2234,12 +2629,13 @@ on-by-default. Take that seriously:
   screen saying what joining means — *"other players will be able to see when you are
   nearby, and hunt you"* — with joining as an explicit acknowledgement. On-by-default
   means enrolled once acknowledged, not before. **Offer demo mode (§8.4) from this
-  screen**: a fifteen-second walkthrough of every colour and both sounds. Informed
+  screen**: a twenty-second walkthrough of every colour and every sound (§8.4). Informed
   consent for a game whose central mechanic is a badge screaming in your hand is much
   better served by *hearing it once, on purpose* than by a paragraph of text — and it
   is the same screen either way.
-- **One-press exit on the badge itself** (MENU long-press), not buried in a web page
-  that needs a phone. A kid who wants out must get out in three seconds without help.
+- **Exit on the badge itself** (Menu → `Gotcha` → `Stoppen met Gotcha` → confirm),
+  not buried in a web page that needs a phone. A kid who wants out must get out in a
+  few seconds without help.
 - **No age, and no child/adult cohort, is recorded anywhere** (D25, §10.4a) — not in
   `config.json`, not in `gotcha.json`, not in the backend schema, not on the web pages.
   Children who go to bed early are served by **personal quiet hours**, which any player
@@ -2247,17 +2643,15 @@ on-by-default. Take that seriously:
   separate child and adult games: it solves the real problem (a badge screaming at
   20:45 in a family tent) without the system ever needing to know who the children are.
 - **Location tracking is explicitly out of scope** (D17). No AP association, no
-  witness-derived location hints. The only proximity data collected is
-  `witnesses[]` for anti-cheat (§9.5): store it salted-hashed, retain it for the
-  duration of the game only, purge after camp, and **drop it entirely if it is not
-  earning its keep** — the soul mechanism carries the cryptographic weight on its own.
+  witness-derived location hints, and — per D30 — **no `witnesses[]`**: no event
+  reports who was near whom. The soul mechanism carries the anti-cheat weight on
+  its own (§9.5).
 - **Badge traffic is not encrypted** (D21, §6.2). Anyone on the camp network can read
-  who killed whom and when — which the public leaderboard tells them anyway — and, if
-  `witnesses[]` is kept, who was near whom. **This is the strongest argument for
-  dropping `witnesses[]`:** it is the only field whose plaintext exposure reveals
-  anything the game does not already publish. Requests and responses are signed, so
-  nothing can be forged or injected; the exposure is read-only. Say so plainly on the
-  player page rather than letting people assume HTTPS.
+  who killed whom and when — which the public leaderboard tells them anyway. With
+  `witnesses[]` dropped (D30), no field crosses the link that the game does not
+  already publish. Requests and responses are signed, so nothing can be forged or
+  injected; the exposure is read-only. Say so plainly on the player page rather
+  than letting people assume HTTPS.
 - **Names.** Players choose their display name; `identity.py`'s auto-nickname is a
   good pseudonymous default. Never require real names.
 - **Publish the retention and deletion policy** on the player web page, and actually
@@ -2275,11 +2669,13 @@ changes depending on the answer, so Phase 1 can start while they are outstanding
 | # | Question | If YES | If NO |
 |---|---|---|---|
 | ~~A1~~ | ~~Will you pre-provision the camp SSID?~~ | **RESOLVED 2026-07-26: yes.** The `fri3d-badge` SSID is pre-loaded onto badges. §7 reduced to a connectivity *check*; the app manages no credentials and the repo contains none. | — |
-| A2 | **Can we have a route from the badge VLAN to a laptop on site?** (§6.1) **Now strongly preferred, not merely nice** — D21 needs a path that carries plain HTTP. | Badge talks to a LAN address over plain HTTP. **Internet leaves the critical path** and the camp uplink stops being a single point of failure. | **Cloudflare Tunnel**, with "Always Use HTTPS" disabled so port 80 is served. **Tailscale Funnel is ruled out** for the sync path — HTTPS-only (§6.1). |
+| ~~A2~~ | ~~Route from the badge VLAN to a laptop on site?~~ | **RESOLVED 2026-07-28 (D31): yes, better** — a fixed public IP is routed to the on-site laptop; ports 80/443 open internally and externally; address by low-TTL DNS name (§6.1). | — |
+| A7 | **DNS name + DNS-01.** Register the game hostname (low TTL) and confirm the DNS host offers an API certbot's DNS-01 plugin can drive (§6.1). | Phase 5's HTTPS pages are unblocked; one cert workflow for home and camp. | Pick a DNS host that does — this is a hard prerequisite for backend-served HTTPS pages. |
+| A8 | **Arrival-day check:** with the camp uplink down, do badges still resolve the game hostname? (§6.1) | Nothing to do. | Put the assigned IP literal in the §6.3 fallback URL slot. |
 
-Implement the endpoint logic to **try a configured LAN address first and fall back to
-the public URL** (§6.3) regardless of the answer — that way A2 can be answered as late
-as the day you arrive.
+Implement the endpoint logic to **try a configured fallback address first and fall
+back to the primary URL** (§6.3) regardless — it serves the dev LAN today and the
+A8 fallback at camp.
 
 ### 14.2 Measure (before Phase 6 sign-off)
 

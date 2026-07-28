@@ -1,3 +1,85 @@
+# !Fri3d Friends — Gotcha plan readiness review + rev. 5 (hand-off ready) — 2026-07-28
+
+Full readiness review of `Implementation_Plan_Gotcha_20260726.md`, then a rev. 5
+rewrite that folds the review and the day's networking answers in and rebases the
+plan on the shipped v0.10.0 navigation model. Deliverables:
+`Plan_Review_Gotcha_20260728.md` (new) and the plan itself, now **self-contained
+and ready to hand to a fresh implementation session**. No app code changed; 118
+host tests green.
+
+## 1. The review (claim-by-claim cross-check against the repo)
+
+Method: complete read of the plan, then verification of every named symbol,
+constant, UUID, line ref and behavioural claim against `ble_proximity.py`,
+`contact_exchange.py`, `ble_setup.py`, `beacon_service.py`, `fri3d_friends.py`,
+`DESIGN.md`, the Phase-5 code review, `docs/setup/index.html` and the
+MicroPythonOS docs. The plan's factual claims were almost uniformly correct.
+Four blockers found:
+
+- **B1** — direct conflict with the (then-planned, same-day-shipped) menu
+  redesign: the plan extended the raw button layer v0.10.0 deletes.
+- **B2** — §6.2's response signature lived in an HTTP header, but
+  `DownloadManager.post_url()` returns body bytes only (no headers, no status):
+  unverifiable on the badge. Forced fix: JSON body envelope
+  `{ts, nonce, sig, payload}` with canonical-JSON HMAC.
+- **B3** — `_process_result()` drops adverts sharing no group before they reach
+  `_seen`, and a Gotcha target is by design out-of-group: **the radar would
+  never see the target.** Fix: admit game-block beacons regardless of group, and
+  pin the current target (and bounties) in the new LRU cap.
+- **B4** — `docs/` is GitHub Pages (HTTPS) and cannot call a plain-HTTP API
+  (mixed content) nor a LAN-only backend.
+
+Plus majors: the §8.9 translation pass had already shipped (stale scope), the
+backend had no home, `witnesses[]` was an unresolved build-or-drop tension,
+stale rev metadata, small schema gaps (heartbeat cadence, `life_id`, enroll
+payload mismatch, QR rendering location); and a set of minors (battery-level
+mismatch 10 %/20 %, demo-mode drift, dual `DORMANT_H` values, line-ref drift).
+
+## 2. Decisions taken (user + Fri3d infra)
+
+| Topic | Decision |
+|---|---|
+| B1 input model | Resolved by v0.10.0 shipping; plan rebased (D29, below) |
+| B4 web hosting | **Backend serves the player/admin pages itself** (D31) |
+| `witnesses[]` | **Dropped for v1** (D30); parser tolerates the key for revival |
+| Backend stack | **FastAPI + SQLite in `server/`** in this repo, systemd-run, badge-simulator pytest fixture as the Phase 1 harness |
+| Networking | Fri3d confirms badges reach the internet; a **fixed public IP is routed to the on-site game laptop**; ports 80/443 open internally + externally (Ward). IP not known in advance → **address by low-TTL DNS name; the `.mpk` ships hostnames only**; A record repointed on arrival |
+| TLS | Let's Encrypt via **DNS-01** (dev is behind a Fritz!Box with no external :80/:443; forwards :8066→80, :8446→443 for off-LAN dev only — release checklist: dev ports never ship) |
+| `DORMANT_H` | 12 h normative (was dual-valued 24/12) |
+
+## 3. Rev. 5 of the plan (all folded in, body no longer contradicts anything)
+
+- New decisions **D29** (all input rides the v0.10.0 focus model: focusable
+  **hunt strip** with the §5.7 A-ladder `radar/onthullen/AANVALLEN/afbreken`,
+  `Gotcha` main-menu row with `MENU_MAX` 6, Gotcha screen absorbing radar
+  detail + opt-out + training + demo, consent mini-menu, duel screens consume
+  X), **D30**, **D31**. Target version → **v0.11.0**.
+- §6.1 rewritten around D31 (tunnel options deleted); §6.2 body-envelope
+  signing; §4 admission widening + pinned LRU (and the corrected "not an IRQ
+  path" description); §8.9.4 rewritten to "translation shipped — remnants
+  only"; §9 witnesses removed, stack fixed, heartbeat cadence + `life_id` +
+  enroll payload specified, on-badge QR via the `_update_setup_qr` pattern;
+  §14.1: A2 resolved, new **A7** (register DNS name + confirm DNS-01 API) and
+  **A8** (arrival-day check: do badges resolve the hostname with the uplink
+  down? fallback = IP literal in the §6.3 slot); Phase 0 renumbered with
+  **A5 (AppStore-wipe test) first**; battery ladder harmonized (hint at 20 %,
+  persistent last-LED blink from 10 %); every `press MENU` converted (final
+  grep clean); "Start here" preamble makes the plan self-contained.
+- Adopt-prompt invulnerability re-verified against v0.10.0: **still unbounded**
+  (X dismisses it now, but unattended it is indefinite) — §5.5's two fixes stand.
+
+## Notes / follow-ups
+
+- Hand-off prompt for the implementing session was drafted (in-conversation).
+- Ward Q&A captured in the review's B4 update; the Discord message sent asked
+  about on-site routing, uplink-drop behaviour, ports, and DNS — answered:
+  *"werk bij voorkeur met een DNS met lage TTL. Poorten is 'zeker intern, maar
+  ook extern' geen probleem."*
+- Next actions: register the game hostname + verify DNS-01 support (A7), run
+  A5 on a bench badge, then start Phase 0/1 per the plan.
+
+---
+
 # !Fri3d Friends — v0.10.0 joystick-menu shipped (implemented + on-device debug) — 2026-07-28
 
 Implemented `Implementation_Plan_Menu_20260728.md` (the joystick-menu redesign +
