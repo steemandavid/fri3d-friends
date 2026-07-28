@@ -262,8 +262,9 @@ was in active use / off-limits during development).
 ## 8. Splash + live clock (v0.4.0)
 
 - **Splash** (`_build_splash` / `_splash_then_enter` in `fri3d_friends.py`):
-  built in `onCreate` and shown as the content view; a `TaskManager` task sleeps
-  3 s then swaps to the nametag (`_enter_main`). Shows app name, version (read
+  built in `onCreate` as a **full-screen overlay on the nametag screen, not a
+  separate screen**; a `TaskManager` task sleeps 3 s then **hides** it
+  (`_enter_main`). Shows app name, version (read
   from `MANIFEST.JSON`), "by David Steeman", the **!Fri3d Friends logo**
   (`fri3dfriends.png`, the badge-bump × pixel-people hybrid) and "Makerspace
   Baasrode". The logo uses the **in-memory decode path**
@@ -271,6 +272,15 @@ was in active use / off-limits during development).
   `set_src("S:/…")` path (§1). Explicit vertical positions (title y16 / ver y50 /
   author y72 / logo y100–196 / org y206) keep clear gaps so nothing overlaps.
   **Verified on all three badges** (splash then nametag, no wedge).
+- 🐛 **Why an overlay and not a second screen (fixed 2026-07-28).** Pushing the
+  splash with its own `setContentView` and then pushing the nametag left a
+  **ghost entry on the OS screen stack**: pressing **X** (OS back) popped the
+  nametag and *revealed the splash again*, needing a second X to quit. As an
+  overlay, `setContentView` is called **exactly once** in `onCreate` (with the
+  nametag screen), the splash is built last so it z-stacks above the banner, and
+  `_enter_main` just sets `lv.obj.FLAG.HIDDEN`. One stack entry, X quits cleanly.
+  The splash is **hidden, never deleted** — deleting a live widget hard-crashes
+  this build (§1, same landmine as the config-reload screen rebuild).
 - **Clock**: top-left label in the same font/colour as the battery %
   (`_refresh_clock`, `HH:MM`, updated ~1/s), inset to `CLOCK_X=24` so the curved
   screen corner doesn't clip it. Time comes from the RTC, kept accurate by NTP:
@@ -314,8 +324,9 @@ was in active use / off-limits during development).
   renders `ë é ï` in `font_montserrat_16` and reads it back with
   `get_all_widgets_with_text()` (screenshots can't answer this — §1).
 - **Dutch runs ~15 % longer than English** on a 296×240 fixed-font screen with no
-  reflow. Translated strings are **not yet width-checked on a badge**; several
-  were already near their widget limits.
+  reflow. **First real casualty found on hardware 2026-07-28**: the adopt prompt's
+  title went from one line to two and overlapped the group rows (§13.3). Assume more
+  of these exist — the remaining screens are still not width-checked on a badge.
 
 ## 11. Friend LEDs — per-friend breathing (v0.4.0)
 
@@ -597,6 +608,14 @@ injects `"Groups": ", ".join(groups)`. v0.9.0 uses it.
   `set_text`-only — never created or deleted per prompt (landmine #1). The tick is
   `[x]`/`[ ]` **text**, not `lv.checkbox`: the app registers no LVGL input device,
   so a real widget would need a focus group that doesn't exist.
+- 🐛 **Row origin moved 30 → 50 px (2026-07-28), a Dutch-translation fallout.** The
+  multi-group title is two lines in Dutch (`<peer> zit in N groepen` /
+  `Welke meedoen?`) where the English was one. At `montserrat_16` (~19 px/line) the
+  second line reached ~y=44 and the first row at y=30 sat on top of it. Rows now
+  start at **y=50** and the title label is given an explicit width; 5 rows × 20 px
+  ends ~y=130, clear of the footer at ~158. **General lesson for the v0.10.0
+  translation pass:** Dutch runs ~15 % longer, so any label that gains a line
+  breaks hand-computed `set_pos` layouts — and nothing catches it but hardware.
 - While the prompt is up `_handle_b_button` is skipped and B is read via `_edge`;
   they keep independent state (`_prev` vs `_b_down_ms`/`_b_long`) so they can't
   corrupt each other, but `_close_adopt` must reset `_b_down_ms` or a still-held B

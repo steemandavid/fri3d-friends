@@ -1,3 +1,186 @@
+# !Fri3d Friends — Gotcha plan rev. 3: training mode + update path; splash & adopt fixes — 2026-07-28
+
+Design session plus two hardware-driven code fixes.
+`Implementation_Plan_Gotcha_20260726.md`: **~1875 → 2310 lines** (rev. 3), adding two
+features that came out of review rather than from the peer specification.
+
+## 1. Update / hotfix path (D27, plan §8.10)
+
+**The problem:** D8's "no backward compatibility required" is true only until badges are
+handed out on Friday morning. After that there are ~700 units in the field, most of
+which will never be updated during the event, and every change is a live migration
+across a population you cannot reach.
+
+**The answer is mostly not an update mechanism.** Every threshold, timer and rule is
+already server-pushed (§5.4), so the config channel *is* the hotfix channel. Added
+**per-feature kill switches** (`reveal_enabled`, `bounty_enabled`, `training_enabled`,
+`alarm_enabled`) to complete it — a broken mechanic gets disabled camp-wide in one click
+and lands on every badge within `SYNC_S`. **Absent switch must read as `true`** so an
+older backend cannot disable features by omission.
+
+**No OTA** (§8.10.5). Writing a self-updater for 700 devices three weeks out, whose
+failure mode is "badge no longer boots", loses badly to a nudge screen plus the
+AppStore that is already installed.
+
+The nudge: sync response gains `app: {min_version, latest_version}` and a free-text
+`broadcast` line (which covers "update de app", "spel gepauzeerd" and "prijsuitreiking
+om 17:00" with one mechanism). `app_version` added to `heartbeat`; the admin dashboard
+gets a **version histogram** — you cannot manage an update you cannot see.
+
+> ⚠️ **An out-of-date badge must stay killable.** A badge below `min_app_version` stops
+> **hunting** but its **victim-side responder keeps running**. If falling behind removed
+> you from the game, *not updating* would be perfect invulnerability — the identical
+> failure mode D3 exists to prevent.
+
+**Wire-format discipline (§8.10.2), which matters more than the nudge:** never bump
+HSNT `ver` during the camp. Receivers drop unknown versions, so a `ver = 3` hotfix
+would split the camp into two populations that cannot see each other at all. Extend via
+the reserved `blocks` bits 1–7 and `gflags` bits 6–7. GATT payloads: additive keys only,
+responders ignore unknown keys.
+
+### ⚠️ A pre-existing data-loss bug found while specifying this
+
+**Everything persists inside the app directory** — the one an AppStore update replaces:
+
+```
+/apps/com.fri3dcamp.fri3dfriends/config.json     name, groups, sound, rssi_floor, quiet hours
+/apps/com.fri3dcamp.fri3dfriends/contacts.json   every contact ever swapped
+/apps/com.fri3dcamp.fri3dfriends/gotcha.json     pid, player_key, soul, score, event queue
+```
+
+Gotcha state is the *safe* one: `badge_key` is the stable BLE MAC and §10.5 already
+re-enrolls to the same `pid` with score intact; the only true loss is the unsent event
+queue, fixed by flushing before an update.
+
+**`contacts.json` is the casualty, and it is not a Gotcha problem.** There is no server
+copy and there never will be — the swap is deliberately offline-only. **If updates wipe
+the directory, v0.9.0 is silently destroying users' contacts today.**
+
+Whether MicroPythonOS actually wipes it is **untested**, so nothing was designed around
+either answer. New open item **A5** (§14.2), flagged as the cheapest high-value test in
+the document: sentinel files on a bench badge, publish a throwaway 0.9.1, update from
+the on-badge AppStore, see what survives.
+
+## 2. Training mode (D28, plan §5.9)
+
+Went through three designs before settling. Worth recording the reasoning, because the
+first two are the obvious ones and both are wrong.
+
+| Design | Why rejected |
+|---|---|
+| **Solo simulator** (synthetic ghost target, no radio) | Dropped by request. Would have been a good dev tool but teaches nothing about real RF. |
+| **Silent probe** (victim's badge runs the duel invisibly) | If the target gives no feedback it does not need to *participate*, and shouldn't — see below. |
+| **Mutual opt-in** ✅ | Both sides consent, so everything is real except the consequences. |
+
+**Why the silent version failed on inspection**, even though it needs no rules at all:
+
+- **Reveal becomes unpracticeable.** Reveal's entire product is *their badge flashes so
+  you can identify them*. Suppress that and it returns "yes, that pid is in range",
+  which the radar already said.
+- **Silent invulnerability windows.** One connection slot (§5.5): a badge held in a
+  silent duel answers `BUSY` to a *real* attack. Trickle training probes at a friend and
+  they become very hard to kill, with nobody able to see why.
+- **It becomes a weapon if it touches real state** — silently burning a victim's single
+  dodge (rule 5) sets them up for an instant real kill by a confederate.
+- Unattributable battery drain on a budget §8.7 already calls marginal.
+
+**The chosen design.** Both players pick `Oefenmodus` within `TRAINING_WINDOW_S`;
+badges pair via the **HXCG overlapping-window pattern** from the contact swap, signalled
+by a new **`gflags` bit5 `SEEKING_TRAINING`** — one reserved bit, no new beacon, no new
+scan. (§5.1 rejected HXCG for *kills* because a kill is one-sided; mutual consent is
+exactly what it was built for.) Within a session each badge is the other's target, so
+both players practise hunting **and** dodging.
+
+**The prize is dodge practice.** Rule 5 gives one dodge per assassin per life, so
+without training every player's first escape attempt is also their only one, spent while
+they are still working out what the siren means.
+
+### The three isolation disciplines (§5.9.3) — each closes a named exploit
+
+1. **Override the target, never swap it.** A save-and-restore temp variable corrupts on
+   a mid-session crash: the badge wakes believing the training partner *is* its real
+   target, and if that reached flash it survives the reboot. An override fails
+   correctly. `gotcha.json`'s `target` is never written during a session.
+2. **A disposable soul.** A real kill ends in soul disclosure and the backend credits a
+   kill on nothing but `sha256(soul) == commitment` (§3.4) — so a real soul is a
+   *bankable kill*, and two friends could farm each other by "training".
+3. **Presentation-only death.** Full alarm, death screen and countdown, but no
+   `alive=false`, no `respawn_at`, no streak change, no dodge-ledger decrement, no
+   `killed_by`, and a dummy target in `SPOILS`. Otherwise "let's train" removes someone
+   from the game for 30 minutes.
+
+Nothing is queued and nothing is uploaded; the production scoring path never sees a
+training event.
+
+### Not a shield, and no truce logic
+
+Training holds no connection open — it is a series of short duels, so the BUSY windows
+match a real duel's. A real `ATTACK` between duels is honoured normally and **aborts
+the session**; the beacon keeps `ALIVE`/`BOUNTY` honest and never sets `TRUCE`.
+`TRAINING_SESSION_S` (300 s) and `TRAINING_REENTRY_S` (600 s) are belt-and-braces
+against *social* abuse ("I'm training, don't kill me").
+
+**Training carries no truce and no quiet-hours logic at all, by decision** (§5.9.5).
+Both parties consented seconds earlier and are standing together; where they practise is
+their own responsibility, exactly as with rule 14's safe zones. **This is the simpler
+implementation, not the more permissive one** — a gate would drag the truce schedule,
+`clock_offset_s` and each player's personal window into the training path. The rules
+card carries a courtesy line instead. The real game's truce behaviour is unchanged.
+
+**Sequenced last in Phase 6 and explicitly droppable.** Development does not depend on
+it: two dev badges in a throwaway backend game exercise the real duel, handshake and
+soul disclosure, which is a better protocol test than training mode will ever be.
+
+## 3. Code: splash overlay + adopt-panel layout (found on hardware)
+
+Two fixes to `fri3d_friends.py` made **outside the design work**, from running the
+translated build on a badge.
+
+### Splash is now an overlay, not a second screen
+
+`_build_splash(scr)` builds a full-screen overlay **on the nametag screen**;
+`setContentView` is called **exactly once** in `onCreate`, and `_enter_main` reveals the
+nametag by setting `lv.obj.FLAG.HIDDEN` on the splash.
+
+> 🐛 **The bug it fixes.** Pushing the splash as its own content view and then pushing
+> the nametag left a **ghost entry on the OS screen stack**: pressing **X** (OS back)
+> popped the nametag and *revealed the splash again*, needing a second X to quit.
+
+The splash is **hidden, never deleted** — deleting a live widget hard-crashes this build
+(the same landmine as the config-reload screen rebuild). Documented in `DESIGN.md` §8.
+
+### Adopt prompt rows moved 30 → 50 px — Dutch-translation fallout
+
+The multi-group title is two lines in Dutch (`<peer> zit in N groepen` /
+`Welke meedoen?`) where the English was one. At `montserrat_16` (~19 px/line) the second
+line reached ~y=44 and the first row at y=30 sat on top of it. Rows now start at y=50
+and the title gets an explicit width; 5 rows × 20 px ends ~y=130, clear of the footer.
+
+> **This is the general risk of the translation pass, now confirmed rather than
+> predicted.** Dutch runs ~15 % longer, so **any label that gains a line breaks every
+> hand-positioned widget beneath it, and only hardware catches it.** Both `DESIGN.md`
+> §11a.1 and plan §8.9.2 now say so, and call for a screen-by-screen pass on a real
+> badge rather than a read-through.
+
+## Verification
+
+- `python3 -m pytest tests/ -q` → **118 passed**
+- `fri3d_friends.py` parses; `_rbox()` signature confirmed compatible with the new
+  splash call site
+
+## Known gaps / follow-ups
+
+- ⚠️ **A5 (new, top priority): does an AppStore update preserve
+  `/apps/com.fri3dcamp.fri3dfriends/`?** Decides whether §8.10.4 needs building at all,
+  and whether v0.9.x is destroying contacts today.
+- ⚠️ **A6: do the built-in `font_montserrat_*` carry Latin-1?** Still assumed no; the
+  ASCII-only rule stands until someone renders `ë é ï` and reads it back.
+- ⚠️ **The rest of the Dutch UI is still not width-checked on hardware.** One overflow
+  found and fixed; assume more.
+- Gotcha remains **plan only** — no `gotcha.py`, no backend, no web pages.
+- `MANIFEST.JSON` still at 0.9.0; the Dutch UI, the splash fix and the adopt fix are all
+  unreleased.
+
 # !Fri3d Friends — Gotcha plan rev. 2 (peer-spec merge) + Dutch UI translation — 2026-07-26
 
 Second session of the day. Two halves:

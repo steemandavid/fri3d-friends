@@ -19,7 +19,8 @@ explicitly.
 > metrics** and **multi-host admin** (§9.4), and a reworked **state model** (§9.6).
 > Explicitly *not* adopted: shields (redundant with dodges), badge-off and
 > flat-battery elimination (see §1.1, rule 8), and server-authoritative-only play
-> (see D6). Its **separate child/adult target chains** were considered and replaced by
+> (see D6). Added independently of that spec: **training mode** (§5.9, D28) and the
+> **version/hotfix path** (§8.10, D27). Its **separate child/adult target chains** were considered and replaced by
 > **personal quiet hours** (§10.4a, D25), which solve the same real problem without
 > recording anyone's age. Its **"finale mode"** remains open and is not designed here.
 
@@ -229,6 +230,8 @@ metres of me right now" — and never for gossiping global state.
 | D24 | **Spawn and join protection** (§5.8) | Respawning next to your killer, or joining into the middle of a scrum, should not mean dying instantly. 90 s, forfeited the moment you attack. |
 | D25 | **Personal quiet hours, and no age data anywhere** (§10.4a) | Children go to bed before 22:00. The obvious fix — separate child and adult games — requires recording which badges belong to minors, and would not even deliver the safety it implies (bounties and inheritance cross cohorts). A self-serve personal truce window solves the actual problem, serves early-sleeping adults equally, and keeps **one ring, one game, no age flag, no cohort field**. |
 | D26 | **All user-facing text is Dutch** (§8.9) | Fri3d Camp is a Belgian/Dutch-language event and much of the audience is children, for whom English rules text is a real barrier at exactly the moment the game needs to be understood instantly. This covers the existing app, not just Gotcha: the whole UI is translated. **ASCII-only** — the built-in lvgl fonts do not carry accented glyphs (§8.9). |
+| D27 | **No OTA. Server-side hotfixes first, an AppStore nudge as the escape hatch** (§8.10) | D8's "no backward compatibility required" expires the moment badges are handed out on Friday morning; after that every change is a live migration across a population you cannot fully reach. Every tunable is already server-pushed (§5.4), so most fixes need no app update at all. Writing a self-updater for 700 badges in three weeks, with brick risk, is a bad trade. |
+| D28 | **Training mode: mutual opt-in, everything real except the consequences** (§5.9) | Rule 5 gives one dodge per assassin per life, so without practice every player's first escape is also their only one. Both sides opt in HXCG-style, so reveal and dodging are both genuinely rehearsable and no covert-probe capability is created. Isolated from real state by a target *override*, a disposable soul and presentation-only death. **Exempt from truce and quiet hours** — both parties consented, social responsibility, as with rule 14. Late phase, droppable. |
 
 ---
 
@@ -279,7 +282,8 @@ Everything here is enforced by the backend unless marked *social*.
     not a shield. Anyone's badge shows they are asleep rather than refusing mysteriously.
 14. **Safe zones (social):** main stage during shows, toilets and showers, workshop
     tents while a workshop is running, and first aid. Not enforced by the badge —
-    enforced by not being a jerk.
+    enforced by not being a jerk. **Training (§5.9) is exempt from the truce** because
+    you both agreed to it — so at night, practise away from the tents and mute your badge.
 15. **Opting out:** press and hold **MENU** on your badge, or use the web page. You
     can rejoin later; your total is preserved.
 
@@ -566,7 +570,8 @@ time-multiplexed ones. This deletes the riskiest item from the original Phase 0
   name budget is **exactly what it is today** — the game costs nothing when idle.
 - Game block = `pid` (3 B) + `gflags` (1 B) + `streak` (1 B) = **5 bytes**.
 - `gflags`: bit0 `ALIVE`, bit1 `UNDER_ATTACK`, bit2 `BOUNTY` (streak ≥ 3), bit3
-  `TRUCE`, bit4 `PROTECTED` (§5.8), bits 5–7 reserved.
+  `TRUCE`, bit4 `PROTECTED` (§5.8), bit5 `SEEKING_TRAINING` (§5.9.1, set only during a
+  ~10 s rendezvous window), bits 6–7 reserved.
 - `PROTECTED` is on air deliberately: a hunter's badge can then say
   *"Otter 42 — protected, 43 s"* instead of offering an attack that will be refused,
   and the white protection LED on the victim's badge has a matching signal on the
@@ -677,6 +682,9 @@ press MENU
 | `STREAK_DECAY_S` | 7200 | −1 streak every 2 h thereafter. |
 | `QUIET_EARLIEST` | 20:00 | Earliest a personal quiet window may start (§10.4a). |
 | `QUIET_LATEST` | 10:00 | Latest a personal quiet window may end. |
+| `TRAINING_WINDOW_S` | 10 | Rendezvous window; both players must opt in within it (§5.9.1). |
+| `TRAINING_SESSION_S` | 300 | Maximum length of a training session. |
+| `TRAINING_REENTRY_S` | 600 | Cooldown before the same badge may train again. |
 | `SYNC_S` | 300 | D13. Jittered ±20% (§10.3). |
 
 Retuning `KILL_RSSI` and `KILL_HOLD_MS` **live from the admin page** is worth a lot:
@@ -821,6 +829,131 @@ For `SPAWN_PROTECT_S` (90 s) after a respawn, and after a first enrollment, a pl
   protection gains nothing.
 - Protection is **not** paused by a truce — it is a 90-second wall-clock window and
   interacting with truce arithmetic would buy nothing.
+
+### 5.9 Training mode (D28)
+
+**Both sides opt in, and then everything is real except the consequences.**
+
+The prize is not learning to hunt — a first real kill teaches that perfectly well. It is
+**learning to dodge**. Rule 5 gives you exactly *one* dodge per assassin per life, so
+without training every player's first escape attempt is also their only one, spent while
+they are still working out what the siren means. Training is the only way to feel a
+successful break-away before it costs something. Reveal is the second beneficiary: it
+can only be practised against a partner whose badge is genuinely willing to flash.
+
+#### 5.9.1 Rendezvous — mutual opt-in, HXCG-style
+
+Both players choose `Oefenmodus` from the radar-detail screen within
+`TRAINING_WINDOW_S` of each other. Each badge sets **`gflags` bit5
+`SEEKING_TRAINING`** (§4) for the duration of its window and watches the scan it is
+already running for another badge with the same bit set; first match pairs, and both
+drop the bit.
+
+This is deliberately the **overlapping-window pattern from the contact swap**
+(`contact_exchange.py`, HXCG). §5.1 rejected that pattern for *kills* because a kill
+must be one-sided — but mutual consent is exactly what it was built for, it is already
+field-proven, and reusing it avoids inventing a second rendezvous. Signalling through a
+reserved `gflags` bit rather than a second beacon means no new advertising set and no
+new scan.
+
+Y is taken by the contact swap and MENU by the §5.7 escalation ladder, so training is
+entered from a menu rather than a button chord. That is fine: you are standing next to
+your partner agreeing to do this, so it is not time-critical.
+
+#### 5.9.2 What runs during a session
+
+The **whole cycle, for real**, in both directions — within a session each badge treats
+the other as its training target, so both players get to hunt *and* to be hunted:
+
+```
+radar closes  ->  reveal (a real gold flash on the partner's badge)
+              ->  attack, real siren, real hold bar
+              ->  a real dodge attempt, or a "kill"
+              ->  and again, as often as you like, until the session ends
+```
+
+A session ends on whichever comes first: `TRAINING_SESSION_S` expires, either player
+exits, or the partner is out of range for 60 s. Re-entry is blocked for
+`TRAINING_REENTRY_S`.
+
+#### 5.9.3 Isolation from the real game — the three rules that matter
+
+Training touches **no** persisted game state. Three specific disciplines, each closing a
+concrete exploit:
+
+1. **Override the target; never swap it.** `GotchaHunter` gets a `training_target` that
+   overrides display and attack logic while set. The persisted `target` in
+   `gotcha.json` is **never modified and never rewritten** during a session.
+   > 🐛 **Why not a temp variable.** If the badge resets mid-session — flat battery,
+   > crash, USB unplug — a saved-and-restored field leaves the badge believing the
+   > training partner *is* its real target, and if that ever reached flash it survives
+   > the reboot and the player hunts the wrong person for real, silently. An override
+   > fails correctly: a crash simply loses it.
+2. **A disposable soul.** The partner generates a **throwaway secret for the session**
+   and discloses that, never its real one.
+   > 🐛 **Why.** A real kill ends in soul disclosure, and the backend credits a kill on
+   > nothing but `sha256(soul) == commitment` (§3.4). Handing over the live soul would
+   > let the trainee bank a genuine kill afterwards — and let two friends farm each
+   > other by "training". The training soul verifies against nothing.
+3. **Presentation-only death.** The partner's badge plays the full alarm, the death
+   screen and the countdown, but does **not** set `alive = false`, start `respawn_at`,
+   touch `streak`/`total_kills`, decrement the dodge ledger, queue `killed_by`, or hand
+   over its real target in `SPOILS` (which would both leak who it is hunting and
+   corrupt the trainee's real target). `SPOILS` carries a dummy.
+   > 🐛 **Why.** Otherwise "let's train" is a way to take someone out of the game for
+   > thirty minutes, and silently burning a victim's single dodge (rule 5) sets them up
+   > for an instant real kill by a confederate.
+
+Nothing is queued and nothing is uploaded: the production scoring path never sees a
+training event, so no bug can credit one.
+
+#### 5.9.4 Training is not a shield
+
+- **A real attack always wins.** Training does not hold a connection open — it is a
+  series of short duels, so the BUSY windows are the same few seconds a real duel
+  already creates. A real `ATTACK` arriving between training duels is honoured
+  normally, and if it kills you, **training aborts and the real death screen takes
+  over.**
+- **The beacon stays honest.** A training session sets no `gflags` that make you look
+  unattackable: `ALIVE` and `BOUNTY` keep their real values and `TRUCE` is not set.
+- `TRAINING_SESSION_S` and `TRAINING_REENTRY_S` are belt-and-braces. They mostly guard
+  against *social* abuse ("I'm training, don't kill me") and against an implementation
+  that accidentally holds the link, rather than against a real invulnerability exploit.
+
+#### 5.9.5 Truce and quiet hours do **not** apply — and there is no code for this
+
+Training carries **no truce logic and no quiet-hours logic at all.** Do not add any.
+
+Both people opted in seconds earlier and are standing next to each other; where and
+when they practise is their own responsibility, exactly as it is for their phones. The
+plan already handles this class of thing socially rather than in code — rule 14's safe
+zones are explicitly *not* enforced by the badge — and this is the same call.
+
+**This is the simpler implementation, not the more permissive one.** A gate would mean
+carrying the truce schedule, `clock_offset_s` and each player's personal window into the
+training path and keeping them in sync with §10.4a. Skipping it removes that code
+entirely.
+
+Nothing special is needed to make a badge quiet, either: training uses the same alert
+path as everything else, so the existing mute already applies with no extra work. The
+rules card just tells people to use it.
+
+**The real game's truce behaviour is unchanged** (§10.4): a genuine attack still cannot
+happen during a truce, and the genuine siren is still suppressed unconditionally. Only
+consenting training is exempt.
+
+#### 5.9.6 Scope — late, and explicitly droppable
+
+Sequenced in **Phase 6 and droppable** (§11). It is a real feature — rendezvous,
+overridden targeting, disposable souls, suppressed state transitions on both sides,
+session cap, re-entry cooldown, abort paths — landing against 14 August with Phases 0–5
+ahead of it.
+
+**Crucially, development does not depend on it.** Two dev badges enrolled in a
+throwaway backend game exercise the real duel, the real handshake and the real soul
+disclosure, which is a *better* protocol test than training mode will ever be. Training
+mode's value is player-facing (learn to dodge before it counts) and for field-tuning
+`KILL_RSSI`/`FLEE_RSSI` with a willing partner. If time runs out, cut it.
 
 ---
 
@@ -1060,6 +1193,11 @@ truce_active(now, cfg, quiet)               # camp truce OR personal quiet hours
                                             # server-clock corrected. Returns which one,
                                             # since only the camp truce pauses decay (§2.2).
 clamp_quiet(window, cfg)                    # QUIET_EARLIEST/LATEST bounds, never raises
+version_lt(a, b)                            # "0.10.0" < "0.9.0" is False -- compare
+                                            # numerically per component, never as strings
+TrainingSession                             # §5.9 pairing, session cap, re-entry cooldown;
+                                            # holds training_target as an OVERRIDE, never
+                                            # touching the persisted target
 score_preview(...)                          # mirror of §2, optimistic UI only
 menu_action(target, rssi, now, cfg)         # the §5.7 escalation ladder -> attack|reveal|detail
 reveal_ready(now, last_reveal_at, cfg)      # REVEAL_COOLDOWN_S
@@ -1173,13 +1311,13 @@ every Gotcha widget once in `onCreate` and toggle `add_flag`/`remove_flag(lv.obj
 
 | File | Change |
 |---|---|
-| `gotcha.py` | **new** |
+| `gotcha.py` | **new** — incl. `TrainingSession` (§5.9) and `version_lt` (§8.10) |
 | `fri3d_friends.py` | MENU map + the §5.7 escalation handler, Gotcha widgets, duel + reveal + spotted + protected UI, status chip, demo mode, **`_update_leds()` rewritten as the §8.8 radar bar — friend LEDs removed**, main-loop tick, sync task, connectivity check (§7), arbitration guards |
 | `ble_proximity.py` | **HSNT v2** build/parse + name budget; game fields on peer entries; **LRU cap on `seen`** |
 | `contact_exchange.py` | Register the Gotcha service in `_ensure_services()`; hand handles to `GotchaResponder` |
 | `beacon_service.py` | Victim-side responder (attack **and** reveal) + protection state + sync in the background (D3); v2 beacon; LED-only rendering of §8.8 |
 | `ble_setup.py` | `sanitize_config` accepts `gotcha` (incl. `quiet`, clamped per §10.4a); expose enroll state over the setup GATT |
-| `MANIFEST.JSON` | → 0.10.0 |
+| `MANIFEST.JSON` | → 0.10.0. **The version string is now load-bearing** (§8.10.3) — bump it on every release or the fleet histogram and the update nudge both lie. |
 | `docs/gotcha/index.html` | **new** — player card + 4 leaderboards |
 | `docs/gotcha/admin/index.html` | **new** — host console |
 | `tests/test_gotcha.py` | **new** |
@@ -1459,6 +1597,11 @@ until then, assume they are not. Screenshots are not available for this check
   with fixed fonts and no reflow. Every translated string must be checked against its
   widget width; several existing labels are already near the limit. Where a phrase
   will not fit, cut it rather than shrinking the font.
+  > 🐛 **This already bit once.** The v0.9.0 adopt prompt's title became two lines in
+  > Dutch and overlapped the group rows below it, which are positioned with hand-computed
+  > `set_pos` offsets (`DESIGN.md` §13.3, fixed 2026-07-28). **Any label that gains a line
+  > breaks every hand-positioned widget under it, and only hardware catches it.** Budget a
+  > screen-by-screen pass on a real badge, not just a read-through.
 - **Numbers, times and units stay as they are** (`22:00`, `-65 dBm`, `30 min`).
 
 #### 8.9.3 The Gotcha strings
@@ -1519,6 +1662,152 @@ in `fri3d_friends.py` (banners, prompts, the setup screen, the on-badge editor),
 is the phone-facing setup page and is currently English throughout. Anything the player
 reads counts; log messages, exception text and code comments stay English.
 
+#### 8.9.5 Training and update strings
+
+| Screen | Dutch | *(English gloss)* |
+|---|---|---|
+| Training entry | `Oefenmodus` | *Training mode* |
+| Looking for a partner | `Zoek een oefenpartner...` | *looking for a training partner* |
+| Partner found | `Oefenpartner: Otter 42` | *training partner* |
+| No partner found | `Geen oefenpartner gevonden` | *no partner found* |
+| Training chip (permanent) | `OEFENMODUS — 2:14` | *TRAINING — 2:14 left* |
+| Practice attack (both sides) | `OEFENING — dit telt niet` | *practice — this does not count* |
+| Session over | `Oefenmodus voorbij` | *training over* |
+| Re-entry cooldown | `Nog even wachten voor je opnieuw kan oefenen` | *wait before training again* |
+| Night courtesy (rules card) | `Oefen 's nachts weg van de tenten, en zet je badge op stil` | *train away from the tents at night, and mute your badge* |
+| Soft update hint | `Nieuwe versie beschikbaar — update in de AppStore` | *new version available* |
+| Required update | `UPDATE NODIG — open de AppStore en werk de app bij` | *UPDATE REQUIRED* |
+| Update, syncing first | `Even synchroniseren voor je update...` | *syncing before you update* |
+| Update, safe to go | `Alles opgeslagen — je kan nu updaten` | *all saved — safe to update now* |
+| Host broadcast banner | *(server-supplied text, shown verbatim)* | — |
+
+---
+
+### 8.10 Versions, hotfixes and surviving an app update (D27)
+
+**D8 says "no backward compatibility required." That expires on Friday morning.** It is
+true only up to the moment badges are handed out; from then on there are ~700 units in
+the field, most of which will never be updated during the event, and every change is a
+live migration across a population you cannot reach.
+
+#### 8.10.1 The hotfix mechanism you already have is the config push
+
+Before reaching for an app update, note how much is already retunable from the admin
+page with **no badge change at all** (§5.4, §9.4): every RSSI threshold, every timer,
+`DODGE_LIMIT`, `BOUNTY_STREAK`, streak grace and decay, `SYNC_S`, the truce, scoring
+modifiers, and per-player kick/revive/void.
+
+**Add one thing to complete it: per-feature kill switches** in the sync `config` block —
+`reveal_enabled`, `bounty_enabled`, `training_enabled`, `alarm_enabled`. If Reveal turns
+out to be a nuisance at 14:00 on Saturday, it is switched off camp-wide in one click
+and every badge honours it within `SYNC_S`. The badge must treat an absent switch as
+`true` so an older backend does not disable features by omission.
+
+**An app update is the escape hatch, not the mechanism.** It is for code bugs that no
+config value can route around.
+
+#### 8.10.2 Wire-format discipline during camp
+
+This is the rule that actually preserves compatibility, and it is a *discipline*, not a
+feature:
+
+- **Never bump HSNT `ver` during the camp.** Receivers drop unknown versions (§4), so a
+  `ver = 3` hotfix partitions the camp into two populations that cannot see each other
+  at all. Extend using the **reserved `blocks` bits 1–7 and `gflags` bits 5–7** instead;
+  both were reserved for exactly this. (`gflags` bit5 is now spoken for by
+  `SEEKING_TRAINING`, §5.9.1 — bits 6–7 remain.)
+- **GATT payloads are JSON: additive keys only.** Responders must ignore unknown keys
+  rather than rejecting the message — an updated hunter must still be able to kill a
+  non-updated victim.
+- **Sync responses: the badge ignores unknown keys** (`GameConfig.from_sync` is already
+  specified as a defensive parse, §8.1) and treats absent keys as defaults.
+- **The backend accepts events from old app versions indefinitely.** Never gate event
+  ingest on a version.
+
+#### 8.10.3 Seeing the fleet, and nudging it
+
+- **Report the version.** `app_version` already rides `/v1/enroll` (§9.2); add it to
+  `heartbeat` (§9.3) so it is refreshed continuously. The admin dashboard gets a
+  **version histogram** (§9.4) — you cannot manage an update you cannot see.
+- **Sync response gains** `min_app_version`, `latest_app_version`, and a free-text
+  `broadcast` (§9.2).
+
+| Badge version | Behaviour |
+|---|---|
+| ≥ `latest_app_version` | nothing |
+| ≥ `min_app_version` | one dismissible line: `Nieuwe versie beschikbaar — update in de AppStore` |
+| < `min_app_version` | prominent `UPDATE NODIG` screen with instructions |
+
+> ⚠️ **An out-of-date badge must stay killable.** If falling behind removed you from the
+> game, then *not updating* becomes perfect invulnerability — the identical failure mode
+> that D3 exists to prevent ("close the app" must not be a shield). So a badge below
+> `min_app_version` stops **hunting** (no attack, no reveal) but its **victim-side
+> responder keeps running**. If the incompatibility is severe enough that the responder
+> cannot work either, the badge simply looks unreachable and the existing dormancy
+> machinery (§3.2) splices it out — which is correct, not a special case.
+
+**`broadcast` is worth more than the version nudge alone.** A free-text line the host
+can push to every badge within `SYNC_S` covers "update de app", "spel gepauzeerd", and
+"prijsuitreiking om 17:00 op het hoofdpodium" with one mechanism. Render it in the
+existing arrival-banner widget. Cap it hard (say 120 chars) and never let it be
+interpreted as anything but text.
+
+#### 8.10.4 ⚠️ Data survival across an update — this is broken *today*
+
+**Every persistent file lives inside the app directory**, which is what an AppStore
+update replaces:
+
+```
+/apps/com.fri3dcamp.fri3dfriends/config.json     name, groups, sound, rssi_floor, quiet hours
+/apps/com.fri3dcamp.fri3dfriends/contacts.json   every contact ever swapped
+/apps/com.fri3dcamp.fri3dfriends/gotcha.json     pid, player_key, soul, score, event queue  (§8.2)
+```
+
+**Whether a MicroPythonOS AppStore update preserves or wipes that directory is not
+known.** It has never been tested, and the answer changes what has to be built. **This
+is now the single highest-value thing to verify on the bench** — see §14.2.
+
+If it wipes, the damage is very unevenly distributed:
+
+| File | Recoverable? |
+|---|---|
+| `config.json` | Painful but survivable — the player retypes their name and groups, or re-adopts a group with a Y-swap. **They land back on the "Stel me in" screen**, which will read as "the update broke my badge". |
+| **`contacts.json`** | ❌ **Not recoverable. There is no server copy, and there never will be — the contact swap is deliberately offline-only.** Every contact a player collected is gone. |
+| `gotcha.json` | Mostly fine: `badge_key` (the BLE MAC) is stable, and §10.5 already specifies re-enroll → **same `pid`, score intact**. The genuine loss is the **unsent event queue** — kills landed since the last sync. |
+
+> 🐛 **This is a pre-existing bug in the shipping v0.9.0 app, not a Gotcha problem.**
+> `contacts.json` is irreplaceable user data sitting in a directory an update may
+> replace. It is worth fixing regardless of whether Gotcha ever ships.
+
+**What to build:**
+
+1. **Verify the behaviour first** (§14.2). If updates preserve the directory, most of
+   the rest of this is unnecessary and should not be built.
+2. **If they wipe: move persistent state out of the app directory** — or, if
+   MicroPythonOS offers no per-app data location outside it, write a copy of
+   `config.json` + `contacts.json` somewhere the installer does not touch and restore
+   on first run after an update. Keep the atomic temp-file + `os.rename` pattern.
+3. **Flush before updating, always.** The `UPDATE NODIG` screen must sync first, show
+   `Even synchroniseren voor je update...`, and only then say
+   `Alles opgeslagen — je kan nu updaten`. This is what turns the one genuinely
+   unrecoverable Gotcha loss (the queue) into no loss at all, and it is cheap.
+4. **Handle the soul rotation.** Re-enrolling after a wipe issues a fresh soul and
+   commitment, so a hunter still holding the old commitment cannot verify a kill for up
+   to `SYNC_S`. The backend must **accept the previous commitment for a grace window**
+   (15 min) rather than voiding an otherwise legitimate kill.
+
+#### 8.10.5 Why not an OTA updater
+
+Rejected deliberately. MicroPythonOS already has a sanctioned install path and badges
+already have the AppStore on them. Writing a self-updater that runs on 700 devices,
+three weeks before the event, with the failure mode "badge no longer boots", is a bad
+trade against a nudge screen and a config push that cover the realistic cases. The
+`.mpk` build and BadgeHub publish flow in `README.md` stays the release mechanism.
+
+---
+
+## 9. Backend contract
+
 Stack unspecified. Requirements: **HTTPS on `/v1/enroll` and plain HTTP on everything
 else** (§6.2), ~2.3 req/s sustained, a small relational store, and something operable
 from a phone at a muddy campsite.
@@ -1556,7 +1845,11 @@ GET /v1/sync
                  total_kills, rank_total, rank_streak, dodges: {attacker_pid: left} },
        target: { pid, name, commitment, last_seen_ago_s } | null,
        hitlist:[ { pid, name, streak } ],          # capped at 16
-       config: { KILL_RSSI, KILL_HOLD_MS, ... } }  # §5.4, live-tunable
+       app:    { min_version, latest_version },    # §8.10.3, the update nudge
+       broadcast: "<=120 chars of host text" | null,   # §8.10.3, shown as a banner
+       config: { KILL_RSSI, KILL_HOLD_MS, ...,     # §5.4, live-tunable
+                 reveal_enabled, bounty_enabled,   # §8.10.1 kill switches;
+                 training_enabled, alarm_enabled } }  # absent == true
   Every SYNC_S (300 s), jittered. The ONLY thing the badge polls.
 
 POST /v1/events   { events: [ Event, ... ] }   # batched from the offline queue
@@ -1578,7 +1871,7 @@ Every event carries `uuid`, `pid`, `at` (badge clock, offset-corrected), and `ti
 | `attack_started` | `victim_pid` | Cooldown bookkeeping, abuse detection |
 | `reveal` | `target_pid`, `rssi` | Log only. Feeds the audit page (§9.5) — someone standing in a crowd flashing strangers shows up here. |
 | `revealed` | `hunter_pid` | Log only. Also a **liveness signal for §10.1**: being revealed proves you were physically near someone, so it refreshes `last_seen`. |
-| `heartbeat` | `alive`, `target_seen_ago_s`, `peers_seen`, `battery`, `groups[]`, `quiet{from,to}` | Liveness, stale-target detection, group snapshot, personal quiet window (§10.4a) so the server can re-check it on ingest |
+| `heartbeat` | `alive`, `target_seen_ago_s`, `peers_seen`, `battery`, `groups[]`, `quiet{from,to}`, `app_version` | Liveness, stale-target detection, group snapshot, personal quiet window (§10.4a) so the server can re-check it on ingest |
 | `optout` / `optin` | — | Splice out of / into the ring |
 
 ### 9.4 Admin endpoints
@@ -1587,6 +1880,8 @@ Every event carries `uuid`, `pid`, `at` (badge clock, offset-corrected), and `ti
 POST /v1/admin/game            create (name, start, end, tunables)
 POST /v1/admin/game/<id>/state {state: lobby|running|paused|ended}
 POST /v1/admin/truce           {active, until, reason}      # instant camp-wide
+POST /v1/admin/broadcast       {text|null}                  # §8.10.3, <=120 chars
+POST /v1/admin/appversion      {min_version, latest_version}
 POST /v1/admin/modifier        {type: double_points|amnesty, from, to}
 POST /v1/admin/player/<pid>    {action: kick|revive|void_kill|adjust|reassign|protect}
 POST /v1/admin/player/<pid>/rebind  {new_badge_key}    # badge broke — see below
@@ -1616,7 +1911,7 @@ muddy campsite needs to answer "is the game alive?" in one glance, on a phone:
 | Population | enrolled · alive · dead-awaiting-respawn · protected · opted out · **dormant** |
 | Tempo | kills total · **kills last hour** · **kills last 10 minutes** · reveals last 10 minutes |
 | Health | badges synced in the last 15 min · **badges not seen for > 1 h** · queued-event backlog · ring conflicts (§3.2 step 4) |
-| Fleet | battery histogram · **count below 20 %** · app-open vs background-service split |
+| Fleet | battery histogram · **count below 20 %** · app-open vs background-service split · **app-version histogram** (§8.10.3) |
 | Leaders | top 5 individual, top 3 per group board, current hit list |
 
 **Kills in the last 10 minutes is the single most important number on the page** — it
@@ -1699,8 +1994,10 @@ ingest.
 - **`Shielded`** — we have no shield item (§5.8 protection is a timed status, not a
   consumable), and adding both a shield and a dodge would give the game two overlapping
   defensive systems.
-- **`Updating`** — there is no OTA path in scope; badges are updated by hand from the
-  AppStore between games.
+- **`Updating`** — there is no OTA path (D27, §8.10.5); badges are updated by hand
+  from the AppStore. An out-of-date badge is not a distinct status: it keeps its normal
+  status and simply stops hunting (§8.10.3), because a version that removed you from
+  the game would make *not updating* a shield.
 - **`Defective`** — not a player status. A broken badge is a *reason* for `/rebind`
   (§9.4), after which the player is `protected` on new hardware and the old
   `badge_key` is `retired`. Modelling hardware faults as game states would put a
@@ -1869,7 +2166,7 @@ Fully testable with a simulator; no badge required.
 Includes the **LED radar bar replacing the friend LEDs** (§8.8) and **demo mode**, both
 of which are independent of the duel and make Phase 3 far easier to test in the field.
 **Also the Dutch translation pass (§8.9)** — do it before there are three new screens
-of English to retranslate. Ends with two badges enrolled, each showing the other as
+of English to retranslate. Training mode is **not** here — see Phase 6. Ends with two badges enrolled, each showing the other as
 target with a live on-screen radar bar *and* a live LED bar.
 
 **Phase 3 — the duel and the Reveal.** Handshake, alarm, dodge, soul disclosure,
@@ -1881,13 +2178,19 @@ easier to set up.
 
 **Phase 4 — background participation** (D3). The fragile one; see §5.6.
 
-**Phase 5 — web pages.** Player card, four leaderboards, hit list, QR flow.
+**Phase 5 — web pages, and the update path.** Player card, four leaderboards, hit
+list, QR flow. Plus §8.10: version reporting, the `broadcast` banner, the feature kill
+switches, and whatever §14.2's AppStore-update test turns out to require.
 
 **Phase 6 — scale and soak.** As many badges as can be assembled, running for hours.
 Watch RAM, the peer-table LRU, backend load, and **median time-to-first-kill**
 (§3.3). **Measure all five power scenarios in §8.7 with an inline USB meter, on both
 board generations.** Then a rules card, and a dry run with a dozen willing humans
 before 14 August.
+
+**Training mode (§5.9) lands here, last, and is explicitly droppable.** Nothing else
+depends on it — two dev badges in a throwaway backend game are a better protocol test —
+so if the schedule tightens, cut it without renegotiating anything else.
 
 ---
 
@@ -1908,6 +2211,12 @@ before 14 August.
 | Badge never joined WiFi; player cannot tell the game is broken | Medium | Explicit `no network — check WiFi in Settings` state (§7), never silent absence. |
 | **Reveal is mistaken for an attack** and someone bolts through a crowd | Medium | The two are deliberately unmistakable: gold + single chirp + `SPOTTED` versus red + siren + `RUN`. **Demo mode (§8.4) exists largely to teach this difference before it matters.** Verify with real children in the Phase 6 dry run, not just with adults who read the rules card. |
 | Reveal spam in a crowd | Low | Self-limiting (it warns your target), `REVEAL_COOLDOWN_S` on top, and `reveal` events land on the audit page (§9.5). |
+| **An AppStore update wipes `contacts.json`** | **High** | §8.10.4. Irreplaceable user data with no server copy, in a directory an update may replace. **Affects the shipping v0.9.0 app already.** Verify on the bench (§14.2) before doing anything else about it. |
+| A hotfix bumps HSNT `ver` mid-camp and splits the population | Medium | §8.10.2: never bump `ver` during the event; the reserved `blocks`/`gflags` bits exist for exactly this. Put it in the release checklist, not just the plan. |
+| Nobody updates, and a needed fix never lands | Medium | Accept it. §8.10.1 is the real answer: make fixes server-side, and keep the version histogram (§9.4) honest about the fleet you actually have. |
+| Training corrupts real game state | **High if built carelessly** | §5.9.3, three named disciplines: target **override** (never a save/restore, which corrupts on a mid-session crash), a **disposable soul** (a real one is a bankable kill), and **presentation-only death** (or "let's train" removes someone for 30 min and burns their dodge). Each closes a specific exploit — review them individually. |
+| Training used as a shield | Low | §5.9.4: no connection held open, real attacks honoured between duels and abort the session, beacon flags stay honest, plus the session cap and re-entry cooldown. |
+| Training siren wakes people at night | Low (social) | **Deliberately not coded against** (§5.9.5) — both parties consented, and gating it would mean dragging the truce schedule and personal quiet windows into the training path for no gain. A rules-card line, like rule 14's safe zones. |
 | Removing the friend LEDs is felt as a loss | Low | §8.8.1: no *information* is lost (friends panel + pills are unchanged), the hunt bar is far more legible than one shared LED would have been, and average LED power falls. Revisit only if players actually complain. |
 | The 2024's 4-LED bar reads differently from the 2026's 5 | Low | §8.8.2: the bar is proportional, and colour carries the same signal redundantly. Check both boards in the Phase 6 dry run. |
 
@@ -1978,6 +2287,8 @@ as the day you arrive.
 |---|---|---|
 | ~~A3~~ | ~~2026 battery capacity~~ | **RESOLVED 2026-07-26: 2000 mAh, same cell as the 2024.** §8.7's runtimes apply to both boards. |
 | A4 | **All five power scenarios in §8.7**, both boards, inline USB meter | The whole power section is datasheet arithmetic, not measurement. Good enough to choose levers, not good enough to quote. |
+| **A5** | ⚠️ **Does an AppStore update preserve `/apps/com.fri3dcamp.fri3dfriends/`?** Publish a throwaway 0.9.1 to BadgeHub, put a sentinel `config.json` + `contacts.json` on a bench badge, update from the on-badge AppStore, and look at what survived. | **Decides whether §8.10.4 needs building at all.** If files survive, delete most of §8.10.4. If they do not, `contacts.json` is being silently destroyed by every update *today*, which is a v0.9.x bug independent of Gotcha. **Cheapest high-value test in this document — do it first.** |
+| **A6** | Do this build's built-in `font_montserrat_*` carry Latin-1? (§8.9.1) | Decides whether the ASCII-only rule can be relaxed. Render `ë é ï` and read back with `get_all_widgets_with_text()`. |
 
 ### 14.3 Settled
 

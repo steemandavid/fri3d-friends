@@ -665,12 +665,16 @@ class Fri3dFriends(Activity):
             pass
 
     # ------------------------------------------------------------------ splash
-    def _build_splash(self):
-        # Mirrors the proven pattern in org.fri3d.hwtest: in-memory PNG decode
-        # (reliable, unlike set_src("S:/...")) with a text fallback.
-        sp = lv.obj()
-        sp.set_style_pad_all(0, 0)
-        sp.set_style_bg_color(_col(COL_BG), 0)
+    def _build_splash(self, scr):
+        # A full-screen OVERLAY on the main screen, NOT a separate screen. A
+        # second screen pushed via setContentView leaves a "ghost" entry on the
+        # OS screen stack: after _enter_main pushes the nametag, pressing X (OS
+        # back) pops the nametag and reveals this splash again, then a second X
+        # quits — the "X shows the splash" bug. As an overlay we setContentView
+        # ONCE (onCreate), so X quits cleanly. Hidden (never deleted — deleting a
+        # live widget crashes this build) once the 3 s elapse.
+        # Mirrors the proven PNG pattern in org.fri3d.hwtest (in-memory decode).
+        sp = self._rbox(scr, 0, 0, W, H, COL_BG, radius=0)
         try:
             sp.remove_flag(lv.obj.FLAG.SCROLLABLE)
         except Exception:
@@ -730,17 +734,16 @@ class Fri3dFriends(Activity):
         if self._entered:
             return
         self._entered = True
-        try:
-            self.setContentView(self._scr)
-        except Exception:
-            pass
-        # NOTE: do NOT call self._splash_scr.delete() here. Deleting a screen
-        # object hard-crashes + reboots the badge on this MicroPythonOS build
-        # (same landmine as the config-reload screen rebuild — see DESIGN.md
-        # "Config reload"); confirmed on-device on all three badges (2026-07-15).
-        # So the splash is intentionally leaked for the app's lifetime, same as
-        # the field-verified 0.6.0 behaviour — do not "clean this up" again
-        # without testing a screen .delete() on real hardware first.
+        # Reveal the nametag by HIDING the splash overlay (never delete it —
+        # deleting a live widget hard-crashes this build; confirmed on-device on
+        # all three badges 2026-07-15). The content view was already set once in
+        # onCreate, so there is no second setContentView and thus no ghost splash
+        # on the OS screen stack.
+        if self._splash_scr is not None:
+            try:
+                self._splash_scr.add_flag(lv.obj.FLAG.HIDDEN)
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------ UI build
     def _build_idle(self, scr):
@@ -873,14 +876,19 @@ class Fri3dFriends(Activity):
         self._adopt_title_lbl.set_text("")
         self._adopt_title_lbl.set_style_text_color(_col(COL_NEAR), 0)
         self._adopt_title_lbl.set_style_text_font(lv.font_montserrat_16, 0)
+        self._adopt_title_lbl.set_width(pw - 16)
         self._adopt_title_lbl.set_pos(6, 4)
         self._adopt_rows = []
+        # Rows start below a TWO-line title ("<peer> zit in N groepen\nWelke
+        # meedoen?"): montserrat_16 is ~19 px/line, so a 2-line title reaches
+        # ~y=44. Start rows at 50 so they never overlap the "Welke meedoen?"
+        # line. 5 rows x 20 px -> last row ~y=130, clear of the footer at ~158.
         for i in range(MAX_GROUPS):
             row = lv.label(pn)
             row.set_text("")
             row.set_style_text_color(_col(COL_NONE), 0)
             row.set_style_text_font(lv.font_montserrat_14, 0)
-            row.set_pos(6, 30 + i * 20)
+            row.set_pos(6, 50 + i * 20)
             try:
                 row.set_width(pw - 16)
                 row.set_long_mode(lv.label.LONG_MODE.DOT)
@@ -1063,11 +1071,15 @@ class Fri3dFriends(Activity):
         self._setup_buzzer()
         self._setup_display()
         self._name_font = self._load_name_font()
-        # Build the nametag now but show the splash first; swap after 3 s.
+        # Build the nametag, then the splash as a full-screen overlay ON TOP of
+        # it (built last so it z-stacks above the banner). setContentView is
+        # called EXACTLY ONCE here — the splash is hidden after 3 s to reveal the
+        # nametag, so there is only one entry on the OS screen stack and X quits
+        # cleanly (no ghost splash — see _build_splash).
         self._scr = lv.obj()
         self._build_idle(self._scr)
-        self._splash_scr = self._build_splash()
-        self.setContentView(self._splash_scr)
+        self._splash_scr = self._build_splash(self._scr)
+        self.setContentView(self._scr)
 
     def onResume(self, screen):
         super().onResume(screen)
