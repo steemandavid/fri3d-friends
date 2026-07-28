@@ -1,3 +1,92 @@
+# !Fri3d Friends — on-badge v0.9.0 testing → 2026 OS-drawer diagnosis → joystick-menu redesign plan — 2026-07-28
+
+On-hardware test of v0.9.0 on the dev badges, which surfaced a 2026-only input
+problem, a full investigation of its root cause, and an agreed redesign. **Output is a
+plan, not shipped code** — `Implementation_Plan_Menu_20260728.md` (committed `ccfd16a`).
+
+## 1. What testing found
+
+Walked v0.9.0 through the manual tests on two 2026 badges (`90706901bac80000` "Tarpon
+41", `1cdbd49d9de40000` "David2026b") and, later, a 2024 badge (`348518acfac00000`).
+
+- **Auto-nickname, group adoption (multi-select), and the on-badge editor all work on
+  hardware** — the editor's `SharedPreferences` → `sanitize_config` round-trip was
+  verified live (incl. the `bool("off")` trap and preset→dBm mapping).
+- **Adopt prompt bug:** a stale `_pending_adopt` could survive a later swap and name the
+  wrong peer — fixed (clear it at the top of `_offer_groups`). Also fixed the 2-line
+  title overlapping the first group row (rows moved to y=50).
+- **Ghost-splash bug** (X showed the splash, X-again quit): root-caused to a **double
+  `setContentView`** (splash screen pushed, then nametag pushed → stale OS-stack entry).
+  Fixed by making the splash a **full-screen overlay** on the main screen with a single
+  `setContentView`. *(These two fixes are the "splash & adopt fixes" recorded in the
+  entry below; committed `12aab97`.)*
+- **The 2026 OS-drawer hijack** (the headline finding): pressing our buttons pops up the
+  MicroPythonOS top-bar/drawer.
+
+## 2. Drawer root cause (fully investigated on-device)
+
+The 2026 keypad indevs (joystick + button expander) drive the **shared default LVGL
+focus group**, which also holds the OS top-bar/drawer focusables. Our app **bypasses
+LVGL and polls buttons raw**, so it adds **nothing** to that group — every press is
+"unclaimed" and the OS grabs it.
+
+Confirmed live:
+- Redirecting the keypad indevs to an empty group **stopped the drawer** — and also
+  broke the launcher (proving it's the same keypad→OS-group path). So any redirect must
+  be **scoped to foreground**, not global.
+- **Focus-group model = ONE shared default group, membership per-activity.** Measured
+  `get_obj_count()`: launcher foreground → 37; **our app foreground → 0 (empty)**. So if
+  we add only our own focusables they become the *only* keypad target and the bar is
+  unreachable — the drawer fix falls out of using the input system correctly, with **no
+  restore footgun** (we never touch indev→group wiring).
+
+## 3. Nav-convention investigation (settles how a menu would navigate)
+
+Captured the real button→LVGL-key map by installing an on-badge async poller that logs
+to a file (decouples from host-side timing).
+
+- **2024 (measured):** joystick → `UP/DOWN/LEFT/RIGHT`; **A → `ENTER` (select)**;
+  **X → `ESC` (back)**; B/Y emit ASCII `'B'`/`'Y'` (not nav keys); START/MENU → OS codes
+  2/3. The 2024 **has a joystick** and a keypad indev (correcting an old DESIGN note that
+  said its buttons aren't an OS indev; also **no touchscreen** — `has_pointer` False).
+- **2026:** same native joystick indev + the OS-wide `A=ENTER`/`X=ESC` convention. Raw
+  codes not captured (the expander delivers via an internal queue, not `get_key()`
+  polling) — accepted, to be confirmed concretely at build time.
+- An earlier `Y=up/B=down` guess was **wrong** and is dropped.
+
+## 4. Agreed redesign (planned, not built)
+
+A **single joystick-navigated on-badge menu** replaces the raw-poll button scheme + the
+`A:list B:mute Y:swap` legend. Rows are **focusable `lv.button`s with `CLICKED`
+handlers**, so the OS does navigation + select for free (no key-mapping code), identical
+on both boards. This *is* the drawer fix (our focusables become the only keypad target).
+Also removes the awkward long-press-B (phone-setup becomes a menu row). Full detail,
+item list, risks and verification in `Implementation_Plan_Menu_20260728.md`.
+
+## 5. Operational
+
+- **nostr boot service disabled** on the two 2026 dev badges — it ships a
+  `NostrBootService` that thrashes relays until thread exhaustion (`can't create
+  thread`), contaminating tests. `MANIFEST.JSON` backed up to `.bak`; reversible (flip
+  `boot_completed_disabled` back).
+- **Stacked-instance gotcha:** launching the app repeatedly via the *home* button (not
+  back/quit) stacks multiple app instances (saw 5) — the artifact behind the original
+  intermittent Test-1 splash-quit. Exit with **back/X** (destroys) to avoid it.
+- New tooling: `tools/deploy.sh` (sha-verified deploy; `RESET=1` opt-in reboot; probes
+  REPL readiness; `tr -d '\r'` on the remote sha) and `tools/serialcap.py` (passive,
+  reconnecting console capture). Both committed by the parallel session.
+- Corrected the `badge-usb-ports` memory (it labelled the `348518…` boards 2026; they're
+  **2024** — probe `get_hardware_id()`, don't infer board from serial).
+
+## 6. Branch note
+
+A **parallel Claude session shares this branch** (`feat/contact-swap-splash-portal`) and
+committed the v0.9.0 features (`c621ce4`), the Dutch UI translation (`fa7b644`), and my
+splash/adopt fixes (`12aab97`). At session end its `Implementation_Plan_Gotcha_20260726.md`
+edits were still uncommitted in the tree — left untouched.
+
+---
+
 # !Fri3d Friends — Gotcha plan rev. 3: training mode + update path; splash & adopt fixes — 2026-07-28
 
 Design session plus two hardware-driven code fixes.
