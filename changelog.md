@@ -1,3 +1,107 @@
+# !Fri3d Friends — Gotcha Phase 0 spikes (A5/heap/HMAC done; RSSI-trend NO-GO → fallback) — 2026-07-29
+
+Began implementing `Implementation_Plan_Gotcha_20260726.md` (rev. 5) from its
+"Start here" preamble, Phase 0 first. No app code shipped to the fleet; this is
+spikes + the pure-half foundation. 118 → **140 host tests green** throughout. All
+on `feat/contact-swap-splash-portal`. Three dev badges connected (Espressif
+by-id; the 2 CH340 tracker ports were never touched).
+
+## 1. A5 — AppStore update WIPES the app directory (§14.2, decisive)
+
+Replicated the AppStore update path locally on a 2026 badge (no BadgeHub/network
+needed): `AppManager.install_mpk(zip, "apps/com.fri3dcamp.fri3dfriends")` over a
+folder holding `config.json`+`contacts.json` left a folder containing ONLY the
+.mpk's files — the user-data files were gone, manifest bumped 0.9.0→0.9.1. So
+**`install_mpk` deletes the app dir and re-extracts** (the docs even list
+"destination folder already exists" as an install-failure cause). mpos is frozen
+bytecode (`.frozen/mpos`, not on the FS, not introspectable) so this empirical
+test is the only confirmation. **Verdict: §8.10.4 MUST be built** — and
+`contacts.json` is silently destroyed by every AppStore update in the *shipped*
+v0.10.0 app today, a pre-existing bug. Saved to memory
+`mpos-appstore-update-wipes-appdir`.
+
+## 2. Heap check (Phase 0 spike #2 input) + HMAC on-device
+
+- `gc.mem_free()` ≈ **6.86 MB** at the launcher → the MicroPython heap is in the
+  8 MB **PSRAM**, not internal SRAM. Fragmentation is not the binding constraint;
+  D21's one-TLS-handshake-then-signed-HTTP is safe (saved to `badge-heap-psram`).
+- **gotcha.py pure crypto half** (new, `app/…/gotcha.py`): HMAC-SHA256 hand-rolled
+  over `hashlib.sha256` (MicroPython has no `hmac`), `canonical_json` (hand-rolled
+  for byte-identical output on MP + CPython), request/response sign+verify, the
+  soul triple (`make_soul`/`commitment`/`verify_soul`), `version_lt`. Verified
+  against **RFC 4231 vectors on host AND on a badge**, plus stdlib cross-checks
+  proving badge-signer ↔ server-verifier byte interop. `tests/test_gotcha.py`
+  (new, 22 tests). 140 total green.
+
+## 3. 2024 badge crash fixed (stale deploy)
+
+The 2024 badge's app crashed: `ImportError: can't import name parse_groups_field`
+at `fri3d_friends.py:39`. Its `fri3d_friends.py` was v0.10.0 (imports
+`parse_groups_field`) but its `ble_proximity.py` was older and lacked it — a
+half-finished deploy. Redeployed the current code files via `tools/deploy.sh`
+(sha-verified), **config.json excluded** so "Badge2024lijn" + its groups were
+preserved. App loads cleanly now on all three badges.
+
+## 4. RSSI-trend spike — NO-GO, fallback applied (the big one)
+
+The plan's most load-bearing untested assumption (§8.8.2a: a hunter steers on the
+RSSI *derivative* — "warmer/colder", shown as a ping pitch bend). Built tooling,
+ran 5 open-field walks (advertiser on a ~1.2 m pedestal), analyzed with two
+estimators. **Verdict: retracted.**
+
+- **Tooling (all new, in `probes/` + `tools/`):** `probes/rssi_walk_pkg/walk.py`
+  (a prompted LVGL Activity — on-screen Dutch instructions, A advances + writes a
+  timestamped marker per phase, multi-walk → `walk_<N>.csv`), `probes/rssi_log.py`
+  (async boot/logger), `tools/analyze_rssi.py` (replays raw adverts through an
+  `(af, as, deadband)` grid + windowed linear regression, scores §8.8.2a,
+  auto-pairs `walk_<N>.csv` with `walk_<N>_markers.csv`), `tools/rssi_walk.sh`,
+  `tools/deploy_rssi_walk.sh`, `tools/deploy_rssi_logger.sh`, `tools/pull_walks.sh`.
+- **Result (`Phase0_RSSI_Trend_Spike_20260729.md`, raw data in `probes/logs/`):**
+  the robust regression estimator is consistent across all 5 walks — **approach
+  ≈ 52–61 %** (bar 80 %), **stand ≈ 0–5 %**, retreat ≈ 66–80 %. The spec'd
+  `fast−slow` EWMA bounced 23–100 %; its "passes" (e.g. open2 100 %) were **false
+  positives** (real approach slope only ~0.1 dB/s). Root cause is SNR: real slope
+  ~0.1–0.5 dB/s vs ±15–25 dB multipath/body-shadow noise (present even standing
+  still at 1 m), at ~0.7–1 advert/s. No estimator/retuning fixes it. Walk 1 was
+  NOT botched — its regression (58 %) matched the others.
+- **Fallback (applied to the plan):** drop the trend EWMAs
+  (`TREND_ALPHA_*`/`TREND_DEADBAND_DB`), `rssi_trend()`, and the ping **pitch
+  bend** (`PING_BEND_PCT`). KEEP the LED radar bar, on-screen bar, and ping
+  **rate** (absolute proximity, which works). Kill/Reveal unaffected. Narrative
+  "Finding them" corrected. Plan §8.8.2a retracted, §8.8.6/§5.4/§8.1 updated,
+  §11 item 5 + §12 risk resolved. Saved to memory `gotcha-rssi-trend-no-go`.
+
+## 5. Platform lessons learned (memory)
+
+- **BLE work MUST run as an asyncio task on the OS loop** (`TaskManager` + short
+  non-blocking polls) — a blocking `mpremote` script sees **0 scan IRQs** (MPS
+  dispatches them through its one loop), and **`asyncio.run()` deadlocks** (MPS
+  owns the loop) — that deadlock + over-resetting pushed one badge into a USB
+  enumeration fault needing a physical replug. An advertising badge's USB-CDC is
+  wedged. (`badge-ble-async-osloop`.)
+- **App manifests must be `MANIFEST.JSON` (UPPERCASE)** — LittleFS is
+  case-sensitive; a lowercase `MANIFEST.json` isn't read (app registers as
+  `fullname="Unknown"`, boot service never starts). (Added to `mpos-firmware-api-gaps`.)
+- Two real bugs found by on-device testing of the probe: `_pending.clear()` after
+  `batch=_pending` aliases the same list (must **rebind** `_pending=[]`, matching
+  `ble_proximity`); and locking one BLE address lost nearly every advert (filter
+  by **name** each advert instead).
+
+## Notes / follow-ups
+
+- **Phase 0 remaining (lower-stakes, independent):** WiFi/BLE coexistence (#1),
+  scan-duty reduction (#4), 3rd-GATT-service fit (#3), 2024 screen blanking (#6),
+  1000-sync soak (#2 — needs the backend).
+- **Phase 1 (backend, FastAPI+SQLite in `server/`)** is unblocked — the crypto
+  foundation (gotcha.py signer) + the §6.2 transport contract are in place; the
+  backend verifier reuses `canonical_json`/HMAC.
+- A5 confirmed §8.10.4 (data survival across updates) must be built — affects
+  `contacts.json` (no server copy) most.
+- Badges left: B (1cdb…) has the `rssi.walk` test app installed (empty groups);
+  A (9070…, Tarpon 41b) and the 2024 (3485…, Badge2024lijn) at launcher, healthy.
+
+---
+
 # !Fri3d Friends — Gotcha plan readiness review + rev. 5 (hand-off ready) — 2026-07-28
 
 Full readiness review of `Implementation_Plan_Gotcha_20260726.md`, then a rev. 5

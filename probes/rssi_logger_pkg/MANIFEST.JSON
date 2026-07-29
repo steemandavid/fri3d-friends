@@ -1,0 +1,18 @@
+{
+  "name": "RSSI Logger",
+  "publisher": "test",
+  "short_description": "boot RSSI logger for the Gotcha trend spike (throwaway)",
+  "long_description": "throwaway",
+  "fullname": "rssi.logger",
+  "version": "0.1.0",
+  "category": "utilities",
+  "services": [
+    {
+      "entrypoint": "svc.py",
+      "classname": "RssiLoggerService",
+      "intent_filters": [
+        { "action": "boot_completed" }
+      ]
+    }
+  ]
+}

@@ -86,6 +86,14 @@ hand you the friend sitting next to you.
 
 ### Finding them
 
+> ⚠️ **Narrative corrected 2026-07-29 (§8.8.2a no-go):** the warmer/colder *trend*
+> cue below was retracted after the Phase 0 spike — RSSI on a worn badge is too
+> noisy (±15–25 dB) to signal "getting closer." What the badge actually delivers
+> is **absolute proximity**: the bar/screen/LEDs show *how close right now*, and
+> the ping *quickens* as you near. Read "warmer or colder" below as "closer or
+> farther by watching the bar change between glances," not as a live derivative
+> cue. See `Phase0_RSSI_Trend_Spike_20260729.md`.
+
 Your badge is a radar. When your target is somewhere near, a bar on your screen starts
 to fill — stronger as you get closer, fading as you drift away. It cannot point you in
 a direction. It only ever tells you *warmer* or *colder*, which means finding someone
@@ -93,7 +101,8 @@ is a matter of walking around, watching the bar, and paying attention to faces.
 
 The badge also tells you which way you are going: the ping bends upward while you are
 getting closer and downward while you are losing them, so you can course-correct on the
-move without stopping to look.
+move without stopping to look. *(Pitch bend retracted — the ping now quickens in **rate**
+as you close, which gives the same "am I getting closer between glances" signal.)*
 
 You do not have to stare at the screen for this. The row of lights on the front of your
 badge *is* the radar: dark when there is nothing, then one blue light when your target
@@ -749,10 +758,10 @@ press A on the hunt strip
 | `PING_MS` | 40 | Length of one ping burst. |
 | `PING_FREQ_FAR` / `PING_FREQ_NEAR` | 1400 / 2400 Hz | Base pitch at `PING_FROM_SEG` and at kill range. |
 | `PING_INTERVAL_NEAR` | 350 | Ping interval at kill range; wider intervals track the LED breathe period. |
-| `PING_BEND_PCT` | 12 % | How far a ping bends up/down to signal the trend (§8.8.2a). |
-| `TREND_ALPHA_FAST` | 0.30 | Fast RSSI EWMA — today's hardcoded `a` in `ble_proximity.py`, now named and tunable. |
-| `TREND_ALPHA_SLOW` | 0.06 | Slow EWMA; `fast − slow` is the trend. |
-| `TREND_DEADBAND_DB` | 1.5 | Below this, report "steady" — without it the arrow and pitch flap while standing still. |
+| ~~`PING_BEND_PCT`~~ | ~~12 %~~ | **DROPPED (§8.8.2a no-go):** pitch bend carried the trend, which is retracted. Ping pitch is now fixed per segment. |
+| ~~`TREND_ALPHA_FAST`~~ | ~~0.30~~ | **DROPPED (§8.8.2a no-go):** trend EWMAs removed. (`ble_proximity.py`'s `a=0.3` stays as the proximity EWMA only.) |
+| ~~`TREND_ALPHA_SLOW`~~ | ~~0.06~~ | **DROPPED (§8.8.2a no-go).** |
+| ~~`TREND_DEADBAND_DB`~~ | ~~1.5~~ | **DROPPED (§8.8.2a no-go).** |
 | `DODGE_LIMIT` | 1 | Dodges per (attacker, victim) pair per life. One reprieve, then the next attempt lands. |
 | `DODGE_DECAY_MS` | 3600000 | Dodge counter reset after 1 h with no attack from that attacker. |
 | `INSTANT_KILL_MS` | 1000 | Hold time once `dodges_left == 0`. |
@@ -1321,12 +1330,11 @@ hunt_action(target, rssi, now, cfg, duel)   # the §5.7 A-ladder -> attack|revea
 reveal_ready(now, last_reveal_at, cfg)      # REVEAL_COOLDOWN_S
 protected(now, protected_until)             # §5.8
 hunt_bar(state, rssi, now, cfg, n_leds)     # -> [(r,g,b)] * n_leds, the §8.8 radar bar
-rssi_trend(fast, slow, cfg)                 # -> -1 / 0 / +1, §8.8.2a. The single most
-                                            # load-bearing untested assumption in the
-                                            # design -- Phase 0 gates it.
-hunt_ping(state, rssi, trend, now, cfg)     # -> (freq_hz, ms, taps) or None, §8.8.6. Pure and
+# rssi_trend() -- DROPPED (§8.8.2a no-go, 2026-07-29): the trend was retracted.
+hunt_ping(state, rssi, now, cfg)            # -> (freq_hz, ms, taps) or None, §8.8.6. Pure and
                                             # host-testable: same proximity clock as the
-                                            # bar, so the two stay in phase by construction
+                                            # bar, so the two stay in phase by construction.
+                                            # (Pitch bend dropped -- rate-only, no trend arg.)
 ```
 Beacon build/parse lives in `ble_proximity.py` with the rest of the wire format (§4).
 
@@ -1655,13 +1663,25 @@ The breathe *period* shortening as you close is the second redundant cue — qui
 noticeable in peripheral vision in a way that a colour change is not. A player who
 learns *"solid red, all of them, means press A"* has learned the whole hunt.
 
-#### 8.8.2a Warmer or colder — the trend signal ⚠️ *test this first*
+#### 8.8.2a Warmer or colder — the trend signal ⚠️ *RETRACTED (NO-GO, 2026-07-29)*
 
-**The plan promises this and does not currently deliver it.** The narrative says the
-badge *"only ever tells you warmer or colder"*, but everything specified so far reports
+> **❌ RESULT: the trend promise is retracted.** The Phase 0 spike
+> (`Phase0_RSSI_Trend_Spike_20260729.md`) measured it across 5 open-field walks
+> with two estimators (fast−slow EWMA and windowed linear regression). The robust
+> estimator is consistent: **approach ≈ 52–61 %** (bar 80 %), **stand ≈ 0–5 %**,
+> retreat ≈ 66–80 %. Root cause is SNR: the real approach slope is ~0.1–0.5 dB/s
+> against ±15–25 dB multipath/body-shadow noise (present even standing still at
+> 1 m), at ~0.7–1 advert/s. No estimator or retuning fixes it. The EWMA's
+> occasional "passes" were false positives. **Decision (confirmed): drop the
+> trend entirely — keep the absolute bar/ping-rate. The whole subsection below
+> is retained as design history; it is NOT to be implemented.** See §8.8.6 for
+> the ping (pitch bend dropped, rate kept).
+
+**The plan promised this and could not deliver it.** The narrative said the
+badge *"only ever tells you warmer or colder"*, but everything specified reports
 **absolute** level. In a crowd, absolute RSSI is close to useless for navigation — it is
 dominated by bodies, orientation and multipath. **The derivative is what a hunter
-actually steers on:** did the last three steps help?
+actually steers on:** did the last three steps help? *(Hypothesis only — disproven above.)*
 
 **Mechanism — two EWMAs at different time constants.**
 
@@ -1807,10 +1827,11 @@ At kill range the ping becomes a **double-tap** rather than a single note — tw
 ~70 ms apart. It is the audible "the attack is live now" cue, so a hunter knows they can
 strike without looking at anything.
 
-**Every ping also carries the trend as a pitch bend** (§8.8.2a): bending up while you
-are closing, down while you are losing, flat inside the deadband. Rate says *how close*,
-bend says *getting warmer or colder* — two independent facts on one channel, which is
-the most a single PWM buzzer can carry and exactly the two a hunter needs.
+**~~Every ping also carries the trend as a pitch bend~~** — **DROPPED (§8.8.2a
+no-go):** the trend is retracted, so the ping carries **only its rate** (how close).
+Pitch is now fixed per segment (see the table above). *(Original text retained as
+history: "bending up while closing, down while losing … rate says how close, bend
+says warmer or colder" — the bend half is gone; the rate half stays.)*
 
 Each ping is a **short falling chirp** — ~40 ms, stepping down from `f` to about
 `0.75 f` — because the existing arrival sting **rises** (`_sting()` goes `freq` then
@@ -2527,13 +2548,12 @@ whether §8.10.4 gets built at all.
    `gatts_register_services` call.
 4. **Scan duty reduction** (§8.7 lever 2): does 30 ms/240 ms keep NimBLE's duplicate
    filter off and presence stable? Worth ~37 mA if it does.
-5. ⚠️ **RSSI trend — "warmer or colder" (§8.8.2a).** **The single most load-bearing
-   untested assumption in the design.** Run the four-condition walk protocol (open
-   field, tent, bodies in between, badge in a pocket) against the stated success
-   criteria, and come out with a `(TREND_ALPHA_FAST, TREND_ALPHA_SLOW,
-   TREND_DEADBAND_DB)` triple that works in all four — or with the knowledge that it
-   does not work. Everything the hunt feels like rests on this, and it is cheap to
-   answer: two badges, a walk, and a plot.
+5. ✅ **RESOLVED — RSSI trend "warmer or colder" (§8.8.2a): NO-GO (2026-07-29).** The
+   spike (`Phase0_RSSI_Trend_Spike_20260729.md`) ran 5 open-field walks with two
+   estimators; the trend is retracted (approach ≈ 55 % vs the 80 % bar; SNR too
+   poor). Fallback applied: keep the absolute bar + ping rate, drop the trend and
+   pitch bend. The four-condition protocol below is **no longer required** — open
+   field (the best case) already failed reproducibly.
 6. **Screen blanking on 2024** (§8.7 lever 1): can the GC9307 be put to sleep
    directly, given there is no backlight API? Highest-value power fix if yes.
 
@@ -2598,7 +2618,7 @@ so if the schedule tightens, cut it without renegotiating anything else.
 | Kids running into things | **High (real-world)** | Truce, safe-zone rules, "no running" on the card, host truce button. |
 | **Battery: app already gets only ~11 h; Gotcha naively cuts it to ~7 h** | **High** | §8.7. WiFi DTIM power save, reduced scan duty, screen blanking, battery-aware degradation. Measure in Phase 6. |
 | Group exclusion makes targets unfindable | Medium | §3.3, §10.1; watch time-to-first-kill in the soak. |
-| **RSSI trend does not track real movement** | **High** | §8.8.2a. The hunt's core promise ("warmer or colder") is unimplemented today and unproven. **Phase 0 item 4b gates it**, with pass criteria fixed in advance. Fallback is the absolute bar alone — which works, but is a materially worse game and would require rewriting the narrative to stop promising something the badge cannot do. |
+| ~~**RSSI trend does not track real movement**~~ | ~~**High**~~ | **RESOLVED (2026-07-29, NO-GO):** the spike confirmed the trend does not work (approach ≈ 55 % vs 80 % bar across 5 walks; ±15–25 dB noise vs ~0.5 dB/s slope). Fallback applied — absolute bar + ping rate kept, trend + pitch bend dropped, narrative corrected. See `Phase0_RSSI_Trend_Spike_20260729.md`. |
 | RSSI at a real camp ≠ RSSI on a bench | Medium | Every threshold is server-tunable live (§5.4). |
 | Sybil / collusion | Low | Detected not prevented (§9.5); host can void and revive. |
 | Badge never joined WiFi; player cannot tell the game is broken | Medium | Explicit `no network — check WiFi in Settings` state (§7), never silent absence. |
