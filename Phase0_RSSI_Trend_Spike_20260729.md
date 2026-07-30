@@ -54,16 +54,30 @@ within deadband), bar **≥ 80 %**.
    "passes" (e.g. `open2` 100 %) were **false positives** — the regression shows
    the real approach slope there was only ~+0.1 dB/s. The first walk (`open`) was
    *not* botched: its regression approach (58 %) matches the others.
-3. **Root cause — signal-to-noise, not tuning.** Real approach slope is
-   **~0.1–0.5 dB/s**; sample-to-sample multipath/body-shadow noise is
-   **±15–25 dB**, and it is present **even standing still at 1 m** (stand-phase
-   swings of 29–51 dB). Detecting a 0.5 dB/s slope in ±20 dB noise requires
-   averaging over ~30–40 s — far too laggy for a real-time cue. The stand phase
-   is not actually stationary (RSSI drifts while "still"), so "no sign flips
-   while standing" is unachievable, not a tuning issue. The advert rate
-   (**0.7–1.0/s**; the 50 % scan ceilings at ~2/s) further limits per-second
-   averaging. No estimator or retuning fixes this; it is fundamental to a
-   2.4 GHz badge worn/held on a person.
+3. **Root cause — signal-to-noise, not tuning.** Two independent halves, both
+   measured:
+
+   **(a) The approach is not a ramp.** Median RSSI per fifth of the 40 m→1 m
+   approach: `−93 → −88 → −88 → −85 → −74`. From 40 m to roughly 5–10 m there is
+   **no usable signal at all** — the whole gain arrives in the last few metres.
+   A derivative cue over the part of the walk where a hunter actually needs
+   steering is estimating a slope that is not there.
+
+   **(b) The noise is deep and one-sided, not Gaussian.** At a fixed 1 m the
+   distribution is a *tight mode* — IQR **4–22 dB**, p90 within ~5 dB of the
+   median — punctuated by body-shadow/multipath fades that put **12–28 % of
+   samples 15 dB or more below the median**. (An earlier draft of this report
+   quoted "±15–25 dB noise" from the stand-phase min–max spread of 29–51 dB;
+   that is outlier-driven and mischaracterises the distribution. The correction
+   matters, because asymmetric noise calls for an asymmetric filter — see §5.)
+
+   Against that, whole-phase regression slopes are **+0.50…+0.78 dB/s**
+   (approach) and **−0.50…−1.38 dB/s** (retreat), sampled at **0.7–1.0
+   advert/s** (the 50 % scan ceilings at ~2/s). A trailing-window regression
+   only clears the 80 % bar at a **20–30 s window** (pooled across all five
+   walks: 8 s → 70 % approach / 21 % stand; 20 s → 89 % / 47 %; 30 s → 100 % /
+   89 %) — far too laggy to steer on. No estimator or retuning fixes this; it is
+   fundamental to a 2.4 GHz badge worn/held on a person.
 
 ## Decision (confirmed 2026-07-29): apply the §8.8.2a fallback
 
@@ -82,13 +96,75 @@ The game stays fully playable: bar fills → ping quickens → LEDs go amber→r
 you near the target. What is lost is the directional warmer/colder cue, which
 the badge cannot deliver reliably on-body.
 
+## 5. The fallback, checked against the same data (added 2026-07-29)
+
+The trend result only matters if the thing it falls back to actually works. It
+was re-scored from the same five walks rather than assumed:
+
+**Absolute separation is strong and reproducible.** Target at 1 m: median
+**−57 dBm**. Same target at 5 m+: median **−83…−86 dBm**. Consistent in all five
+walks. A single absolute threshold at −65 dBm separates near from far with
+**81 % detection at 1 m and 2.8 % false alarm at 5 m+** on *raw* samples, before
+any smoothing. The absolute bar is well-founded.
+
+**But the smoothing has to be asymmetric.** Because the noise is a tight mode plus
+one-sided fades (§3b), a symmetric EWMA treats fades as signal:
+
+| smoothing | armed at 1 m (≥ −65) | false-arm at 5 m+ | longest continuous arm-window at 1 m |
+|---|---|---|---|
+| symmetric EWMA `a = 0.3` (today's) | 74 % | 0 % | **5.6** – 17.3 s |
+| asymmetric 0.60 up / 0.08 down | **100 %** | 3 % | **24.5 – 34.5 s** |
+
+The symmetric filter's worst walk holds above `KILL_RSSI` for only 5.6 s against
+`KILL_HOLD_MS = 5000` — a 12 % margin, i.e. a kill that fails for no reason the
+player can see. Applied to the plan as `rssi_prox` / `PROX_ALPHA_UP` /
+`PROX_ALPHA_DOWN` (§8.8.2, §5.4).
+
+**And the bar needs calibrating to −90…−55 dBm** (§8.8.2), because outside that
+band the radio separates nothing — see §3a.
+
+## 6. Known limit of this spike
+
+Every walk had the **advertiser on a pedestal** and only the logger worn. In the
+real game both badges are worn, so there are **two** bodies in the path. This
+makes the trend NO-GO *conservative* — worn-on-worn is strictly noisier, so the
+result would not reverse. It does **not** transfer the other way: the absolute
+thresholds in §5 above (`KILL_RSSI`, `REVEAL_RSSI`, `FLEE_RSSI`, the bar band)
+are validated only in the easier configuration, and they now carry the whole hunt.
+**One worn-on-worn walk pair is required before Phase 2 builds the radar**
+(§11.1, §12). The tooling already exists — it is one field session.
+
+**But the penalty can be estimated from this same data, and it is small.** Within
+each walk the approach has the badge *facing* the target while the retreat has the
+walker's own body *in the path*; pairing distance-matched slices of the two measures
+one body's shadow directly. Result: **median −4.0 dB, mean −3.1 dB, range −14…+12
+(n = 14)**, with **77 %** of the advert rate kept. A second body should therefore cost
+a few dB, not the 15–25 dB the raw noise figures might suggest. (Time is the distance
+proxy, so this assumes a steady pace — it predicts the walk's outcome, it does not
+replace it.) Re-scoring the kill mechanic against a uniform extra penalty
+(`tools/analyze_shadow.py`) gives §11.1's pre-committed `KILL_RSSI` table, and turns
+up one thing worth stating here:
+
+> At the **expected −4 dB**, the symmetric `a = 0.3` EWMA's worst-walk arm window
+> collapses to **1.8 s against a `KILL_HOLD_MS` of 5000 — the kill becomes
+> unwinnable** — while the §8.8.2 asymmetric filter still holds **18.6 s**. The
+> asymmetric filter is therefore a correctness requirement on the hunt path, not a
+> refinement. `REVEAL_RSSI` by contrast is untroubled: still 100 % at 1 m even at
+> −16 dB.
+
 ## What this does / does not affect
 
-- **Does not affect:** the absolute radar bar/ping (proximity-level, works),
-  the kill handshake, Reveal, scoring, the backend, the data-survival work
-  (§8.10.4, confirmed needed by the A5 wipe test), or the other Phase 0 spikes
-  (WiFi/BLE coexistence, scan-duty, 3rd GATT service, 2024 screen blanking).
+- **Does not affect:** scoring, the backend, the data-survival work (§8.10.4,
+  confirmed needed by the A5 wipe test), or the other Phase 0 spikes (WiFi/BLE
+  coexistence, scan-duty, 3rd GATT service, 2024 screen blanking).
 - **Does affect:** §8.8.2a (retracted), §8.8.6 (drop pitch bend), §8.1
-  (`rssi_trend` removed), §5.4 (`TREND_*` / `PING_BEND_PCT` tunables removed),
-  the "Finding them" narrative, §11 Phase 0 item 5 (resolved → no-go), §12 RSSI
-  risk row (resolved).
+  (`rssi_trend` removed; `prox_filter`/`prox_fraction` added), §5.4 (`TREND_*` /
+  `PING_BEND_PCT` removed; `PROX_ALPHA_UP`/`PROX_ALPHA_DOWN` added), §8.8.2 (bar
+  band calibration + asymmetric smoothing), the "Finding them" narrative
+  (rewritten, not annotated), §11 Phase 0 item 5 (resolved → no-go, with a
+  worn-on-worn residual), §12 (RSSI-trend risk resolved; a new pedestal-calibration
+  risk row added).
+- **Newly load-bearing:** the absolute radar bar/ping and the kill handshake all
+  worked before *alongside* the trend; with the trend gone they are the only
+  proximity cue, so their thresholds carry more weight than when they were
+  written — hence §5 and §6 above.

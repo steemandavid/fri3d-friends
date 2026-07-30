@@ -1,3 +1,553 @@
+# !Fri3d Friends — Phase 0 audited, corrected and closed (spikes 1/3/4/6 + TLS) — 2026-07-30
+
+Two jobs. First, **audit** the previous session's Phase 0 conclusions and its
+rewrite of `Implementation_Plan_Gotcha_20260726.md` — is the RSSI-trend NO-GO
+sound, and is the plan fit to build from? Second, **close the remaining Phase 0
+spikes** (1 WiFi/BLE coexistence, 3 third GATT service, 4 scan duty, 6 2024 screen
+blanking). Both done. The audit confirmed the NO-GO but found three overstated
+numbers and one missed design consequence that turned out to be
+correctness-critical. Plan and spike report corrected; new report written for the
+four spikes. **Phase 0 is now closed with one residual that structurally cannot
+close before Phase 1 exists.** No app code shipped to the fleet.
+
+## 1. Audit of the RSSI-trend NO-GO — verdict: sound, reproduced independently
+
+Re-derived from the raw CSVs with a **third** estimator (trailing-window
+least-squares, sign-scored, pooled over all five walks) rather than trusting
+`tools/analyze_rssi.py`:
+
+| trailing window | approach correct | retreat | stand |
+|---|---|---|---|
+| 4 s | 56 % | 81 % | 11 % |
+| **8 s** (the spike's) | **70 %** | **83 %** | **21 %** |
+| 12 s | 77 % | 86 % | 29 % |
+| 20 s | 89 % | 94 % | 47 % |
+| 30 s | 100 % | 92 % | 89 % |
+
+Same verdict, and it pins the mechanism: the sign only becomes reliable at a
+**20–30 s window**, exactly the report's "far too laggy" claim. Five walks, two
+independent estimator families, one answer. **The retraction stands.**
+
+## 2. Three numbers the report overstated (all corrected in place)
+
+| claim | reality | why it mattered |
+|---|---|---|
+| "±15–25 dB noise, present even standing still" | min–max, outlier-driven. Robust spread at 1 m is **IQR 4–22 dB**, p90 within ~5 dB of median. The noise is a **tight mode + one-sided deep fades** — 12–28 % of samples ≥15 dB *below* median | This phrasing had propagated into §8.8.2a, §12 and the narrative. Asymmetric noise demands an **asymmetric filter** — see §3 |
+| "real approach slope ~0.1–0.5 dB/s" | whole-phase regression: **+0.50…+0.78** approach, **−0.50…−1.38** retreat | ~2× understated; verdict unchanged |
+| "stand ≈ 0–5 %" | artifact of scoring against a 1–3 dB deadband; **21 %** at 8 s on a physical criterion (\|slope\| < 0.3 dB/s) | 0 % reads as "catastrophically broken" when the real story is "needs 30 s" |
+
+Also **added**, because it is a stronger root cause than the slope figure: the
+approach **is not a ramp**. Median RSSI per fifth of a 40 m→1 m approach runs
+`−93 → −88 → −88 → −85 → −74`. From 40 m to ~5–10 m there is **no usable signal at
+all**; essentially all the gain arrives in the last few metres.
+
+## 3. The thing the report did not check: does the fallback actually work?
+
+The report asserted the absolute bar and kill handshake were "unaffected". Re-scored
+from the same five walks:
+
+**Absolute separation is strong and reproducible** — 1 m median **−57 dBm**, 5 m+
+median **−83…−86 dBm**, in all five walks. Raw-sample thresholding:
+
+| threshold | detect at 1 m | false alarm at 5 m+ |
+|---|---|---|
+| −60 dBm | 70.6 % | 0.7 % |
+| **−65 dBm** | **80.7 %** | **2.8 %** |
+| −70 dBm | 82.9 % | 9.0 % |
+| −75 dBm | 82.9 % | 17.2 % |
+
+**But the smoothing has to be asymmetric.** At `KILL_RSSI = −65`:
+
+| smoothing | armed at 1 m | false-arm at 5 m+ | longest continuous arm window |
+|---|---|---|---|
+| symmetric EWMA `a = 0.3` (shipped today) | 74 % | 0 % | **5.6** – 17.3 s |
+| **asymmetric 0.60 up / 0.08 down** | **100 %** | 3 % | **24.5 – 34.5 s** |
+| max-of-last-3 | 99 % | 6 % | 17.1 – 34.5 s |
+
+The symmetric filter's worst walk clears `KILL_HOLD_MS = 5000` by only 12 %.
+
+## 4. Body shadow quantified — and the filter turns out to be correctness-critical
+
+The walks put the advertiser on a **pedestal**; the real game wears both badges.
+The penalty was measurable from the *existing* data: within a walk the approach has
+the badge **facing** the target and the retreat has the walker's own body **in the
+path**, so pairing distance-matched slices measures one body's shadow.
+
+```
+POOLED one-body shadow: median -4.0 dB, mean -3.1 dB, range -14..+12 (n=14)
+POOLED advert rate:     1.12/s facing vs 0.86/s shadowed = 77 % kept
+```
+
+Far smaller than the raw noise figures imply. *Caveat, stated in the docs: time is
+the distance proxy, so it assumes a steady pace — it predicts the worn-on-worn
+walk's outcome, it does not replace it.*
+
+Projecting a uniform extra penalty forward (`tools/analyze_shadow.py`) produced the
+session's most important finding:
+
+| penalty | asymmetric filter | symmetric EWMA `a=0.3` |
+|---|---|---|
+| 0 dB (pedestal) | 24.5 s hold | 5.6 s hold |
+| **−4 dB (expected)** | **18.6 s hold** | **1.8 s — KILL UNWINNABLE** |
+| −8 dB | 1.8 s — fails | 0 s |
+| −12 dB | 0 s | 0 s |
+
+**The symmetric EWMA's 12 % margin is already consumed by one extra body.** So the
+asymmetric filter is not a refinement of the smoothing — it is the difference
+between a working kill and a broken one. Said so explicitly in §8.8.2 and the spike
+report.
+
+Loosening is cheap, though — false arming at 5 m+ stays ≤ 4 % out to −74 dBm — so
+the residual became a **pre-committed lookup table** (new plan §11.1):
+
+| measured penalty | `KILL_RSSI` | worst-walk arm window | false-arm |
+|---|---|---|---|
+| 0 to −4 dB *(expected)* | **−65, unchanged** | 18.6–24.5 s | 0–3 % |
+| −8 dB | −68 | 13.0 s | 0 % |
+| −12 dB | −71 | 13.0 s | 0 % |
+| −16 dB | −77 | 18.6 s | 0 % |
+| worse | cut `KILL_HOLD_MS` to 2500 before loosening further | — | past −77 costs real false arms |
+
+Bar = the **worst** of five walks holding ≥ 10 s against a 5 s `KILL_HOLD_MS` (2×
+margin). `REVEAL_RSSI` needs no check at all: 100 % at 1 m even at −16 dB.
+
+## 5. Plan edits made
+
+| area | change |
+|---|---|
+| §"Finding them" | **Rewritten, not annotated.** The disproven warmer/colder prose is gone (it had been left as primary text with a correction banner above it — the pattern that puts wrong strings on badges). Now states the measured range limit: flat past ~10 m, only moves in the last few metres. One-line provenance note replaces the 7-line banner |
+| §8.8.2 | New: bar calibrated to **−90…−55 dBm**; the **asymmetric `rssi_prox` filter** with its measured justification and the −4 dB correctness argument |
+| §5.4 | `PROX_ALPHA_UP` 0.60 / `PROX_ALPHA_DOWN` 0.08; `HUNT_SYNC_DEFER` + `HUNT_SYNC_DEFER_MAX_S` 900 |
+| §8.1 | `prox_filter()` / `prox_fraction()` added to the pure-function surface |
+| whole hunt path | repointed `rssi_ewma` → `rssi_prox` (§5.3, §5.7, §8.4, §8.8.2, §8.8.6, §10); `rssi_ewma` stays for the friends list, where a symmetric average is the honest thing to show |
+| §8.8.6 | pitch-bend removal rewritten as prose rather than struck-through history |
+| §11 | items 1/3/4/6 resolved with data; item 2 narrowed; **new §11.1** worn-on-worn protocol; verdict **GO for Phase 1** |
+| §12 | trend risk + coexistence risk closed; pedestal risk **downgraded Medium–High → Medium** (exposure is now one live-tunable value); new narrow row for the `KILL_RSSI` headroom; new row for "a sync mid-chase blunts the radar" |
+| §14.2 | **A5 marked resolved** — it had been executed on 2026-07-29 but the row still read as an open action item |
+| §8.7 | levers 1, 2, 3 and the lever-4 ladder all updated with measured results |
+| Start-here preamble | Phase 0 closed; points at both spike reports |
+
+Naming note: the new section is **§11.1**, not §11a — `DESIGN.md §11a` already
+exists and is cited three times in this plan. It was also relocated to *after* the
+Phase 0→6 list so it stops interrupting the phase narrative.
+
+## 6. Spike 3 — third GATT service: **GO**
+
+`gatts_register_services((exchange, setup, gotcha))` in **one** call:
+
+| service | chars | handles |
+|---|---|---|
+| exchange `6e4000 10` | 2 | `[16, 18]` |
+| setup `6e4000 20` | 6 | `[21, 23, 25, 27, 30, 32]` |
+| gotcha `6e4000 30` | 4 | `[35, 37, 40, 42]` |
+
+`gatts_set_buffer(SPOILS, 512, True)` also succeeds. §5.2's pattern is correct as
+written — no change needed.
+
+## 7. Spikes 1 + 4 — coexistence and scan duty
+
+Six conditions, 60 s each, back to back. Scanner **1cdb…**; advertisers **9070…**
+(`Tarpon 41b`) and **3485…** (`Badge2024lijn`), both beaconing from their boot
+service. "busy" = continuous `ping -i 0.01 -s 500` from the host; the badge answered
+**6038/6100** (50 % duty) and **5958/6223** (12.5 %), i.e. real two-way radio work.
+
+| duty | WiFi | adv/s | vs off | median gap | worst gap |
+|---|---|---|---|---|---|
+| **50 %** (60/120 ms) | off | **3.66** | — | 0.16 s | 1.6 s |
+| 50 % | idle | 3.01 | **82 %** | 0.25 s | 2.3 s |
+| 50 % | transferring | 1.53 | **42 %** | 0.50 s | 6.7 s |
+| **12.5 %** (30/240 ms) | off | **0.93** | — | — | 4.6 s |
+| 12.5 % | idle | 0.83 | **89 %** | — | 7.9 s |
+| 12.5 % | transferring | 0.30 | **32 %** | — | 14.9 s |
+
+**Spike 1 → GO, with a scheduling rule.** Idle association is nearly free; a
+transfer costs **58–68 %**, as a uniform slowdown rather than long stalls (one 5.3 s
+outlier). **Presence never flaps** — worst gap anywhere 14.9 s against `EVICT_MS`
+30 s. The architecture stands; the sync scheduler changes → `HUNT_SYNC_DEFER`.
+
+**Spike 4 → GO mechanically, NO for the hunt path.** The duplicate filter **does**
+stay off at 12.5 %, confirming `DESIGN.md` §3's real load-bearing claim (explicit
+`interval_us`/`window_us`, not the 50 % ratio). But the cost is **exactly
+proportional** — 25 % kept, i.e. the duty ratio. Per peer that is 0.47/s on a desk →
+~0.2/s in a field → **0.15/s with WiFi busy, one sample every ~7 s** against a 5 s
+`KILL_HOLD_MS`. Adopt 12.5 % **only in the non-hunting background state**; keep 50 %
+while a hunt is live. Wired into the lever-4 battery ladder.
+
+## 8. Spike 6 — 2024 screen blanking: **PARTIAL, lever 1 as written does not exist**
+
+1. **No backlight or power GPIO.** `mpos.board.fri3d_2024.st7789.ST7789._displays[0]`
+   has `_backlight_pin = None`, `_power_pin = None`; `get_backlight()`/`get_power()`
+   both return **−1**. `DESIGN.md` §1 confirmed from running firmware, not docs.
+2. **The panel is write-only** — `RDDPM (0x0A)`, `RDDID (0x04)`, `RDDST (0x09)` all
+   read back `0xFF` (no MISO). Any blanking is open-loop.
+3. **The commands work and reverse cleanly.** `DISPOFF (0x28)`, `SLPIN (0x10)`,
+   `SLPOUT (0x11)`, `DISPON (0x29)` via `display_bus.tx_param(cmd)` (single-arg
+   form); LVGL survives, `screen_active().invalidate()` redraws, launcher intact.
+4. **Observed (visually confirmed): black screen, backlight still glowing** — in
+   both `DISPOFF` and the deeper `SLPIN`.
+
+So the ~50 mA in §8.7 is display **+ backlight** and the LEDs dominate it: a panel
+command cannot switch off a backlight with no GPIO behind it. What remains is an
+unquantified panel-logic saving, and it **cannot** be quantified on-badge
+(`BatteryManager` exposes voltage only) → **A4, Phase 6, inline USB meter**. Kept
+anyway: a black screen is a real state for the battery ladder and for not
+broadcasting your hunt.
+
+**Incidental, for lever 3:** ping RTTs to an associated badge ran **38–672 ms**, far
+above the LAN floor — the signature of DTIM power save **already being active**. So
+lever 3's ~65 mA is probably already banked, not available. Flagged in §8.7.
+
+## 9. Phase 0 item 2 — the TLS half closed, and it needed no backend
+
+"Confirm one enrollment HTTPS handshake succeeds" does not require the Gotcha
+backend, only *an* HTTPS host. Result on badge **1cdb…**:
+
+```
+baseline mem_free 7 407 232
+handshakes 0/3/6/9/11  mem_free 7 411 888  (identical at every checkpoint)
+TLS handshakes ok=12 fail=0 | net +4 624 bytes | lowest seen 7 407 232
+512 KB contiguous bytearray after TLS churn -> OK
+```
+
+Plus a single 1.3 MB body pulled through TLS in 19.6 s. **TLS neither leaks nor
+fragments on this build**, so D21 (one TLS handshake at enrollment, then signed
+plain HTTP) is *verified* rather than assumed.
+
+**Still owed:** the **1000-consecutive-signed-sync soak**, which genuinely needs a
+verifier → end of Phase 1. It is a soak for heap stability, not a question that can
+invalidate the design; the two that could (PSRAM heap, TLS behaviour) are answered.
+
+## 10. Phase 0 final status
+
+| # | spike | status |
+|---|---|---|
+| 1 | WiFi + BLE coexistence | ✅ GO + `HUNT_SYNC_DEFER` |
+| 2 | Sync durability | ⚠️ heap + on-device RFC 4231 HMAC + **TLS** done; 1000-sync soak → end of Phase 1 |
+| 3 | Third GATT service | ✅ GO |
+| 4 | Scan duty reduction | ✅ GO mechanically; 12.5 % background-only |
+| 5 | RSSI trend | ✅ NO-GO, audited and upheld; worn-on-worn check → §11.1, gates Phase 2's radar |
+| 6 | 2024 screen blanking | ⚠️ PARTIAL; quantify via A4 in Phase 6 |
+| A5 | AppStore-update wipe | ✅ destructive → §8.10.4 must be built |
+
+**Every question capable of invalidating downstream work is answered**, and two
+answers changed the design (the trend retraction, the coexistence scheduling rule).
+What remains needs the thing being measured to exist first.
+
+## 11. Files
+
+**New:**
+
+| path | purpose |
+|---|---|
+| `Phase0_Coex_GATT_Duty_Display_20260730.md` | spikes 1/3/4/6 report |
+| `probes/coex_pkg/{MANIFEST.JSON,coex.py}` | one-shot on-badge scan probe (throwaway; removed from the badge afterwards) |
+| `tools/run_coex.sh` | host-side condition driver (WiFi state + ping load + pull) |
+| `tools/deploy_coex.sh` | install/remove the probe |
+| `tools/coex_load_server.py` | ~1 KB HTTP endpoint standing in for a sync |
+| `tools/analyze_coex.py` | scores spikes 1/3/4 from the raw logs |
+| `tools/analyze_shadow.py` | body-shadow measurement + the §11.1 `KILL_RSSI` table |
+| `tools/spike6_display_sleep.py` | 2024 panel blanking test |
+| `tools/recover_badge_port.py` | `USBDEVFS_RESET` unwedge |
+| `probes/logs/coex_*.{json,csv}`, `coex_verdict.txt`, `shadow_verdict.txt` | raw data + verdicts |
+
+**Modified:** `Implementation_Plan_Gotcha_20260726.md`,
+`Phase0_RSSI_Trend_Spike_20260729.md`, memory `mpos-firmware-api-gaps` + `MEMORY.md`.
+
+**Nothing committed** — left in the working tree for review.
+
+## 12. Platform lessons (saved to memory `mpos-firmware-api-gaps`)
+
+- **`json.dump(obj, open(path, "w"))` silently loses everything on MicroPython.**
+  The file object is never flushed or closed, so the buffer dies with it → 0-byte
+  file. **Destroyed a complete 9-minute run.** Always
+  `f = open(...); json.dump(obj, f); f.flush(); f.close()`.
+- **Never toggle WiFi from inside a measurement Activity.** `WifiService`
+  (re)connecting takes the **foreground**, firing `onPause` — which silently kills
+  any `TaskManager` task gated on a `running` flag. **Ate the first attempt at the
+  six conditions.** Set WiFi from the host REPL *before* launching.
+  `temporarily_enable(x)` also takes a **required positional arg**;
+  `temporarily_disable()` takes none.
+- **`mpos.AppManager.start_app("<fullname>")` launches an app from the REPL** — no
+  tapping the launcher. `get_foreground_app()` confirms; `restart_launcher()` returns.
+- **A hard-scanning badge can wedge its USB-CDC completely** — `/dev` node
+  enumerates, raw reads return 0 bytes, `mpremote` cannot enter raw REPL. Fixed by
+  `USBDEVFS_RESET` (`tools/recover_badge_port.py`); use sparingly. On recovery the
+  on-badge results were intact — only the *pull* had failed.
+- **`mp()`-style pipelines always exit 0**, so `mp cp … && echo "ok"` reports false
+  success. `run_coex.sh` now verifies with `[ -s "$dest" ]`.
+- The 2024 display SPI is **write-only** (no MISO) — panel state is unreadable.
+
+## 13. Gotchas / follow-ups
+
+- **ufw blocked the load server.** Port 8099 gave the badge `OSError(116)`
+  (ETIMEDOUT) despite the host `curl` working — a host `curl` to its own LAN IP goes
+  over loopback and bypasses `ufw INPUT`, so it proves nothing. Switched to
+  **port 12345**, which was already `ALLOW 192.168.1.0/24` in ufw, rather than
+  changing the firewall. Badge answers 500-byte pings but **not** 1000-byte ones
+  (0 replies), so the load uses `-s 500`.
+- ✅ **`HUNT_SYNC_DEFER` / `HUNT_SYNC_DEFER_MAX_S` were missing from
+  `server/gotcha_server/config.py` — since fixed by the Phase 1 session**, which also
+  added `tests/test_server_plan_parity.py`. (`PROX_ALPHA_UP/DOWN` were already
+  present and the `TREND_*`/`PING_BEND_PCT` retraction correctly absorbed.) No file
+  under `server/` was touched from this session. See §14 for the constraint that came
+  back out of it.
+- **Phase 1 landed in parallel** (backend at `192.168.1.57:8080`), so the item-2
+  **1000-sync soak is now runnable** — that is the single remaining Phase 0 action.
+- **§11.1 worn-on-worn walk** before Phase 2 builds the radar. If skipped: ship
+  `KILL_RSSI = −68` and treat the first playtest as the measurement.
+- `rssi.walk` is **deliberately left installed** on badge **1cdb…** — it is the
+  tooling the §11.1 walk needs.
+- Test suite went 140 → **254** during the session; the increase is Phase 1's
+  server tests from the parallel work, not this session's.
+
+## 14. Cross-component constraint found by the Phase 1 session (and the hole it exposed)
+
+The Phase 1 model flagged that **`HUNT_SYNC_DEFER_MAX_S` (900 s) must stay below its
+outage-detection window `OUTAGE_GAP_MIN` (20 min)**: §10.3 pauses dormancy when sync
+volume collapses, and a deferring badge is a badge *deliberately* not talking, so a
+long chase could be misread as the server having been down — pausing dormancy
+accounting camp-wide. Verified and correct. `state.outage_intervals()` measures
+stretches where the server heard from **nobody** (aggregate `sync_beats` minute
+buckets, not per-badge), so one deferring badge is invisible; the failure needs
+*simultaneous* deferral, which is unlikely at 700 badges but trivial with **two dev
+badges or a four-player endgame**.
+
+**Their guard test was necessary but not sufficient, because of an ambiguity in my
+§5.4 spec.** I had written "hard ceiling on hunt-deferred syncing" without saying
+*from when*, and Phase 2 has not implemented it yet:
+
+| anchor | max badge silence | vs 1200 s |
+|---|---|---|
+| from deferral start (the intuitive reading) | jittered `SYNC_S` ≤360 s + 900 = **1260 s** | **breach** — and their test still passes |
+| **from last successful sync** | **900 s flat** | safe, ~5 min margin, immune to `SYNC_S` retuning |
+
+Pinned to the second, in three places: **§5.4** (the tunable row plus a dedicated ⚠️
+constraint row giving the 1260 s arithmetic, and a warning that both values are
+live-tunable so **raising this one from the admin page at camp can break dormancy
+accounting** — raise `OUTAGE_GAP_MIN` first), **§10.3** (the reciprocal note, for
+anyone *lowering* `OUTAGE_GAP_MIN`), and **§9.2** (the endpoint annotation names the
+anchor). Suggested back to them: assert the anchor semantics once the badge side
+exists, and note that `outage_intervals()`'s 60 s bucket granularity eats margin
+first if anyone ever tightens it.
+
+## 15. Documentation updated at session close
+
+- **`DESIGN.md` §1 "Verified hardware / API facts"** — five new/extended rows, since
+  this is the project's platform-reality record and the spikes were platform facts:
+  the **backlight** row now carries the root cause (`_backlight_pin = None` /
+  `_power_pin = None`, `get_*` → −1 — a wiring fact, not a missing API); new rows for
+  **2024 panel sleep** (commands work + reverse; write-only panel, `RDD*` → `0xFF`),
+  **scan duty linearity**, **WiFi/BLE coexistence**, **three GATT services in one
+  call**, and **TLS not fragmenting the heap**.
+- **`DESIGN.md` §3 scan paragraph** — its "this is load-bearing" warning now records
+  that the *explicit args* were confirmed to be the operative part, not the 50 %
+  ratio, together with the proportional-cost bound.
+- **`DESIGN.md` recovery/discipline notes** — the USB-CDC wedge + `USBDEVFS_RESET`
+  recovery, the silent `json.dump` data loss, the WiFi-foreground-steal trap,
+  `AppManager.start_app()` for scripted runs, and the shell pipeline exit-status
+  gotcha.
+- **`README.md`** — repo layout now lists `probes/`, the three analysis tools and
+  `recover_badge_port.py`; new paragraph pointing at the plan and both Phase 0
+  reports, with the warning that several plan assumptions did not survive contact.
+
+---
+
+# !Fri3d Friends — Gotcha Phase 1: the backend game server — 2026-07-30
+
+Implemented **Phase 1 of `Implementation_Plan_Gotcha_20260726.md` §11** end to
+end: the FastAPI + SQLite backend in `server/`, deployed under systemd on the
+Ubuntu game laptop at **192.168.1.57:8080**. No badge code touched — Phase 1 is
+deliberately badge-free. **140 → 246 host tests green.**
+
+## 1. What was built
+
+`server/gotcha_server/`, ~2 900 lines, one process, no ORM, no migration tool, no
+template engine, no build step — the deployment target is a laptop in a field.
+
+| Module | Contents |
+|---|---|
+| `state.py` | §9.6's status model, §2.2 streak decay, truce + personal quiet hours (§10.4/§10.4a), dormancy (§2.4), staleness (§10.1) |
+| `ring.py` | §3.2 construction with group-conflict repair; splice in/out, inheritance, position swaps |
+| `scoring.py` | Points, streaks, deaths, four leaderboards, live hit list |
+| `events.py` | All nine §9.3 event types with every server-side re-check |
+| `service.py` | Enrollment, rebind, the sync payload, `reconcile()` |
+| `admin.py` | §9.4 admin API + the dashboard document |
+| `pages.py` | Backend-served HTML (D31): working admin dashboard, player-card skeleton, Dutch (D26) |
+| `auth.py` / `crypto.py` | §6.2 signed requests and signed response envelopes |
+
+**Two architectural choices**, both written up in `server/README.md`:
+
+- **Derive, don't schedule.** `protected`, `dormant`, `stale` and the decayed
+  streak are computed from timestamps on read. §2.2 argues this for decay
+  ("correct regardless of when the timer actually runs"); the same argument
+  applies to all of them, so there is **no cron, no worker, no queue**. Target
+  pointers cannot be derived, so `reconcile()` acts on the derivations at the top
+  of every sync and every event batch — the game repairs itself as a side effect
+  of badges talking to it.
+- **The badge is untrusted except about its own death** (§9.5/§9.6). Truce, quiet
+  hours, protection, dodge limits, target validity and repeat-kill scoring are all
+  re-checked server-side; `killed_by` is believed, and the server separately
+  decides whether the kill *counted* (§10.2 — an invalid pairing is voided and the
+  victim keeps their streak).
+
+## 2. The badge simulator (§11's harness)
+
+`tests/badge_sim.py` is written as *the badge*, not as a test helper: it holds a
+soul, a `player_key` and an offline queue, and it signs and verifies with the
+badge's own `gotcha.py` (the hand-rolled MicroPython HMAC + canonical JSON). So
+every API test is simultaneously an interop test in both directions, and Phase 2's
+`GotchaSync` has a reference implementation to match. `tests/test_server_api.py`
+drives it through 66 scenarios; `test_server_crypto.py` pins byte-parity between
+badge and server (canonical JSON, request/response signatures, group ids vs
+`ble_proximity`).
+
+## 3. Bugs found and fixed while testing
+
+- **A death's two halves did not dedupe.** `apply_death` increments `life_id`, so
+  the victim's later `killed_by` looked for a kill against the *new* life and
+  created a second one. Fixed properly with a **`lives` table** holding each
+  life's commitment: the soul itself now identifies which life it ended, so a
+  proof that spent two hours in an offline queue still verifies after the victim
+  respawned and rotated — and dedupes onto one death. Without this, a late but
+  entirely honest kill report would have failed and looked like cheating. Plan
+  §3.4 annotated.
+- **§3.2's local repair stalls.** With two large groups of similar size (Chiro vs
+  a makerspace — a plausible camp), a shuffled ring lands on 4–5 same-group edges
+  and *no single successor-swap improves it*, so the specified hill-climb reported
+  conflicts for a ring that has a perfect solution. Seeded the construction with a
+  group-aware deal and added a position-swap neighbourhood: 700 players in 40
+  groups now build **0 conflicts in 0.2 s**; genuinely unsatisfiable shapes still
+  start the game and report the count honestly (step 4).
+- **`_edge_cost` scored the wrong edges** (`{i, i-1, j, j-1}` instead of the four
+  a successor swap actually moves), which is why the repair never converged.
+- **A returning dormant badge was not protected.** §9.6 says "any sync →
+  `protected`"; it was being spliced straight back into the ring and was instantly
+  attackable coming off the charger. Added `service.note_return`.
+- **Dormancy could mass-dormant the camp.** §10.3 requires dormancy to pause when
+  sync volume collapses. The first cut treated any single quiet minute as an
+  outage, which made 15-minute test cadences look like a permanent outage; now it
+  looks for a **≥20 min silence**, which is what actually distinguishes "the
+  server was down" from "a quiet night".
+- **`{"action":"protect","seconds":0}` re-armed the default 90 s** (`or` treating 0
+  as absent) instead of clearing protection. Now `<= 0` sets NULL.
+- **`inherit`'s re-splice could make a player their own target.** Replaced the
+  ad-hoc pointer hand-off with `swap_positions`, which handles the two adjacency
+  cases and provably keeps one cycle.
+- **The admin dashboard 500ed when logged in.** The page body is HTML+CSS+JS
+  containing literal `%` signs (`onder 20%`), and it was assembled with
+  `%`-formatting — `TypeError: not enough arguments for format string` on the one
+  page a host actually opens. Now assembled by explicit replacement, with the
+  host's own name HTML-escaped, and there is a test that renders it.
+- **The database was world-readable.** systemd created `/var/lib/gotcha` 0755 and
+  SQLite the file 0644, so every badge's `player_key` — a credential issued once
+  over TLS and never re-transmitted (§6.2) — was readable by any user on the
+  laptop. Fixed with `StateDirectoryMode=0750` and `UMask=0027`.
+- **The enrollment IP rate limit was too tight** (60/h): Friday morning is 700
+  badges at once and the camp network may NAT them behind one address. Raised to
+  900/h — it is an abuse guard, not a game rule, and §9.5's clustering audit is
+  what actually catches a farm.
+
+## 4. Interpretation calls (all commented at the code, plan annotated)
+
+1. **`METHOD || PATH` includes the query string.** Otherwise `?board=`/`?limit=`
+   are unauthenticated. **Phase 2 must sign the full request target.**
+2. **`total_kills` *and* `score` are both stored.** §2.1 ranks board 1 by
+   `total_kills` while §2 awards 1 or 2 points; those are different numbers.
+3. **`lives` table** — see above.
+4. **`POST /v1/admin/truce_schedule`** added (not in §9.4): the nightly window is
+   pushed to badges and every other timing constant is host-adjustable. A camp
+   running to 01:00 otherwise has no way to move it.
+
+## 5. Deployment and measurements
+
+`server/deploy/install.sh` creates a `gotcha` system user, a venv in
+`/opt/gotcha`, the database in `/var/lib/gotcha`, secrets in `/etc/gotcha` and a
+hardened systemd unit with restart-on-failure (§6.1). `uninstall.sh` reverses all
+of it; **`server/DEPLOY_LOG.md` records every host-level change with its undo
+command**, so the laptop can be returned to its prior state after camp.
+`server/tools/smoke.py` (stdlib only) drives a deployed instance over the network.
+
+Last smoke run against the deployed server: enroll ×6 → signed sync → **replay
+refused (200 then 401)** → ring built (0 conflicts) → kill scored → dashboard
+`kills_10m=1`. The kill was first refused with `truce` because the run happened at
+06:00, inside the 22:00–08:00 night truce — the rule working exactly as D7
+specifies; the smoke tool now moves the window aside and restores it.
+
+Measured against a database holding **700 enrolled players**: **10.8 ms/sync**
+(≈93 req/s) versus the **2.3 req/s** §6.1 needs — 40× headroom; signed sync
+response **1.55 KB**; initial ring build 0.2 s.
+
+Deployed instance left with an **empty database, game in `lobby`**, truce
+22:00–08:00.
+
+## 6. Reconciled with the plan edits that landed mid-session
+
+The plan was being edited by a parallel Phase 0 session while this was being
+written (`Implementation_Plan_Gotcha_20260726.md` changed at 06:06). Diffed the
+whole file against the state Phase 1 was built from and checked every hunk for
+backend impact:
+
+- **`HUNT_SYNC_DEFER` (true) and `HUNT_SYNC_DEFER_MAX_S` (900)** were added to §5.4
+  an hour after `config.py` was written, and were missing from `TUNABLE_DEFAULTS`.
+  **Added, and verified reaching a badge on the deployed server** (36 tunables
+  pushed). Both are badge-side behaviour, but §5.4 requires every tunable to be
+  server-pushed or the admin page cannot reach it.
+- **`HUNT_SYNC_DEFER_MAX_S` (900 s) sits deliberately below `OUTAGE_GAP_MIN`
+  (20 min)** — noticed while adding it. Deferral is a badge choosing not to talk; if
+  it could outlast the outage window, a long chase would read as the server having
+  been down and would pause dormancy accounting camp-wide (§10.3). Asserted in a
+  test so raising one without the other fails. The Phase 0 session then pinned the
+  **anchor** in §5.4 — the cap is measured from the *last successful sync*, not from
+  when deferral began, which is what keeps total silence flat at 900 s instead of
+  `SYNC_S`×1.2 + 900 = 1260 s. **The server cannot enforce that anchoring** (it only
+  ever observes silence, and both anchorings look identical until it is too long),
+  so it is spelled out at the constant in `config.py` as a Phase 2 obligation.
+- **Checked the 60 s bucket rounding in `outage_intervals()`** rather than assuming
+  it: a silence is measured from `bucket_of(prev_sync) + 60` to
+  `bucket_of(next_sync)`, so the measured gap is always **shorter** than the true one
+  (at most `true - 1`). The rounding therefore *adds* margin against a false outage
+  instead of eating it — a maximal 900 s deferral measures as no outage at any of the
+  60 possible bucket phases, and nothing under 1201 s of true silence is ever
+  declared. The cost lands on the other side: a genuine outage of up to 1259 s can be
+  missed, which is the right way round, because under-declaring loses a little
+  dormancy accuracy while over-declaring pauses dormancy for the whole camp. Both
+  bounds are now pinned by a test that measures them.
+- **`PROX_ALPHA_UP` / `PROX_ALPHA_DOWN`** were already absorbed (0.60 / 0.08) ✅.
+- **Sync deferral does not break staleness**, checked: the heartbeat reports
+  `target_seen_ago_s` as an *age*, and the server records `note_seen(target,
+  ts - ago)`, so a deferred sync arriving 15 minutes late still dates the sighting
+  correctly (§10.1).
+- **§11 item 2's 1000-sync soak** is now explicitly an end-of-Phase-1 item against
+  the real backend. Ran the **server half**: `smoke.py --soak 1000`, median 5.5 ms,
+  **no drift** (latency fell as caches warmed), 99.5 req/s, service RSS flat at
+  35 MB, every signature and nonce verified. The on-badge heap half still needs a
+  badge.
+- **Everything else in the diff is Phase 2 badge work** and needs nothing here: the
+  `rssi_ewma` → `rssi_prox` renames on the hunt path, `prox_filter`/`prox_fraction`
+  in `gotcha.py`'s pure half, the −90…−55 dBm bar calibration, scan-duty and
+  display-sleep findings, the third-GATT-service result, and §11.1's worn-on-worn
+  threshold check.
+
+**New guard: `tests/test_server_plan_parity.py`** (7 tests) parses §5.4 out of the
+plan and asserts the table and `TUNABLE_DEFAULTS` agree in both directions —
+missing tunables, revived struck-through ones (the four RSSI-trend constants must
+stay dead), undocumented additions, and mismatched numeric defaults. This drift was
+invisible and would have shipped a tunable the admin page could not reach; with two
+sessions editing one plan it would have happened again. **254 tests green.**
+
+## 6. Not built (and where it belongs)
+
+HTTPS / Let's Encrypt DNS-01 and ports 80+443 are **Phase 5** (§6.1) — today the
+service is :8080 and `/v1/enroll` is reachable over plain HTTP, fine on a dev LAN
+and a release-checklist item never to ship (§6.3). The player card, four
+leaderboards, hit list and QR flow are skeletons until Phase 5. Training mode
+(§5.9) is Phase 6 and ships `training_enabled: false`. The `amnesty` modifier is
+stored but not yet interpreted by any rule.
+
+**Next: Phase 2** — badge-side connectivity check, enrollment, sync, v2 beacon and
+the LED radar. Note its blocking prerequisite is still open: §11 item 5's
+**worn-on-worn RSSI walk pair** must run before the radar thresholds are trusted.
+
 # !Fri3d Friends — Gotcha Phase 0 spikes (A5/heap/HMAC done; RSSI-trend NO-GO → fallback) — 2026-07-29
 
 Began implementing `Implementation_Plan_Gotcha_20260726.md` (rev. 5) from its

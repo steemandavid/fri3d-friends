@@ -44,12 +44,44 @@ Consequences (all verified by probe — see `probes/`):
 | **BLE `active(False)` clears the gatts server** | Verified on-device (2026-07-16): `active(False)` **wipes the whole `gatts_register_services` registration and the negotiated MTU**. Cached value handles then survive a `gatts_read` (spuriously) but **`gatts_write` raises `OSError(22)` EINVAL**. Re-registering / re-`config(mtu=)` **IS allowed after an `active(False)`/`active(True)` cycle** (only EINVALs when re-issued *without* a deactivate). ⇒ any component caching gatts handles across a possible `active(False)` (e.g. `proximity.end()` on onPause) must **re-register**, not reuse — `ContactExchange.ensure_radio` self-heals via a write-probe. This was the "swap dies until reboot after an app pause" bug. |
 | lvgl flags | `add_flag`/`remove_flag(lv.obj.FLAG.HIDDEN)` — there is **no `clear_flag`**. Fonts available: montserrat 12,14,16,18,20,24,28. New `lv.label()` default text is `"Text"`. |
 | MicroPython `print()` | rejects `flush=`. |
-| **Backlight/brightness** | **No API exists** (`display_get_default()` has no `set_brightness`/backlight attr). → backlight-dim feature **disabled** (PLAN §8; "drop if absent" rule). |
+| **Backlight/brightness** | **No API exists** (`display_get_default()` has no `set_brightness`/backlight attr). → backlight-dim feature **disabled** (PLAN §8; "drop if absent" rule). **Root cause confirmed on-device (2026-07-30):** the live driver instance `mpos.board.fri3d_2024.st7789.ST7789._displays[0]` has `_backlight_pin = None` **and** `_power_pin = None`, so `set_backlight()`/`set_power()` are no-ops and `get_backlight()`/`get_power()` return **−1**. There is no GPIO behind the backlight to switch — this is a wiring fact, not a missing API. (2026 differs: `mpos.io_expander.lcd_brightness` exists.) |
+| **2024 panel sleep (GC9307)** | Verified 2026-07-30. `DISPOFF (0x28)`, `SLPIN (0x10)`, `SLPOUT (0x11)`, `DISPON (0x29)` sent via `mpos.board.fri3d_2024.display_bus.tx_param(cmd)` (**single-argument** form) are all accepted and fully reversible — LVGL survives, `lv.screen_active().invalidate()` redraws, the launcher comes back intact. **But the image goes black with the backlight still glowing** (confirmed visually), so this blanks the *panel*, not the lamp: it cannot recover the backlight current. The panel is also **write-only** — `RDDPM (0x0A)`, `RDDID (0x04)` and `RDDST (0x09)` all read back `0xFF` (no MISO on this wiring), so panel state cannot be queried and any blanking is open-loop. No on-badge current sensing either (`BatteryManager` exposes voltage only), so the saving is unquantified — needs an inline USB meter. |
+| **BLE scan duty is linear, and the duplicate filter is not about the ratio** | Verified 2026-07-30 (2 advertisers, 60 s per condition). Dropping 60 ms/120 ms (50 %) → 30 ms/240 ms (12.5 %) **keeps NimBLE's duplicate filter off** — confirming that what disables it is *passing explicit `interval_us`/`window_us` at all*, not the 50 % ratio (see §3's warning below). The cost is **exactly proportional**: 3.66 → 0.93 adverts/s, i.e. 25 % kept = the duty ratio. There is no efficiency to find; a 4× cheaper scan is a 4× slower radar. |
+| **WiFi + BLE coexistence** | Verified 2026-07-30. Associated but **idle** costs little: **82 %** of the WiFi-off advert rate at 50 % duty (89 % at 12.5 %). Associated and **transferring** costs a lot: **42 %** (32 % at 12.5 %), as a fairly uniform slowdown (median inter-advert gap 0.16 s → 0.50 s) rather than long stalls. **Presence never flaps** — worst gap across all six conditions **14.9 s** against `EVICT_MS` 30 s. ⇒ keeping the link up is fine; *transferring* during a proximity-critical moment is not. |
+| **Three GATT services fit in one call** | Verified 2026-07-30. `gatts_register_services((exchange, setup, gotcha))` returns three handle groups — `[16,18]`, `[21,23,25,27,30,32]`, `[35,37,40,42]` — and `gatts_set_buffer(h, 512, True)` succeeds on a member. Combined with the `active(False)` row above: register **all** services in one call, once per power-on. |
+| **TLS works and does not fragment the heap** | Verified 2026-07-30. **12 of 12** HTTPS handshakes (`requests.get`) succeeded with `gc.mem_free()` **identical at every checkpoint** (net +4.6 KB over the run), one response pulling **1.3 MB** through TLS, and a **512 KB contiguous `bytearray`** still allocating afterwards. The heap is in PSRAM (~6.9 MB free at the launcher), so TLS is affordable — one handshake per session is not a risk on this build. |
 
 ### Recovery / discipline notes
 - A wedged badge (port opens, MCU silent) is recovered with
   `esptool.py --port /dev/ttyACM0 --before usb_reset --after hard_reset run`
   (bound with `timeout -s KILL`). `usbreset` only re-enumerates USB, not the core.
+- **A badge that has been scanning hard can wedge its USB-CDC completely** — the
+  `/dev` node still enumerates but a raw `serial` read returns **0 bytes** and
+  `mpremote` fails with "could not enter raw repl". A **`USBDEVFS_RESET`** on the
+  underlying `/dev/bus/usb/BBB/DDD` node brings it straight back:
+  `sudo python3 tools/recover_badge_port.py <by-id-or-serial>`. Use it *sparingly* —
+  repeated resets in quick succession have pushed a badge into an enumeration fault
+  needing a physical replug. Note the on-badge data survives the wedge; when this
+  happened mid-spike only the *pull* had failed, and the results were intact after
+  recovery.
+- **`json.dump(obj, open(path, "w"))` silently loses everything.** The file object is
+  never flushed or closed, so the buffer dies with it and you get a **0-byte file**.
+  Always `f = open(...); json.dump(obj, f); f.flush(); f.close()`. This destroyed a
+  complete 9-minute measurement run before it was spotted (2026-07-30). Same trap
+  applies to plain `write()` without an explicit flush.
+- **Never change WiFi state from inside a long-running Activity.** `WifiService`
+  (re)connecting takes the **foreground**, which fires `onPause` on your activity —
+  so any `TaskManager` task gated on a `running` flag is killed silently, mid-run.
+  Drive WiFi from the host REPL *before* launching the app. Also:
+  `WifiService.temporarily_enable(x)` takes a **required positional arg** (reconnect
+  flag); `temporarily_disable()` takes none.
+- **`mpos.AppManager.start_app("<fullname>")` launches an app from the REPL**
+  (returns `True`) — no need to tap the launcher, which makes scripted on-device runs
+  possible. `mpos.get_foreground_app()` confirms it; `AppManager.restart_launcher()`
+  returns to the launcher.
+- When scripting `mpremote` in shell helpers, remember a **pipeline's exit status is
+  the last stage's**, so `mpremote cp … | grep -v WARNING && echo ok` reports success
+  even when the copy failed. Verify the destination instead (`[ -s "$dest" ]`).
 - `mpos.capture_screenshot()` **cannot produce a usable screenshot** on this build.
   From a raw paste probe it deadlocks lvgl; from raw REPL (`mpremote run`/`exec`)
   it instead writes a 153,600-B file (320×240×2 RGB565) that is a **scrambled
@@ -133,6 +165,12 @@ Non-connectable legacy advertising, one Manufacturer-Specific AD structure
   colliding. (Measured: default scan = 2 hits/12 s; explicit 50% duty = 44 hits/12 s,
   peer age 0–1 s over 60 s with 3 badges — rock-solid, no flapping.) This superseded
   the PLAN's duty-cycled 1.5 s/4 s scan, which was too sparse under real collisions.
+  **Confirmed and bounded 2026-07-30:** it really is the *explicit args* that matter,
+  not the 50 % ratio — at 12.5 % (30 ms/240 ms) the filter stays off and the stream
+  stays steady. But the advert rate scales **exactly** with duty (3.66 → 0.93/s, 25 %
+  kept), so a cheaper scan is a proportionally slower one; and WiFi *transferring*
+  concurrently costs a further ~58 %. Choose the duty per state, not globally — see
+  the two coexistence/duty rows in §1.
   Eviction: peers unheard for `EVICT_MS=30 s` are dropped (`time.ticks_diff`).
   Notify-once-per-encounter: first match → arrival event; eviction + return → one re-alert.
 - `rssi_floor` config (default `-120` = disabled; radio sensitivity ≈ −97 dBm so

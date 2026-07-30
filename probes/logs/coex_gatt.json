@@ -1,0 +1,1 @@
+{"handle_groups": 3, "attempted": 3, "ok": true, "buffer_512_ok": true, "handles": [[16, 18], [21, 23, 25, 27, 30, 32], [35, 37, 40, 42]], "services": ["exchange", "setup", "gotcha"]}

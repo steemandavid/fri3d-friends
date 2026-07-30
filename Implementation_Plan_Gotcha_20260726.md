@@ -26,7 +26,15 @@ an override. This plan is self-contained.*
    no such methods on this build).
 3. **Do not relitigate D1–D31.** Phase order is §11. Do §14.2 **A5** (the
    AppStore-update wipe test — the cheapest high-value test in this document)
-   and the Phase 0 spikes first.
+   and the Phase 0 spikes first. ✅ **Both are done — Phase 0 is closed and the
+   verdict is GO for Phase 1** (2026-07-30). A5 came back positive, so §8.10.4
+   *must* be built. Read the two spike reports before touching the radar or the
+   power levers: `Phase0_RSSI_Trend_Spike_20260729.md` (the warmer/colder trend is
+   **retracted** — §8.8.2a is history, not a spec) and
+   `Phase0_Coex_GATT_Duty_Display_20260730.md` (coexistence, 3rd GATT service, scan
+   duty, 2024 blanking). Two residuals block nothing now but are owed later: the
+   1000-sync soak at the end of Phase 1, and a **worn-on-worn walk before Phase 2**
+   builds the radar (§11 item 5).
 4. **Open inputs that do not block Phases 0–4:** register the DNS name and
    confirm the DNS host supports API-driven DNS-01 issuance (needed by Phase 5,
    §6.1); the arrival-day check that badges resolve the name with the uplink
@@ -86,29 +94,34 @@ hand you the friend sitting next to you.
 
 ### Finding them
 
-> ⚠️ **Narrative corrected 2026-07-29 (§8.8.2a no-go):** the warmer/colder *trend*
-> cue below was retracted after the Phase 0 spike — RSSI on a worn badge is too
-> noisy (±15–25 dB) to signal "getting closer." What the badge actually delivers
-> is **absolute proximity**: the bar/screen/LEDs show *how close right now*, and
-> the ping *quickens* as you near. Read "warmer or colder" below as "closer or
-> farther by watching the bar change between glances," not as a live derivative
-> cue. See `Phase0_RSSI_Trend_Spike_20260729.md`.
+Your badge is a radar — a crude one. When your target is somewhere near, a bar on your
+screen starts to fill, and it fills further the closer you get. It cannot point you in a
+direction, and it cannot tell you whether the last three steps helped: it only ever says
+*how close you are right now*. Finding someone is a matter of walking around, glancing at
+the bar, and paying attention to faces.
 
-Your badge is a radar. When your target is somewhere near, a bar on your screen starts
-to fill — stronger as you get closer, fading as you drift away. It cannot point you in
-a direction. It only ever tells you *warmer* or *colder*, which means finding someone
-is a matter of walking around, watching the bar, and paying attention to faces.
+Be honest about the range, because the bar is not a smooth gradient across the field.
+Out past ten metres or so it sits at one segment and stays there — a target across the
+site and a target across the tent look identical. It only really starts to move in the
+last handful of metres, and that is the part that matters: it turns *somewhere around
+here* into *this person, right here*. Read the first segment as **they are on site**, and
+anything above it as **they are close**.
 
-The badge also tells you which way you are going: the ping bends upward while you are
-getting closer and downward while you are losing them, so you can course-correct on the
-move without stopping to look. *(Pitch bend retracted — the ping now quickens in **rate**
-as you close, which gives the same "am I getting closer between glances" signal.)*
+The ping carries the same fact by ear: silent until they are genuinely close, then a
+pulse that repeats faster and faster as you close, ending in a double-tap once you are
+within arm's reach. Rate is the whole message — you can course-correct on the move by
+noticing the pulse quicken between glances, without stopping to look.
 
 You do not have to stare at the screen for this. The row of lights on the front of your
 badge *is* the radar: dark when there is nothing, then one blue light when your target
 is somewhere around, then two, then three — quickening and turning amber as you close —
 until the whole row is solid red and they are within arm's reach. You can hunt with the
 screen off, in a pocket, by glancing down.
+
+*(The range and behaviour described here are measured, not assumed — see
+`Phase0_RSSI_Trend_Spike_20260729.md`. An earlier draft of this section promised a live
+"warmer or colder" cue and a ping that bent up or down as you closed; the Phase 0 spike
+showed a worn badge cannot carry that signal, and it was retracted — §8.8.2a.)*
 
 Most of the time the lights are dark and your target is somewhere else entirely on the
 site. So you carry on with your day, and every so often one of them flickers blue, and
@@ -611,6 +624,12 @@ Properties:
   because the commitment has rotated.
 - The badge receives its **target's commitment** in the sync response, so it can
   verify a disclosed soul **locally and offline** before believing a kill.
+- **The backend keeps every life's commitment, not just the current one**
+  (Phase 1, `lives` table). A kill proof can arrive hours after the death that
+  produced it (§10.3), by which point the victim has respawned and rotated their
+  soul; with only a current commitment that late proof would fail and look like
+  cheating. Keeping the history means the soul itself identifies which life it
+  ended, so the proof still verifies and still dedupes onto one death.
 
 **What it does not stop** (documented honestly):
 - **Collusion.** Handing a friend your soul is *giving away your own life*, and it is
@@ -716,7 +735,7 @@ target rides the handshake**, so inheritance works with no network at all.
 ```
 ASSASSIN                                  VICTIM
 --------                                  ------
-target in peer table, rssi_ewma >= KILL_RSSI
+target in peer table, rssi_prox >= KILL_RSSI
 press A on the hunt strip
   gap_connect(victim addr)
   write ATTACK{...}                    ->  validate: game running, not truce,
@@ -759,9 +778,11 @@ press A on the hunt strip
 | `PING_FREQ_FAR` / `PING_FREQ_NEAR` | 1400 / 2400 Hz | Base pitch at `PING_FROM_SEG` and at kill range. |
 | `PING_INTERVAL_NEAR` | 350 | Ping interval at kill range; wider intervals track the LED breathe period. |
 | ~~`PING_BEND_PCT`~~ | ~~12 %~~ | **DROPPED (§8.8.2a no-go):** pitch bend carried the trend, which is retracted. Ping pitch is now fixed per segment. |
-| ~~`TREND_ALPHA_FAST`~~ | ~~0.30~~ | **DROPPED (§8.8.2a no-go):** trend EWMAs removed. (`ble_proximity.py`'s `a=0.3` stays as the proximity EWMA only.) |
+| ~~`TREND_ALPHA_FAST`~~ | ~~0.30~~ | **DROPPED (§8.8.2a no-go):** trend EWMAs removed. (`ble_proximity.py`'s `a=0.3` stays as the friends-list `rssi_ewma` only.) |
 | ~~`TREND_ALPHA_SLOW`~~ | ~~0.06~~ | **DROPPED (§8.8.2a no-go).** |
 | ~~`TREND_DEADBAND_DB`~~ | ~~1.5~~ | **DROPPED (§8.8.2a no-go).** |
+| `PROX_ALPHA_UP` | 0.60 | Attack coefficient of the hunt-path `rssi_prox` filter (§8.8.2) — rises fast toward a stronger sample. |
+| `PROX_ALPHA_DOWN` | 0.08 | Decay coefficient — falls slowly, so one-sided body-shadow fades do not empty the bar while the target is standing in front of you. Measured: takes the arm-window at 1 m from 5.6–17.3 s to 24.5–34.5 s. |
 | `DODGE_LIMIT` | 1 | Dodges per (attacker, victim) pair per life. One reprieve, then the next attempt lands. |
 | `DODGE_DECAY_MS` | 3600000 | Dodge counter reset after 1 h with no attack from that attacker. |
 | `INSTANT_KILL_MS` | 1000 | Hold time once `dodges_left == 0`. |
@@ -776,7 +797,10 @@ press A on the hunt strip
 | `TRAINING_WINDOW_S` | 10 | Rendezvous window; both players must opt in within it (§5.9.1). |
 | `TRAINING_SESSION_S` | 300 | Maximum length of a training session. |
 | `TRAINING_REENTRY_S` | 600 | Cooldown before the same badge may train again. |
-| `SYNC_S` | 300 | D13. Jittered ±20% (§10.3). |
+| `SYNC_S` | 300 | D13. Jittered ±20% (§10.3). **Deferred while a hunt is live** — see `HUNT_SYNC_DEFER`. |
+| `HUNT_SYNC_DEFER` | true | **Do not sync while the radar bar is at or above `PING_FROM_SEG`, or the hunt screen is open.** Phase 0 spike 1 (2026-07-30) measured BLE detection dropping to **42 %** of baseline while WiFi transfers, with the worst presence gap stretching 1.6 s → 6.7 s. A sync fired during the endgame costs the player the kill. Deferral is nearly free: §8.7 assumes WiFi is up only ~1.7 % of the time. Cap the deferral (`HUNT_SYNC_DEFER_MAX_S`) so a permanently-lit bar cannot starve the queue. |
+| `HUNT_SYNC_DEFER_MAX_S` | 900 | Hard ceiling on hunt-deferred syncing — after this, sync anyway and accept the slower radar. Prevents a player parked next to their target from never reporting. **Measured from the last *successful* sync, NOT from when deferral began** — see the constraint below; that choice is what makes the bound hold. |
+| ⚠️ **constraint** | `HUNT_SYNC_DEFER_MAX_S` **must stay below `OUTAGE_GAP_MIN` (§10.3, 20 min = 1200 s)** | Deferral is a badge *deliberately* not talking, and §10.3 infers a server outage from silence — `outage_intervals()` looks for stretches where the server heard from **nobody**. If deferral could outlast that window, a simultaneous camp-wide chase would be read as the server having been down and would **pause dormancy accounting for the whole camp**. Aggregate silence makes this unlikely at 700 badges but easy in a **2-badge dev deployment or a 4-player endgame**, where every badge really can be hunting at once. Anchoring the cap at the last successful sync caps total silence at `HUNT_SYNC_DEFER_MAX_S` flat (900 s vs 1200 s, ~5 min of margin, and immune to anyone raising `SYNC_S`). Anchoring it at deferral *start* would instead give `SYNC_S`×1.2 + 900 = **1260 s and breach it.** Both values are live-tunable (§8.10.1), so **raising this one from the admin page at camp can break dormancy accounting** — raise `OUTAGE_GAP_MIN` first. `tests/test_server_plan_parity.py` asserts the relationship, so raising one without the other fails. |
 
 Retuning `KILL_RSSI` and `KILL_HOLD_MS` **live from the admin page** is worth a lot:
 RSSI at a real camp will not behave like RSSI on a bench, and you will want to adjust
@@ -855,7 +879,7 @@ that the service implements with buzzer/LED only.
 
 **The problem Reveal exists to solve.** RSSI is a scalar. It gets you from "somewhere
 on site" to "within a few metres" and then it goes flat: standing in a group of thirty
-people around a fire, `rssi_ewma` says your target is *here* and cannot say *which
+people around a fire, `rssi_prox` says your target is *here* and cannot say *which
 one*. Names are on the badges, but reading thirty chest-height screens is slow,
 conspicuous, and not a thing anyone should be doing at a camp with children at it.
 
@@ -881,7 +905,7 @@ responder answers it for free.
 ```
 HUNTER                                    TARGET
 ------                                    ------
-target in peer table, rssi_ewma >= REVEAL_RSSI
+target in peer table, rssi_prox >= REVEAL_RSSI
 cooldown elapsed
 press A on the hunt strip
   gap_connect(target addr)
@@ -1145,6 +1169,10 @@ every request thereafter (plain HTTP):
     X-Ts:    <unix seconds, corrected by clock_offset_s>
     X-Nonce: <16 random hex chars>
     X-Sig:   HMAC_SHA256(player_key, METHOD || PATH || X-Ts || X-Nonce || BODY)
+             PATH is the FULL request target, query string included -- e.g.
+             "/v1/leaderboard?board=total&limit=50". Pinned by the Phase 1
+             backend (2026-07-30) so a tampered ?board= or ?limit= cannot
+             verify; the badge MUST sign the string it puts on the request line.
 
 every response (a JSON envelope in the BODY -- see the note below):
     { "ts": <unix seconds>, "nonce": "<the request's X-Nonce>", "sig": "<hex>",
@@ -1326,12 +1354,19 @@ TrainingSession                             # §5.9 pairing, session cap, re-ent
                                             # holds training_target as an OVERRIDE, never
                                             # touching the persisted target
 score_preview(...)                          # mirror of §2, optimistic UI only
-hunt_action(target, rssi, now, cfg, duel)   # the §5.7 A-ladder -> attack|reveal|detail|abort
+hunt_action(target, prox, now, cfg, duel)   # the §5.7 A-ladder -> attack|reveal|detail|abort
 reveal_ready(now, last_reveal_at, cfg)      # REVEAL_COOLDOWN_S
 protected(now, protected_until)             # §5.8
-hunt_bar(state, rssi, now, cfg, n_leds)     # -> [(r,g,b)] * n_leds, the §8.8 radar bar
+prox_filter(prev, rssi, cfg)                # -> rssi_prox, the §8.8.2 asymmetric filter
+                                            # (PROX_ALPHA_UP / PROX_ALPHA_DOWN). Pure; the
+                                            # single place raw RSSI becomes a hunt input
+prox_fraction(prox, cfg)                    # -> 0.0..1.0 over the calibrated -90..-55 dBm
+                                            # band (§8.8.2); shared by the LED bar, the
+                                            # on-screen bar and PING_FROM_SEG so all three
+                                            # agree by construction
+hunt_bar(state, prox, now, cfg, n_leds)     # -> [(r,g,b)] * n_leds, the §8.8 radar bar
 # rssi_trend() -- DROPPED (§8.8.2a no-go, 2026-07-29): the trend was retracted.
-hunt_ping(state, rssi, now, cfg)            # -> (freq_hz, ms, taps) or None, §8.8.6. Pure and
+hunt_ping(state, prox, now, cfg)            # -> (freq_hz, ms, taps) or None, §8.8.6. Pure and
                                             # host-testable: same proximity clock as the
                                             # bar, so the two stay in phase by construction.
                                             # (Pitch bend dropped -- rate-only, no trend arg.)
@@ -1399,7 +1434,7 @@ child and a screaming badge.
 
 | Screen | Content |
 |---|---|
-| **Nametag (extended)** | A status chip — `ALIVE · streak 3 · 11 kills` or `DEAD · back 14:32` — plus one target strip: `🎯 Otter 42` and a 5-segment radar bar from `rssi_ewma`. Hidden entirely when not enrolled or no game is running. |
+| **Nametag (extended)** | A status chip — `ALIVE · streak 3 · 11 kills` or `DEAD · back 14:32` — plus one target strip: `🎯 Otter 42` and a 5-segment radar bar from `rssi_prox` (§8.8.2). Hidden entirely when not enrolled or no game is running. |
 | **Gotcha screen / radar detail** (A on the hunt strip when no target is near, or Menu → `Gotcha`) | Target name, dBm, **last seen by anyone: 12 min ago** (§10.1), your ranks, nearby bounty players, reveal cooldown remaining — plus the focusable rows: `Oefenmodus` (§5.9), demo mode, and `Stoppen met Gotcha` / `Meedoen met Gotcha` (rule 15). |
 | **Revealing** (hunter, §5.7) | `REVEALING — look for the gold badge`, 2.5 s, then back to the radar with the cooldown running. |
 | **Spotted** (target, §5.7) | Gold full-screen, chirp, `SPOTTED — someone has found you`. Deliberately *not* the attack alarm: no siren, no red, no "RUN". It is a warning, and it must not be mistakable for a kill in progress. |
@@ -1563,17 +1598,35 @@ and 7 h is the difference between "charge overnight" and "charge at lunchtime to
    exists — an aggressive blank-after-inactivity is the single biggest win available,
    and the app already has `_dimmed`/`_set_brightness`/`_wake()` scaffolding for it.
    On **2024 there is no backlight API** (`DESIGN.md` §1), so this lever does not
-   exist. **Worth one spike:** try a display-driver sleep/`DISPOFF` command on the
-   GC9307 directly. If that works it is the highest-value power fix in the project.
+   exist. ✅ **Spiked 2026-07-30 (`Phase0_Coex_GATT_Duty_Display_20260730.md`):**
+   `DISPOFF (0x28)` / `SLPIN (0x10)` over `display_bus.tx_param(cmd)` **do** work
+   and are reversible — but the screen goes **black with the backlight still
+   glowing**, because the live driver has `_backlight_pin = None` and there is no
+   GPIO behind the backlight. Since the ~50 mA here is display **+ backlight** and
+   the LEDs dominate it, **this is not the highest-value fix after all** — it is an
+   unquantified panel-logic saving, to be measured with the inline USB meter in
+   Phase 6 (the badge has no current sensing). Keep it anyway: a black screen is a
+   real state for the lever-4 ladder and for not broadcasting your hunt.
 2. **BLE scan duty (~50 mA).** `DESIGN.md` §3 warns that the scan config is
    load-bearing — but read it carefully: the load-bearing part is **passing explicit
    `interval_us`/`window_us` at all**, because that is what disables NimBLE's
    duplicate filter. The specific 50 % ratio is not what fixes the flapping. Dropping
    to ~12.5 % (30 ms window / 240 ms interval) should keep the filter off and save
    ~37 mA, at the cost of slower radar updates and more missed adverts in a crowd.
-   **Test this explicitly in Phase 0** — it is cheap and worth a lot.
-3. **WiFi power save (~65 mA).** Verify whether `WifiService` sets
-   `wlan.config(pm=...)`. If it does not, setting DTIM power save is nearly free.
+   ✅ **Tested 2026-07-30:** the filter **does** stay off at 12.5 % — the reading
+   above is confirmed, not assumed. But detection falls **exactly proportionally**
+   (3.66 → 0.93 adv/s, 25 % kept), which in a field is ~0.2 adv/s per peer and
+   ~0.15/s with WiFi transferring: one sample every ~7 s against `KILL_HOLD_MS` of
+   5000, so a hunter could never hold a kill. **Use 12.5 % only in the non-hunting
+   background state and keep 50 % whenever a hunt is live** — it belongs in the
+   lever-4 ladder, not as a global constant.
+3. **WiFi power save (~65 mA) — probably already banked.** Verify whether
+   `WifiService` sets `wlan.config(pm=...)`. **Incidental Phase 0 finding
+   (2026-07-30):** ping RTTs to an associated badge ranged **38–672 ms**, far above
+   the LAN floor — the signature of DTIM power save **already being active**. Treat
+   this ~65 mA as likely *already in* the measured baseline rather than as available
+   savings, and confirm with the meter before counting it.
+   If it is genuinely off, setting DTIM power save is nearly free.
    Prefer this over connect-per-sync: raising the link every 5 minutes costs a DHCP
    round-trip and fights the shared OS service.
 4. **Battery-aware degradation, on an announced ladder.** Borrowed from the other
@@ -1583,7 +1636,7 @@ and 7 h is the difference between "charge overnight" and "charge at lunchtime to
 
    | Level | Behaviour |
    |---|---|
-   | **20 %** | On-screen notice + a one-off orange blink on the last LED. Drop scan duty, stretch `SYNC_S` to 600 s, drop the hunt ping. |
+   | **20 %** | On-screen notice + a one-off orange blink on the last LED. Drop scan duty to 12.5 % **only while no hunt is live** (lever 2 — at 12.5 % a kill cannot be held), stretch `SYNC_S` to 600 s, drop the hunt ping. |
    | **10 %** | Second notice, explicitly worded: *"find a power bank — you can still be killed while charging."* The last-LED orange double-blink becomes persistent (once a minute, §8.8.3). Blank the screen harder (2026 only, §8.7 lever 1). |
    | **5 %** | Final notice. Sync once immediately to flush the event queue **before** the badge dies, so a kill landed at 4 % is not lost. Then minimum everything. |
    | **0 %** | The badge stops. The player keeps their score, keeps their streak (it decays on wall-clock like anyone else's, rule 11), and returns as `dormant` → `protected` (§9.6) when charged. |
@@ -1601,9 +1654,11 @@ USB meter, on both board generations.
 
 ### 8.8 Reading the badge without the screen — LEDs and sound (D23)
 
-**This is not decoration, it is the power budget.** §8.7 lever 1 says the single
-biggest saving available is blanking the screen — but the radar currently *lives* on
-the screen, so blanking it blinds the hunter and the lever cannot be pulled. Moving the
+**This is not decoration, it is the power budget.** §8.7 lever 1 says blanking the
+screen is a large saving — the largest on the 2026; on the 2024 the Phase 0 spike
+showed the backlight cannot be cut at all, so there it is smaller and unquantified —
+but the radar currently *lives* on the screen, so blanking it blinds the hunter and
+the lever cannot be pulled. Moving the
 hunt onto the LEDs is what makes an aggressive blank-after-inactivity compatible with
 playing the game. Treat this section as a prerequisite for lever 1, not as polish.
 
@@ -1645,7 +1700,7 @@ range**, which is most of the time (§3.3). Average LED draw goes *down*, which 
 upward. Both **length and colour** encode the same proximity axis, so the bar is
 readable whether you catch the count or the hue:
 
-| `rssi_ewma` | Lit LEDs | Colour | Brightness | Animation |
+| `rssi_prox` | Lit LEDs | Colour | Brightness | Animation |
 |---|---|---|---|---|
 | target not detected | 0 | — | — | dark |
 | detected, far | 1 | blue | 0.20 | breathe, 3800 ms |
@@ -1659,6 +1714,52 @@ same RSSI→bucket mapping that drives the on-screen 5-segment bar, so the two r
 always agree and teach each other. **On the 2024 the bar has one fewer segment; nothing
 else changes.**
 
+**The mapping is calibrated to −90…−55 dBm, not to the full RSSI range.** The Phase 0
+walks (§8.8.2a) measured a target at 1 m sitting at a median of **−57 dBm** and the same
+target at 5 m or more at **−83…−86 dBm**, with everything beyond ~10 m indistinguishable
+from the floor. Spreading `fraction` linearly over, say, −100…−40 would waste most of the
+bar on distances the radio cannot separate. Anchor segment 1 at the detection floor and
+put the remaining segments across −80…−55, which is the only band that carries
+information.
+
+**Smoothing is asymmetric — fast attack, slow decay — and this is not a detail.**
+
+```
+a = A_UP if rssi > rssi_prox else A_DOWN      # A_UP ~ 0.60, A_DOWN ~ 0.08
+rssi_prox = (1 - a) * rssi_prox + a * rssi
+```
+
+The Phase 0 data shows the noise at a fixed distance is **not symmetric**: it is a tight
+mode with a heavy one-sided tail of body-shadow fades, 12–28 % of samples landing 15 dB or
+more below the median. A symmetric EWMA treats those fades as signal and drags the bar
+down while the target is standing right in front of you. Rising fast and falling slowly
+tracks the mode instead of the fades. Replayed against the five walks, at `KILL_RSSI`:
+
+| smoothing | armed at 1 m | false-arm at 5 m+ | longest continuous arm-window at 1 m |
+|---|---|---|---|
+| symmetric EWMA `a = 0.3` | 74 % | 0 % | 5.6 – 17.3 s |
+| **asymmetric 0.60 / 0.08** | **100 %** | 3 % | **24.5 – 34.5 s** |
+
+The symmetric filter's worst walk holds above `KILL_RSSI` for only 5.6 s against a
+`KILL_HOLD_MS` of 5000 — a 12 % margin, i.e. a kill that fails for no reason the player
+can see. The asymmetric filter turns that into a 25–35 s window at a cost of 3 % false
+arming at 5 m, which `KILL_HOLD_MS` then absorbs anyway.
+
+**And that 12 % margin is already gone in the real game.** These walks put the
+target's badge on a pedestal; worn on a person it loses a further **~4 dB**
+(measured — §11.1). Re-scored at −4 dB, the symmetric EWMA's worst arm window falls to
+**1.8 s against a 5 s hold: the kill becomes unwinnable**, while the asymmetric filter
+still holds 18.6 s. So this is **not a refinement of the smoothing, it is the
+difference between a working kill and a broken one** — do not ship the symmetric
+`a = 0.3` EWMA on the hunt path. Reproduce with `tools/analyze_shadow.py`.
+
+This is a **new field on the peer entry, `rssi_prox`**, computed alongside the existing
+`rssi_ewma` in `ble_proximity.py`. It does **not** replace `rssi_ewma`: that value still
+feeds the friends list, where a symmetric average is the honest thing to show and where
+changing it would alter shipped behaviour. Everything on the hunt path — the LED bar, the
+on-screen bar, `PING_FROM_SEG`, `KILL_RSSI`, `REVEAL_RSSI`, `FLEE_RSSI` — reads
+`rssi_prox`.
+
 The breathe *period* shortening as you close is the second redundant cue — quickening is
 noticeable in peripheral vision in a way that a colour change is not. A player who
 learns *"solid red, all of them, means press A"* has learned the whole hunt.
@@ -1669,10 +1770,18 @@ learns *"solid red, all of them, means press A"* has learned the whole hunt.
 > (`Phase0_RSSI_Trend_Spike_20260729.md`) measured it across 5 open-field walks
 > with two estimators (fast−slow EWMA and windowed linear regression). The robust
 > estimator is consistent: **approach ≈ 52–61 %** (bar 80 %), **stand ≈ 0–5 %**,
-> retreat ≈ 66–80 %. Root cause is SNR: the real approach slope is ~0.1–0.5 dB/s
-> against ±15–25 dB multipath/body-shadow noise (present even standing still at
-> 1 m), at ~0.7–1 advert/s. No estimator or retuning fixes it. The EWMA's
-> occasional "passes" were false positives. **Decision (confirmed): drop the
+> retreat ≈ 66–80 %. Root cause is SNR, and it has two halves. (a) **The approach
+> is not a ramp.** Median RSSI per fifth of a 40 m→1 m approach runs
+> −93 → −88 → −88 → −85 → −74: from 40 m to roughly 5–10 m there is *no usable
+> signal at all*, and essentially the whole gain arrives in the last few metres.
+> (b) **The noise is deep and one-sided.** At a fixed 1 m the distribution is a
+> tight mode (IQR 4–22 dB, p90 within ~5 dB of the median) punctuated by
+> body-shadow/multipath fades that drive **12–28 % of samples 15 dB or more below
+> the median**. Against that, the whole-phase slope is only ~0.5–0.8 dB/s
+> (approach) and ~0.5–1.4 dB/s (retreat), sampled at ~0.7–1 advert/s. A trailing
+> regression only reaches the 80 % bar at a **20–30 s window** — far too laggy to
+> steer on. No estimator or retuning fixes it. The EWMA's occasional "passes"
+> were false positives. **Decision (confirmed): drop the
 > trend entirely — keep the absolute bar/ping-rate. The whole subsection below
 > is retained as design history; it is NOT to be implemented.** See §8.8.6 for
 > the ping (pitch bend dropped, rate kept).
@@ -1854,7 +1963,7 @@ a reason `PING_ENABLED` exists as a server-side kill switch (§8.10.1).
 
 **Only the hunter hears it.** The target's badge makes no sound at all; they do not know
 they are hunted (rule 1). The ping is generated entirely from the hunter's own
-`rssi_ewma`, so it needs no radio traffic and works offline.
+`rssi_prox`, so it needs no radio traffic and works offline.
 
 ##### Sound priority — the buzzer is one PWM channel
 
@@ -2225,6 +2334,20 @@ GET /v1/sync
                  reveal_enabled, bounty_enabled,   # §8.10.1 kill switches;
                  training_enabled, alarm_enabled } }  # absent == true
   Every SYNC_S (300 s), jittered. The ONLY thing the badge polls.
+  As built (Phase 1, 2026-07-30) the payload also carries, all additive:
+    me.status      the §9.6 status string ("active"/"protected"/"dead"/...)
+    me.score       sum of points (§2 awards 1 or 2); me.total_kills stays a count
+    me.deaths      displayed, not ranked (§2.1)
+    me.quiet       {from,to} as the server clamped it (§10.4a)
+    me.card_token  the short-lived read token for the QR (§9.1)
+    target.halted  true if EITHER side is in truce or quiet hours (§10.4) --
+                   the badge shows "<name> -- slaapt" and darkens the radar
+                   without needing to evaluate the other side's window itself.
+  DEFERRED while a hunt is live (§5.4 HUNT_SYNC_DEFER): WiFi traffic costs 58 % of
+  the BLE detection rate (Phase 0 spike 1), so syncing mid-chase blunts the radar.
+  Capped by HUNT_SYNC_DEFER_MAX_S, measured from the LAST SUCCESSFUL SYNC (not from
+  when deferral began) -- that anchor is what keeps total badge silence below
+  §10.3's OUTAGE_GAP_MIN, so a camp-wide chase is never mistaken for an outage.
 
 POST /v1/events   { events: [ Event, ... ] }   # batched from the offline queue
   -> { accepted: [uuid], rejected: [{uuid, reason}] }
@@ -2254,6 +2377,10 @@ Every event carries `uuid`, `pid`, `at` (badge clock, offset-corrected), and `ti
 POST /v1/admin/game            create (name, start, end, tunables)
 POST /v1/admin/game/<id>/state {state: lobby|running|paused|ended}
 POST /v1/admin/truce           {active, until, reason}      # instant camp-wide
+POST /v1/admin/truce_schedule  {from, to}      # move the NIGHTLY window (added
+                               # in Phase 1: the schedule is pushed to badges and
+                               # every other timing constant is host-adjustable)
+POST /v1/admin/tunables        {config: {...}} # live §5.4 retuning
 POST /v1/admin/broadcast       {text|null}                  # §8.10.3, <=120 chars
 POST /v1/admin/appversion      {min_version, latest_version}
 POST /v1/admin/modifier        {type: double_points|amnesty, from, to}
@@ -2412,7 +2539,7 @@ ingest.
 | Two assassins on one bounty player | Single slot; second gets `BUSY`. |
 | Victim sitting in a setup window or swap | Refused **only while a GATT link is actually live** (§5.5) — not merely because a window is open. That shrinks the exposure from `SETUP_ABS_CAP_MS` (10 min) to the seconds a phone is really talking. While a game is running, also shorten the absolute cap to **3 min**. |
 | Victim sitting on an adopt prompt | **Attack proceeds normally.** The prompt touches no radio, so the responder ignores it. The prompt additionally auto-dismisses after 30 s (§5.5). |
-| RSSI spike causes a false dodge | Use the smoothed `rssi_ewma` and require `FLEE_MS` sustained, never a single sample. |
+| RSSI spike causes a false dodge | Use the smoothed `rssi_prox` (§8.8.2, slow-decay) and require `FLEE_MS` sustained, never a single sample. |
 | Rapid re-attack after a dodge | `ATTACK_COOLDOWN_MS` (60 s) per pair. |
 | **Assassin aborts a live attack** | **Allowed, and treated as a skill.** Press A again during the hold (`A: afbreken`, §5.7): the duel ends, the victim's alarm stops, **no cooldown is charged and the victim's dodge is not consumed.** It is a real tactical choice rather than a free escape — letting a failing attack run to a dodge *burns* the victim's single dodge (rule 5) and makes your next attempt an instant kill, so aborting trades that away to keep attacking now. |
 | Reveal lands while the target is in a duel with someone else | Responder answers `BUSY`; **no cooldown charged** to the hunter. |
@@ -2432,7 +2559,8 @@ ingest.
 | Duplicate upload | Idempotent on `Event.uuid`. |
 | Only the assassin reports | Accept on soul proof alone; apply the death when the victim returns. |
 | Only the victim reports | `killed_by` names the attacker — credit the kill immediately, dedupe by `(victim_pid, life_id)` when the assassin's copy arrives. `life_id` is a **server-side per-player death counter** (0 at enrollment, +1 per confirmed death); it never crosses the wire — the server derives it from whichever report lands first. |
-| Backend down for hours | Everyone queues. **Dormancy must pause when global sync volume collapses**, or a server outage would mass-dormant the entire camp and shred the ring. |
+| Backend down for hours | Everyone queues. **Dormancy must pause when global sync volume collapses**, or a server outage would mass-dormant the entire camp and shred the ring. Implemented as `outage_intervals()`: stretches where the server heard from **nobody**, at a `OUTAGE_GAP_MIN` (20 min) granularity — deliberately a *gap*, not a per-minute quorum, because single idle minutes are normal on a quiet night or a small deployment. |
+| ⚠️ **A deferred sync is silence too** | `HUNT_SYNC_DEFER` (§5.4) makes a badge *choose* not to talk mid-chase, which is indistinguishable from an outage at this layer. **`HUNT_SYNC_DEFER_MAX_S` must therefore stay below `OUTAGE_GAP_MIN`** — 900 s vs 1200 s today. It holds only because the cap is anchored at the **last successful sync**, so total silence is flat at 900 s regardless of `SYNC_S`. **If you lower `OUTAGE_GAP_MIN`, lower `HUNT_SYNC_DEFER_MAX_S` with it** (guarded by `tests/test_server_plan_parity.py`). The failure is not theoretical at small scale: with two dev badges, or four players left in the endgame, *every* badge can be deferring at once. |
 | 08:00, everyone powers on at once | **Jitter the sync schedule ±20%** — 700 simultaneous syncs is a self-inflicted DDoS. |
 
 ### 10.4 Night, sleep and powered-off badges (D7)
@@ -2536,36 +2664,107 @@ capable of invalidating downstream work. **Do §14.2 A5 (the AppStore-update wip
 test) first** — it is the cheapest high-value test in this document and it decides
 whether §8.10.4 gets built at all.
 
-1. **WiFi + BLE coexistence.** They share one 2.4 GHz radio and the dense 50 %-duty
-   scan is load-bearing (`DESIGN.md` §3). Measure peer-detection rate and `last_seen`
-   age with WiFi associated and syncing, versus WiFi off. *If coexistence badly
-   degrades the scan, the architecture needs revisiting.*
-2. **Sync durability (§6.2).** Run the `gc.mem_free()` heap check, confirm one
-   enrollment HTTPS handshake succeeds, then soak **1000 consecutive signed
-   plain-HTTP syncs** for heap stability. Verify the hand-rolled HMAC-SHA256 against
-   RFC 4231 vectors on-device, not just on host.
-3. **Third GATT service** fits alongside the existing two in one
-   `gatts_register_services` call.
-4. **Scan duty reduction** (§8.7 lever 2): does 30 ms/240 ms keep NimBLE's duplicate
-   filter off and presence stable? Worth ~37 mA if it does.
+1. ✅ **RESOLVED — WiFi + BLE coexistence: GO, with a scheduling rule (2026-07-30).**
+   See `Phase0_Coex_GATT_Duty_Display_20260730.md`. Associated-but-**idle** costs
+   little: **82 %** of the WiFi-off detection rate at 50 % duty (89 % at 12.5 %).
+   Associated and **transferring** costs a lot: **42 %** (32 % at 12.5 %) — a
+   58–68 % loss while data moves, as a uniform slowdown rather than long stalls.
+   Presence never flaps: worst gap anywhere **14.9 s against `EVICT_MS` 30 s**. The
+   architecture does **not** need revisiting, but the sync scheduler does:
+   **do not sync while the hunt bar is lit** — defer until the radar is below
+   `PING_FROM_SEG` or the hunt screen is closed. §8.7 already assumes WiFi is up
+   only ~1.7 % of the time, so deferring is free; syncing during the endgame costs
+   the player the kill.
+2. ⚠️ **PARTLY RESOLVED — sync durability (§6.2).** Done 2026-07-29: the
+   `gc.mem_free()` heap check (**~6.86 MB → the heap is in PSRAM**, so fragmentation
+   is not the binding constraint), and the hand-rolled HMAC-SHA256 verified against
+   **RFC 4231 vectors on-device** as well as on host, with badge-signer ↔
+   server-verifier byte interop proven.
+   ✅ **The TLS half is now closed too (2026-07-30) — and it needed no backend**,
+   only an HTTPS host: **12 of 12 handshakes to `example.com` succeeded with the
+   heap dead flat** (`mem_free` identical at every checkpoint, net **+4.6 KB** over
+   the run), one of them pulling **1.3 MB** through TLS, and a **512 KB contiguous
+   allocation still succeeded afterwards**. So D21's premise — one TLS handshake at
+   enrollment, then signed plain HTTP — is **verified**, not assumed: TLS neither
+   leaks nor fragments on this build.
+   **Still owed, genuinely gated on Phase 1:** the **1000-consecutive-signed-sync
+   soak**. That one does need a verifier to talk to, so it runs at the **end of
+   Phase 1** against the real backend. *The backend exists as of 2026-07-30 and the
+   **server half is already done**: `server/tools/smoke.py --soak 1000` against the
+   deployed instance gave a median of 5.5 ms with no latency drift and flat RSS,
+   every response signature and nonce verified. What remains is the **on-badge**
+   half — the same 1000 syncs driven from a badge, watching `gc.mem_free()`.* It is a soak for heap stability, not a
+   question that can invalidate the design — the two things that could (PSRAM heap,
+   TLS behaviour) are both answered.
+3. ✅ **RESOLVED — third GATT service fits: GO (2026-07-30).**
+   `gatts_register_services((exchange, setup, gotcha))` returns three handle groups
+   — `[16,18]`, `[21,23,25,27,30,32]`, `[35,37,40,42]` — and a 512-byte
+   `gatts_set_buffer` on `SPOILS` succeeds. §5.2's pattern (build the Gotcha
+   characteristics inside `ContactExchange._ensure_services()`, hand handles over
+   via `bind_handles()`) is correct as written.
+4. ✅ **RESOLVED — scan duty reduction: GO mechanically, but NOT for the hunt path
+   (2026-07-30).** The duplicate filter **stays off** at 30 ms/240 ms — which
+   **confirms** the reading below that the load-bearing part is passing explicit
+   `interval_us`/`window_us` at all, not the 50 % ratio. But the cost is exactly
+   proportional: 3.66 → 0.93 adv/s, **25 % kept**, i.e. the duty ratio; there is no
+   free lunch. In a field that lands near **0.2 adv/s per peer** (the §8.8.2a walks
+   measured only 0.7–1.0/s per peer *at 50 %*), and 0.15/s with WiFi transferring —
+   one sample every ~7 s against `KILL_HOLD_MS` of 5000, so a hunter could never
+   accumulate a sustained-proximity window. **Adopt 12.5 % only in the non-hunting
+   background state** (which §3.3 says is most of the time) and keep 50 % whenever a
+   hunt is live. Wire it into the lever-4 battery ladder, not a global constant.
 5. ✅ **RESOLVED — RSSI trend "warmer or colder" (§8.8.2a): NO-GO (2026-07-29).** The
    spike (`Phase0_RSSI_Trend_Spike_20260729.md`) ran 5 open-field walks with two
    estimators; the trend is retracted (approach ≈ 55 % vs the 80 % bar; SNR too
    poor). Fallback applied: keep the absolute bar + ping rate, drop the trend and
    pitch bend. The four-condition protocol below is **no longer required** — open
    field (the best case) already failed reproducibly.
-6. **Screen blanking on 2024** (§8.7 lever 1): can the GC9307 be put to sleep
-   directly, given there is no backlight API? Highest-value power fix if yes.
+   **Residual — the worn-on-worn threshold check (§11.1).** The spike ran with
+   the *advertiser on a pedestal* and only the logger worn. In the real game **both**
+   badges are worn, so there are two bodies in the path, not one. That makes the
+   trend NO-GO conservative (good), but every threshold the fallback now leans on
+   was measured in the easier configuration. Predicted, bounded and pre-decided in
+   §11.1 — it is **one field session, and the most likely outcome is "no change"**.
+6. ⚠️ **RESOLVED — 2024 screen blanking: PARTIAL, lever 1 as written does not exist
+   (2026-07-30).** The commands do work: `DISPOFF (0x28)` / `SLPIN (0x10)` over
+   `display_bus.tx_param(cmd)` are accepted and reversible with `SLPOUT`+`DISPON`,
+   and LVGL redraws intact afterwards. **But the screen goes black with the
+   backlight still glowing** (confirmed visually), because the live driver has
+   `_backlight_pin = None` / `_power_pin = None` and `get_backlight()`/`get_power()`
+   return −1 — there is no GPIO behind the backlight to switch. The ~50 mA in the
+   table below is display **+ backlight**, and the LEDs are the bulk of it, so this
+   is **not** "the highest-value power fix"; it is an unquantified panel-logic
+   saving. It cannot be quantified on-badge (`BatteryManager` exposes voltage only)
+   — **measure it with the inline USB meter in Phase 6**. Still worth keeping: a
+   black screen is a real UX state for the lever-4 ladder at 10 %, and for not
+   broadcasting your hunt to bystanders.
 
-Deliverable: findings appended to `DESIGN.md`, and a go/no-go.
+Deliverable: findings written up in `Phase0_RSSI_Trend_Spike_20260729.md` (item 5)
+and `Phase0_Coex_GATT_Duty_Display_20260730.md` (items 1/3/4/6), and a go/no-go.
+**Phase 0 verdict: GO for Phase 1.** Every blocking question is answered. Two
+items carry residuals that are gated on later work and block nothing now: item 2's
+1000-sync soak needs the Phase 1 backend, and item 5's worn-on-worn threshold check
+is owed before Phase 2 builds the radar.
 
 *(The original spike item "does 2 Hz `adv_data` swapping survive?" is gone — D8 let us
 collapse to a single v2 beacon.)*
 
-**Phase 1 — backend + admin.** FastAPI + SQLite in `server/` (§9): API, scoring
-(§2), ring (§3.2), admin console, and the backend-served player/admin pages'
-skeleton. Fully testable with the **badge-simulator pytest fixture** (N fake
-badges driving enroll/sync/events over HTTP); no badge required.
+**Phase 1 — backend + admin. ✅ DONE (2026-07-30).** FastAPI + SQLite in
+`server/` (§9): API, scoring (§2), ring (§3.2), admin console, and the
+backend-served player/admin pages' skeleton. Fully testable with the
+**badge-simulator pytest fixture** (N fake badges driving enroll/sync/events over
+HTTP); no badge required — `tests/badge_sim.py` signs with the badge's own
+`gotcha.py`, so every API test is also a badge↔server interop test.
+**Delivered:** all §9.2/§9.3/§9.4 endpoints, the §9.6 state model (derived, no
+cron), §2.2 decay, §3.2 ring with group-aware repair, §9.5 audit heuristics,
+live §5.4 retuning, and a phone-shaped dashboard with `kills_10m` first and
+biggest. 246 host tests green. Deployed under systemd on the dev server
+(192.168.1.57:8080); measured **10.8 ms/sync at 700 enrolled players** — 93 req/s
+against the 2.3 req/s §6.1 needs. See `server/README.md` (including the four
+interpretation calls it had to make, two of which are contracts Phase 2 must
+match: full-request-target signing, and `lives`-based soul verification) and
+`server/DEPLOY_LOG.md`. **Still Phase 5:** HTTPS/:80/:443, and the pages beyond
+their skeleton.
 
 **Phase 2 — badge: connectivity check, enrollment, sync, v2 beacon, radar.** No kills.
 Includes the **widened peer admission + pinned LRU** (§4), the **LED radar bar
@@ -2604,13 +2803,78 @@ before 14 August.
 depends on it — two dev badges in a throwaway backend game are a better protocol test —
 so if the schedule tightens, cut it without renegotiating anything else.
 
+### 11.1 The worn-on-worn threshold check (gates Phase 2's radar only)
+
+One field session, ~30 minutes, with a **pre-committed response to every outcome**
+so it cannot turn into an open-ended tuning exercise. Reproduce the tables below
+with `tools/analyze_shadow.py`.
+
+**Why it is needed.** With the trend retracted, the absolute bar is the *only*
+proximity cue, so `KILL_RSSI`, `REVEAL_RSSI`, `FLEE_RSSI` and the −90…−55 dBm
+calibration carry the whole hunt — and all four were measured with the target's
+badge on a pedestal.
+
+**What is already known, from the existing walks.** Within each pedestal walk the
+approach has the badge *facing* the target and the retreat has the walker's own body
+*in the path*; pairing distance-matched slices of the two therefore measures one
+body's shadow. Result: **median −4.0 dB, mean −3.1 dB, range −14…+12, n = 14**, and
+the advert rate keeps **77 %**. So a second body is expected to cost only a few dB,
+not the 15–25 dB a first reading of the noise figures would suggest. *This uses time
+as a distance proxy, so it assumes a steady pace — which is exactly why the walk is
+still required. It predicts the answer; it does not replace it.*
+
+**Protocol.** Two people wear a badge each, in normal wear position. Run the
+existing `probes/rssi_walk_pkg` prompted walk (approach 40 m → 1 m · stand · retreat
+· cross laterally · step behind an obstacle) **twice**: once with both walkers
+facing each other on approach, once with the *target* facing away — the worst
+realistic geometry. Pull with `tools/pull_walks.sh`.
+
+**Measure exactly three numbers** (`tools/analyze_shadow.py`, section 1):
+
+| quantity | pedestal value | why it matters |
+|---|---|---|
+| median RSSI standing at 1 m | **−57 dBm** | sets `KILL_RSSI` headroom |
+| median RSSI at 5 m+ | **−83…−86 dBm** | sets the false-arm rate |
+| per-peer advert rate | **0.7–1.0 /s** | sets whether `KILL_HOLD_MS` is reachable |
+
+The **penalty** is (worn-on-worn 1 m median) − (−57 dBm).
+
+**Pre-committed response.** `KILL_RSSI` is already live-tunable from the admin page
+(§5.4), so this is a config change, not a rebuild:
+
+| measured penalty | `KILL_RSSI` | worst-walk arm window | false-arm at 5 m+ |
+|---|---|---|---|
+| 0 to −4 dB *(expected)* | **−65, unchanged** | 18.6–24.5 s | 0–3 % |
+| −8 dB | −68 | 13.0 s | 0 % |
+| −12 dB | −71 | 13.0 s | 0 % |
+| −16 dB | −77 | 18.6 s | 0 % |
+| worse than −16 dB | stop and cut `KILL_HOLD_MS` to 2500 before loosening further | — | loosening past −77 starts costing real false arms |
+
+The bar in that table is the **worst** of the five walks holding a continuous arm
+window of ≥ 10 s against a `KILL_HOLD_MS` of 5000 — i.e. 2× margin, not 1×.
+
+**Two things this analysis already settled, without the walk:**
+
+1. **The §8.8.2 asymmetric filter is load-bearing for correctness, not just feel.**
+   At the *expected* −4 dB penalty the symmetric `a = 0.3` EWMA's worst arm window
+   collapses to **1.8 s against a 5 s hold — the kill simply fails**, while the
+   asymmetric filter still holds 18.6 s. Whatever the walk returns, do not ship the
+   symmetric EWMA on the hunt path.
+2. **`REVEAL_RSSI` needs no check.** It stays at 100 % detection at 1 m even with a
+   −16 dB penalty. Reveal is robust; only the kill is tight.
+
+**If the walk is not done:** build Phase 2's radar anyway, but ship `KILL_RSSI` at
+**−68** rather than −65 (one step loose, costing 3 % false arming on pedestal data)
+and treat the first real playtest as the measurement. Do **not** let this block
+Phase 1 — it touches nothing the backend does.
+
 ---
 
 ## 12. Risks
 
 | Risk | Severity | Mitigation |
 |---|---|---|
-| **WiFi/BLE coexistence degrades the scan** | **High** | Phase 0 gates everything. 5-min sync (D13) already minimises exposure. |
+| ~~**WiFi/BLE coexistence degrades the scan**~~ | ~~**High**~~ | **RESOLVED (2026-07-30, GO):** idle association costs only 18 % of the detection rate and presence never flaps (worst gap 14.9 s vs `EVICT_MS` 30 s), so the architecture stands. Active transfer *does* cost 58 %, handled by `HUNT_SYNC_DEFER` (§5.4) — see the "sync mid-chase" row above and `Phase0_Coex_GATT_Duty_Display_20260730.md`. |
 | Signed plain HTTP: traffic is readable on the camp network | Low | Accepted (D21). Kill proofs are self-authenticating and scores are published; responses are signed so nothing can be injected. Noted in §13. |
 | **Background GATT + radio handoff** (§5.6) | **High** | `ensure_radio` self-heal is the precedent; budget hardware time; be willing to ship Phase 4 late. |
 | Unbounded `seen` table at 700 badges | High | LRU cap — fix regardless of Gotcha. |
@@ -2618,8 +2882,11 @@ so if the schedule tightens, cut it without renegotiating anything else.
 | Kids running into things | **High (real-world)** | Truce, safe-zone rules, "no running" on the card, host truce button. |
 | **Battery: app already gets only ~11 h; Gotcha naively cuts it to ~7 h** | **High** | §8.7. WiFi DTIM power save, reduced scan duty, screen blanking, battery-aware degradation. Measure in Phase 6. |
 | Group exclusion makes targets unfindable | Medium | §3.3, §10.1; watch time-to-first-kill in the soak. |
-| ~~**RSSI trend does not track real movement**~~ | ~~**High**~~ | **RESOLVED (2026-07-29, NO-GO):** the spike confirmed the trend does not work (approach ≈ 55 % vs 80 % bar across 5 walks; ±15–25 dB noise vs ~0.5 dB/s slope). Fallback applied — absolute bar + ping rate kept, trend + pitch bend dropped, narrative corrected. See `Phase0_RSSI_Trend_Spike_20260729.md`. |
+| ~~**RSSI trend does not track real movement**~~ | ~~**High**~~ | **RESOLVED (2026-07-29, NO-GO):** the spike confirmed the trend does not work (approach ≈ 55 % vs the 80 % bar across 5 walks; the approach is flat from 40 m to ~5–10 m, and 12–28 % of samples at a fixed 1 m sit 15 dB+ below the median, against a ~0.5–0.8 dB/s slope). Fallback applied — absolute bar + ping rate kept, trend + pitch bend dropped, narrative rewritten. See `Phase0_RSSI_Trend_Spike_20260729.md`. |
 | RSSI at a real camp ≠ RSSI on a bench | Medium | Every threshold is server-tunable live (§5.4). |
+| **A sync mid-chase blunts the radar** | Medium | **Measured, not hypothetical:** Phase 0 spike 1 (2026-07-30) put BLE detection at **42 %** of baseline while WiFi transfers, worst presence gap 1.6 s → 6.7 s. Mitigation is `HUNT_SYNC_DEFER` (§5.4): don't sync while the bar is lit, capped by `HUNT_SYNC_DEFER_MAX_S`. Presence itself never flaps — worst gap 14.9 s vs `EVICT_MS` 30 s — so this is a feel problem, not a correctness one. |
+| **Absolute thresholds calibrated on a pedestal, not on two worn badges** | **Medium** (was Medium–High; bounded 2026-07-30) | The absolute bar is now the *only* proximity cue, so `KILL_RSSI` carries the whole hunt — and it was measured with the target's badge on a pedestal. **Quantified since:** the one-body shadow measured *within* the existing walks (facing vs. body-in-path at matched distance) is **−4 dB median, range −14…+12**, and the fix is a **live-tunable** `KILL_RSSI` step with a pre-computed table (§11.1) — at the expected penalty it stays at −65 unchanged. Residual exposure is one config value, not a design. Verify with the §11.1 walk before Phase 2; if skipped, ship −68 and measure at the first playtest. |
+| **`KILL_RSSI` has only ~4–8 dB of headroom** | **Medium** | The tight one, and it is a *narrow* risk rather than a vague one: at −65 with the §8.8.2 asymmetric filter the worst walk holds an arm window of 24.5 s, but that falls to 1.8 s — **below `KILL_HOLD_MS`, i.e. an unwinnable kill** — once ~8 dB of extra shadow lands. Mitigations, in order: the asymmetric filter (mandatory — the symmetric EWMA already fails at −4 dB), the §11.1 threshold table, and `KILL_RSSI`/`KILL_HOLD_MS` being live-tunable at camp (§5.4). Loosening is cheap: false arming at 5 m+ stays ≤ 4 % all the way to −74 dBm. |
 | Sybil / collusion | Low | Detected not prevented (§9.5); host can void and revive. |
 | Badge never joined WiFi; player cannot tell the game is broken | Medium | Explicit `no network — check WiFi in Settings` state (§7), never silent absence. |
 | **Reveal is mistaken for an attack** and someone bolts through a crowd | Medium | The two are deliberately unmistakable: gold + single chirp + `SPOTTED` versus red + siren + `RUN`. **Demo mode (§8.4) exists largely to teach this difference before it matters.** Verify with real children in the Phase 6 dry run, not just with adults who read the rules card. |
@@ -2703,7 +2970,7 @@ A8 fallback at camp.
 |---|---|---|
 | ~~A3~~ | ~~2026 battery capacity~~ | **RESOLVED 2026-07-26: 2000 mAh, same cell as the 2024.** §8.7's runtimes apply to both boards. |
 | A4 | **All five power scenarios in §8.7**, both boards, inline USB meter | The whole power section is datasheet arithmetic, not measurement. Good enough to choose levers, not good enough to quote. |
-| **A5** | ⚠️ **Does an AppStore update preserve `/apps/com.fri3dcamp.fri3dfriends/`?** Publish a throwaway 0.9.1 to BadgeHub, put a sentinel `config.json` + `contacts.json` on a bench badge, update from the on-badge AppStore, and look at what survived. | **Decides whether §8.10.4 needs building at all.** If files survive, delete most of §8.10.4. If they do not, `contacts.json` is being silently destroyed by every update *today*, which is a v0.9.x bug independent of Gotcha. **Cheapest high-value test in this document — do it first.** |
+| ~~**A5**~~ | ✅ **RESOLVED 2026-07-29 — it does NOT preserve them.** `AppManager.install_mpk(zip, "apps/com.fri3dcamp.fri3dfriends")` over a folder holding sentinel `config.json` + `contacts.json` left **only the .mpk's own files**: `install_mpk` deletes the app directory and re-extracts. Replicated locally on a 2026 badge, no BadgeHub round-trip needed. | **§8.10.4 MUST be built** — the "delete most of it" branch is dead. And `contacts.json` is being **silently destroyed by every AppStore update in shipped v0.10.0 today**, a pre-existing bug independent of Gotcha. |
 | **A6** | Do this build's built-in `font_montserrat_*` carry Latin-1? (§8.9.1) | Decides whether the ASCII-only rule can be relaxed. Render `ë é ï` and read back with `get_all_widgets_with_text()`. |
 
 ### 14.3 Settled

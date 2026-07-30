@@ -1,0 +1,1 @@
+{"rate": 3.66, "interval_us": 120000, "peers": 2, "label": "off_60_120", "dur_s": 60.1, "per_peer": {"Tarpon 41b": {"n": 104, "rate": 1.73, "max_gap_s": 1.6}, "Badge2024lijn": {"n": 116, "rate": 1.93, "max_gap_s": 1.5}}, "window_us": 60000, "wifi_connected_frac": 0.0, "adverts": 220, "duty_pct": 50.0}

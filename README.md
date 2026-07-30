@@ -315,9 +315,26 @@ app/com.fri3dcamp.fri3dfriends/   → the app (deploy to /apps/…)
 docs/setup/index.html   → the Web-Bluetooth setup page (served via GitHub Pages)
 tests/        off-device pytest: BLE wire format + contact exchange + setup protocol
 tools/        setup_client.py (bleak GATT client), host_advertise.py, pull_file.py, make_logos.py
+              deploy.sh (sha-verified code push), recover_badge_port.py (USBDEVFS_RESET
+              unwedge for a badge whose USB-CDC has gone silent)
+probes/       throwaway on-badge measurement apps (deployed, run, then removed) +
+              probes/logs/ raw data. RSSI walks (rssi_walk_pkg) and the BLE/WiFi
+              coexistence probe (coex_pkg).
+              Analysis: tools/analyze_rssi.py (RSSI-trend scoring),
+              analyze_coex.py (coexistence + scan duty), analyze_shadow.py
+              (body-shadow headroom for the kill thresholds)
 DESIGN.md     protocol spec, verified hardware facts, verification status, open items
 PLAN.md       the original full design document
 ```
+
+**Gotcha (Assassin) game — planning and hardware spikes.**
+`Implementation_Plan_Gotcha_20260726.md` is the live plan. Phase 0's hardware spikes
+are **closed** (2026-07-30); their results are in
+`Phase0_RSSI_Trend_Spike_20260729.md` (the "warmer/colder" RSSI-trend promise was
+measured and **retracted** — the radar shows absolute proximity only) and
+`Phase0_Coex_GATT_Duty_Display_20260730.md` (WiFi/BLE coexistence, a third GATT
+service, scan-duty reduction, 2024 screen blanking). Read those before touching the
+radar or the power levers — several plan assumptions did not survive contact.
 
 See **DESIGN.md** for the full BLE protocol, the platform adaptation notes
 (this badge runs MicroPythonOS, not the `fri3d.application` firmware), and the
