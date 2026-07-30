@@ -324,8 +324,10 @@ tools/        setup_client.py (bleak GATT client), host_advertise.py, pull_file.
               deploy.sh (sha-verified code push), recover_badge_port.py (USBDEVFS_RESET
               unwedge for a badge whose USB-CDC has gone silent)
 probes/       throwaway on-badge measurement apps (deployed, run, then removed) +
-              probes/logs/ raw data. RSSI walks (rssi_walk_pkg) and the BLE/WiFi
-              coexistence probe (coex_pkg).
+              probes/logs/ raw data. RSSI walks (rssi_walk_pkg), the BLE/WiFi
+              coexistence probe (coex_pkg), and the §11 item-2 signed-sync heap
+              soak (soak_pkg — driven from the host by tools/run_soak.sh;
+              result in probes/logs/soak_result.json).
               Analysis: tools/analyze_rssi.py (RSSI-trend scoring),
               analyze_coex.py (coexistence + scan duty), analyze_shadow.py
               (body-shadow headroom for the kill thresholds)

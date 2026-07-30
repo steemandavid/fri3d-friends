@@ -1,3 +1,79 @@
+# !Fri3d Friends — Gotcha Phase 0 §11 item 2: the on-badge 1000-sync soak — 2026-07-30
+
+The **last Phase 0 action** is done: the **on-badge half** of the 1000-signed-sync
+soak. The server half was already closed (`server/tools/smoke.py --soak 1000`:
+median 5.5 ms, flat RSS, every response verified); this is the part "only a badge
+can answer," per the plan — the same 1000 syncs driven from a real badge, watching
+`gc.mem_free()`. **It passes cleanly**, and with it §11 item 2 is **fully
+RESOLVED**. No app code shipped to the fleet; throwaway probe only.
+
+**Verdict (badge 1cdb… → deployed backend 192.168.1.57:8080):**
+
+| | |
+|---|---|
+| Signed syncs | **1000/1000 HTTP 200, 1000 verified, 0 errors, 0 retries** |
+| RFC 4231 HMAC self-test | **ok** (hand-rolled HMAC-SHA256 proven correct at startup) |
+| Heap free | **7147 → 7139 KB**, steady drift **−2784 B over 900 syncs** (~3 B/sync — noise, not a leak) |
+| Heap band | 7138–7147 KB across every 100-sync checkpoint (±0.1 %); no OOM, no fragmentation |
+| Latency | median 237 ms, p95 413 ms, 2.8 req/s (badge→server over WiFi; the server's internal 5.5 ms excludes the radio trip) |
+
+Every one of the 1000 responses had its signature and nonce verified against a
+HMAC recomputed on-badge over a canonical-JSON re-serialisation of the payload —
+so this is full **badge-signer ↔ server-verifier byte interop, both directions,
+over 1000 real signed round trips**, not just "the server returned 200."
+
+The full record is `probes/logs/soak_result.json`; the throwaway probe is
+`probes/soak_pkg/{soak.py,MANIFEST.JSON}`, driven by `tools/run_soak.sh`.
+
+**Two findings worth keeping (neither is a design problem):**
+
+1. **1000 fresh back-to-back TCP connections exhaust the badge's lwIP socket/PCB
+   pool.** The first (unpaced) run hit `OSError(104)` (ECONNRESET) in a cascade
+   from sync ~694 — TIME_WAIT PCBs accumulate faster than they drain when you
+   hammer new connections with no pause. Real syncs are **300 s apart**, so this
+   never happens in production. An 80 ms pacing between syncs (plus a bounded
+   retry on `OSError`) made the run 1000/1000 clean. The heap was flat even in
+   the failing run — the errors were purely network-layer.
+2. **A long WiFi soak leaves the badge's USB-CDC flaky, and over-resetting it
+   cascades into an enumeration fault that needs a physical replug.** (Already in
+   memory `mpos-firmware-api-gaps`; reaffirmed twice this session.) `run_soak.sh`
+   now settles + retries the result pull, and the result survives on flash
+   regardless, so a wedged pull never loses data.
+
+**Platform facts the probe had to work around** (saved to memory
+`mpos-firmware-api-gaps`): MicroPython has no `hmac` (HMAC-SHA256 hand-rolled over
+`hashlib`); `hashlib.sha256` has `.digest()` but **no `.hexdigest()`** (use
+`ubinascii.hexlify`); `json.dumps` has `separators` but **no `sort_keys`**, and
+**its dicts do not preserve insertion order**, so canonical JSON must be built by
+walking the object and emitting `sorted(keys())` directly (delegating scalars to
+`json.dumps` for matching number/string formatting); and the **badge clock is
+~30 yr off**, so the signed `ts` is bootstrapped from the server's `server_time`
+and echoed per-sync.
+
+**Cleanup:** the throwaway probe was removed from the badge. The soak enrolled two
+fake players ("Soak") in the dev backend; they are harmless and the DB is reset for
+camp. Note: the live backend on this host is now **Caddy-fronted on :8080**, not
+the `gotcha.service` systemd unit described in `server/DEPLOY_LOG.md` (the unit is
+not loaded; `players` persisted through a `/var/lib/gotcha` wipe, so the live DB is
+elsewhere) — a deployment-drift item to reconcile, not a soak concern.
+
+## Phase 0 status after this
+
+| # | spike | status |
+|---|---|---|
+| 1 | WiFi + BLE coexistence | ✅ GO + scheduling rule |
+| 2 | Sync durability | ✅ **RESOLVED** — heap + on-device HMAC + TLS + **1000-sync soak (server half *and* on-badge half)** |
+| 3 | Third GATT service | ✅ GO |
+| 4 | Scan duty reduction | ✅ GO mechanically; 12.5 % background-only |
+| 5 | RSSI trend | ✅ NO-GO, upheld; worn-on-worn check → §11.1 before Phase 2 |
+| 6 | 2024 screen blanking | ⚠️ PARTIAL; quantify via the USB meter in Phase 6 |
+
+**Phase 0 is closed.** Every question capable of invalidating downstream work is
+answered with data, including the one residual that was structurally gated on the
+backend existing. Phase 1 (backend) and Phase 2 (badge) are unblocked.
+
+---
+
 # !Fri3d Friends — Phase 0 audited, corrected and closed (spikes 1/3/4/6 + TLS) — 2026-07-30
 
 Two jobs. First, **audit** the previous session's Phase 0 conclusions and its

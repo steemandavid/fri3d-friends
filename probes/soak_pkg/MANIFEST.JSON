@@ -1,0 +1,18 @@
+{
+  "name": "Gotcha Soak",
+  "publisher": "test",
+  "short_description": "Phase 0 §11 item 2: on-badge half of the 1000-signed-sync heap soak (throwaway)",
+  "long_description": "throwaway",
+  "fullname": "gotcha.soak",
+  "version": "0.1.0",
+  "category": "utilities",
+  "activities": [
+    {
+      "entrypoint": "soak.py",
+      "classname": "SoakActivity",
+      "intent_filters": [
+        { "action": "main", "category": "launcher" }
+      ]
+    }
+  ]
+}

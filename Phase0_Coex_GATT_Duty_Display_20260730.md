@@ -156,12 +156,15 @@ does a `USBDEVFS_RESET` and brings it back; use it sparingly.
 | # | spike | status |
 |---|---|---|
 | 1 | WiFi + BLE coexistence | ✅ GO + scheduling rule (no sync during a live hunt) |
-| 2 | Sync durability | ⚠️ partial — heap + on-device RFC 4231 HMAC done; the 1000-sync soak needs the Phase 1 backend |
+| 2 | Sync durability | ✅ RESOLVED — heap + on-device RFC 4231 HMAC + TLS + **1000-sync soak (server half and on-badge half, 2026-07-30)** |
 | 3 | Third GATT service | ✅ GO |
 | 4 | Scan duty reduction | ✅ GO mechanically; 12.5 % for background only, 50 % while hunting |
 | 5 | RSSI trend | ✅ resolved NO-GO (`Phase0_RSSI_Trend_Spike_20260729.md`); worn-on-worn threshold check still owed before Phase 2 |
 | 6 | 2024 screen blanking | ⚠️ PARTIAL — commands work, backlight cannot be cut; quantify in Phase 6 |
 
-Everything blocking is answered. The two remaining items (the 1000-sync soak, the
-worn-on-worn walk) are each gated on work that comes later — the backend, and
-Phase 2's radar respectively — and neither blocks starting Phase 1.
+Everything blocking is answered. **Item 2's 1000-sync soak is now closed too**
+(2026-07-30, on-badge half: 1000/1000 signed syncs from badge 1cdb… against the
+real backend, every response verified, heap flat at 7147→7139 KB with ~3 B/sync
+steady drift — see `changelog.md` and `probes/logs/soak_result.json`). The one
+remaining item is the §11.1 worn-on-worn walk, gated on Phase 2's radar; it blocks
+nothing now.

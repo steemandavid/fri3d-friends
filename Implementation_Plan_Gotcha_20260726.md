@@ -32,9 +32,9 @@ an override. This plan is self-contained.*
    power levers: `Phase0_RSSI_Trend_Spike_20260729.md` (the warmer/colder trend is
    **retracted** — §8.8.2a is history, not a spec) and
    `Phase0_Coex_GATT_Duty_Display_20260730.md` (coexistence, 3rd GATT service, scan
-   duty, 2024 blanking). Two residuals block nothing now but are owed later: the
-   1000-sync soak at the end of Phase 1, and a **worn-on-worn walk before Phase 2**
-   builds the radar (§11 item 5).
+   duty, 2024 blanking). The 1000-sync soak is **now closed** (2026-07-30, both
+   halves — server and on-badge); the one residual that blocks nothing now is a
+   **worn-on-worn walk before Phase 2** builds the radar (§11 item 5).
 4. **Open inputs that do not block Phases 0–4:** register the DNS name and
    confirm the DNS host supports API-driven DNS-01 issuance (needed by Phase 5,
    §6.1); the arrival-day check that badges resolve the name with the uplink
@@ -2675,7 +2675,7 @@ whether §8.10.4 gets built at all.
    `PING_FROM_SEG` or the hunt screen is closed. §8.7 already assumes WiFi is up
    only ~1.7 % of the time, so deferring is free; syncing during the endgame costs
    the player the kill.
-2. ⚠️ **PARTLY RESOLVED — sync durability (§6.2).** Done 2026-07-29: the
+2. ✅ **RESOLVED — sync durability (§6.2).** Done 2026-07-29: the
    `gc.mem_free()` heap check (**~6.86 MB → the heap is in PSRAM**, so fragmentation
    is not the binding constraint), and the hand-rolled HMAC-SHA256 verified against
    **RFC 4231 vectors on-device** as well as on host, with badge-signer ↔
@@ -2687,15 +2687,24 @@ whether §8.10.4 gets built at all.
    allocation still succeeded afterwards**. So D21's premise — one TLS handshake at
    enrollment, then signed plain HTTP — is **verified**, not assumed: TLS neither
    leaks nor fragments on this build.
-   **Still owed, genuinely gated on Phase 1:** the **1000-consecutive-signed-sync
-   soak**. That one does need a verifier to talk to, so it runs at the **end of
-   Phase 1** against the real backend. *The backend exists as of 2026-07-30 and the
-   **server half is already done**: `server/tools/smoke.py --soak 1000` against the
-   deployed instance gave a median of 5.5 ms with no latency drift and flat RSS,
-   every response signature and nonce verified. What remains is the **on-badge**
-   half — the same 1000 syncs driven from a badge, watching `gc.mem_free()`.* It is a soak for heap stability, not a
-   question that can invalidate the design — the two things that could (PSRAM heap,
-   TLS behaviour) are both answered.
+   ✅ **RESOLVED (2026-07-30) — the 1000-consecutive-signed-sync soak is done,
+   both halves.** The **server half** (`server/tools/smoke.py --soak 1000` against
+   the deployed instance) gave a median of 5.5 ms with no latency drift and flat
+   RSS, every response signature and nonce verified. The **on-badge half** then ran
+   1000 signed syncs from badge **1cdb…** against the real backend, watching
+   `gc.mem_free()`: **1000/1000 HTTP 200, 1000 verified, 0 errors, 0 retries**, the
+   hand-rolled HMAC-SHA256 self-checked against RFC 4231 vectors, and the heap flat
+   at **7147 → 7139 KB** (steady drift −2784 B over 900 syncs ≈ 3 B/sync — noise,
+   not a leak; band 7138–7147 KB; no OOM, no fragmentation). Every response's
+   signature and nonce was verified on-badge, proving full badge-signer ↔
+   server-verifier byte interop over 1000 real signed round trips. Record:
+   `probes/logs/soak_result.json`; throwaway probe `probes/soak_pkg/` +
+   `tools/run_soak.sh`. It was a soak for heap stability, not a question that could
+   invalidate the design — and it confirmed both things that could have mattered
+   (PSRAM heap, TLS behaviour) hold up under load. (One probe-only finding, not a
+   design issue: 1000 fresh back-to-back TCP connections exhaust lwIP's socket/PCB
+   pool ~sync 694 → ECONNRESET cascade; real syncs are 300 s apart so this never
+   occurs in production, and 80 ms pacing + a bounded retry make the soak 1000/1000.)
 3. ✅ **RESOLVED — third GATT service fits: GO (2026-07-30).**
    `gatts_register_services((exchange, setup, gotcha))` returns three handle groups
    — `[16,18]`, `[21,23,25,27,30,32]`, `[35,37,40,42]` — and a 512-byte
@@ -2741,10 +2750,10 @@ whether §8.10.4 gets built at all.
 
 Deliverable: findings written up in `Phase0_RSSI_Trend_Spike_20260729.md` (item 5)
 and `Phase0_Coex_GATT_Duty_Display_20260730.md` (items 1/3/4/6), and a go/no-go.
-**Phase 0 verdict: GO for Phase 1.** Every blocking question is answered. Two
-items carry residuals that are gated on later work and block nothing now: item 2's
-1000-sync soak needs the Phase 1 backend, and item 5's worn-on-worn threshold check
-is owed before Phase 2 builds the radar.
+**Phase 0 verdict: GO for Phase 1.** Every blocking question is answered. Item 2's
+1000-sync soak is now closed too (2026-07-30); the one residual that is gated on
+later work and blocks nothing now is item 5's worn-on-worn threshold check, owed
+before Phase 2 builds the radar.
 
 *(The original spike item "does 2 Hz `adv_data` swapping survive?" is gone — D8 let us
 collapse to a single v2 beacon.)*

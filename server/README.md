@@ -124,9 +124,12 @@ On the dev laptop, against a database holding 700 enrolled players:
 The last row is the **server half of §11 item 2's soak**. The gate itself is about
 the *badge's* heap and only a badge can answer it; `tools/smoke.py --soak 1000`
 proves the server holds up over the same run, so badge time is not spent
-discovering a server problem. The nonce cache held 1003 rows immediately after the
-run, which is correct — they were all inside the ±10 min replay window; steady
-state at 700 badges is ~1400 rows.
+discovering a server problem. **The on-badge half is now closed too (2026-07-30):**
+`tools/run_soak.sh` drove 1000 signed syncs from a real badge against this backend
+— 1000/1000 verified, heap flat at 7147→7139 KB (see `probes/logs/soak_result.json`
+and `changelog.md`). The nonce cache held 1003 rows immediately after the
+server run, which is correct — they were all inside the ±10 min replay window;
+steady state at 700 badges is ~1400 rows.
 
 ## Not built yet (and where it belongs)
 
