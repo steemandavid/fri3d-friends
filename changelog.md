@@ -533,9 +533,9 @@ plan and asserts the table and `TUNABLE_DEFAULTS` agree in both directions —
 missing tunables, revived struck-through ones (the four RSSI-trend constants must
 stay dead), undocumented additions, and mismatched numeric defaults. This drift was
 invisible and would have shipped a tunable the admin page could not reach; with two
-sessions editing one plan it would have happened again. **254 tests green.**
+sessions editing one plan it would have happened again.
 
-## 6. Not built (and where it belongs)
+## 7. Not built (and where it belongs)
 
 HTTPS / Let's Encrypt DNS-01 and ports 80+443 are **Phase 5** (§6.1) — today the
 service is :8080 and `/v1/enroll` is reachable over plain HTTP, fine on a dev LAN
@@ -547,6 +547,23 @@ stored but not yet interpreted by any rule.
 **Next: Phase 2** — badge-side connectivity check, enrollment, sync, v2 beacon and
 the LED radar. Note its blocking prerequisite is still open: §11 item 5's
 **worn-on-worn RSSI walk pair** must run before the radar thresholds are trusted.
+
+## 8. Session wrap-up
+
+- **The deferral/outage coupling is now tested by measurement, not by assertion.**
+  `test_deferral_is_never_reported_as_an_outage_at_any_bucket_phase` sweeps all 60
+  bucket phases of a maximal 900 s deferral and pins both boundaries (nothing under
+  1201 s of true silence is ever declared an outage; up to 1259 s can be missed), so
+  a future change to the bucketing fails a test rather than quietly moving the
+  margin. The Phase 2 obligation — anchor the cap at the **last successful sync** —
+  is written at the constant in `config.py`, with the arithmetic for both anchorings,
+  and referenced from `state.outage_intervals()`'s docstring and `server/README.md`.
+- **Root `README.md`** now documents `server/` in the project layout and has a
+  "Phase 1 — the backend — is done" paragraph with the two commands a newcomer needs
+  (`pytest tests/ -q`, `smoke.py`). `server/README.md` gained a "one cross-layer
+  constraint" section covering the same coupling.
+- **Final state: 255 tests green**; deployed instance on 192.168.1.57:8080 running the
+  current code, empty database, game in `lobby`, truce 22:00–08:00, enabled at boot.
 
 # !Fri3d Friends — Gotcha Phase 0 spikes (A5/heap/HMAC done; RSSI-trend NO-GO → fallback) — 2026-07-29
 

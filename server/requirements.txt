@@ -1,0 +1,10 @@
+# Gotcha backend (plan §9: "Python / FastAPI + SQLite, in server/ in this repo").
+# Deliberately short: SQLite is in the stdlib, the crypto is stdlib hmac/hashlib,
+# and there is no ORM, no migration tool and no template engine -- one process on
+# a laptop in a field is the deployment target (§6.1).
+fastapi>=0.110
+uvicorn>=0.27
+python-multipart>=0.0.9   # admin login form posts
+# Tests only:
+httpx>=0.27               # ASGI transport for the badge-simulator fixture
+pytest>=8.0

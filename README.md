@@ -312,8 +312,14 @@ app/com.fri3dcamp.fri3dfriends/   → the app (deploy to /apps/…)
   service + on-badge editor mapping), identity.py (auto-nickname),
   config.json, fri3dfriends.png (splash logo), icon_64x64.png (launcher icon),
   montserrat_name.ttf (42px name font)
+server/       the Gotcha game backend (FastAPI + SQLite, one process, no build step)
+  gotcha_server/  API, ring, scoring, state model, admin console, served pages
+  deploy/         install.sh / uninstall.sh / gotcha.service (systemd)
+  tools/smoke.py  stdlib-only smoke + soak test against a deployed instance
+  README.md, DEPLOY_LOG.md (every host-level change, with its undo command)
 docs/setup/index.html   → the Web-Bluetooth setup page (served via GitHub Pages)
-tests/        off-device pytest: BLE wire format + contact exchange + setup protocol
+tests/        off-device pytest: BLE wire format + contact exchange + setup protocol,
+              plus the Gotcha backend (badge_sim.py drives the API as N fake badges)
 tools/        setup_client.py (bleak GATT client), host_advertise.py, pull_file.py, make_logos.py
               deploy.sh (sha-verified code push), recover_badge_port.py (USBDEVFS_RESET
               unwedge for a badge whose USB-CDC has gone silent)
@@ -335,6 +341,20 @@ measured and **retracted** — the radar shows absolute proximity only) and
 `Phase0_Coex_GATT_Duty_Display_20260730.md` (WiFi/BLE coexistence, a third GATT
 service, scan-duty reduction, 2024 screen blanking). Read those before touching the
 radar or the power levers — several plan assumptions did not survive contact.
+
+**Phase 1 — the backend — is done** (2026-07-30) and lives in `server/`: FastAPI +
+SQLite, the whole §9 API, scoring, the target ring, the admin dashboard, and the
+badge-simulator test harness. It runs under systemd; `server/README.md` covers
+running it, the two design choices that shape it, the interpretation calls it had to
+make (two of which are contracts the badge side must match), and what is measured.
+`server/DEPLOY_LOG.md` records every change made to the host it was deployed on,
+each with the command that undoes it, so the machine can be returned to its prior
+state after camp.
+
+```bash
+python3 -m pytest tests/ -q                                   # 255 tests, no badge needed
+python3 server/tools/smoke.py http://<host>:8080 --badges 6    # check a deployment
+```
 
 See **DESIGN.md** for the full BLE protocol, the platform adaptation notes
 (this badge runs MicroPythonOS, not the `fri3d.application` firmware), and the
