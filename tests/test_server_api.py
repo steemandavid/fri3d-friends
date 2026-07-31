@@ -1112,3 +1112,109 @@ def test_admin_dashboard_page_renders_when_logged_in(server, badges):
     # The host name is escaped, not injected raw.
     assert "Ward &amp; Co &lt;hq&gt;" in r.text
     assert "<hq>" not in r.text
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for the Phase 0-2 code-review CRITICALs / MAJORs.
+# Each of these fails on the reviewed commit (80568a9) and passes with the fix.
+# ---------------------------------------------------------------------------
+
+def test_two_kills_in_one_batch_both_land(server, badges):
+    """D12: a table sweep is ONE POST (HUNT_SYNC_DEFER batches it). Killing the
+    first target inherits the second as the reporter's target, so the second kill
+    must also be accepted -- refusing a real sweep breaks the best moment in the
+    game (§9.5, D16)."""
+    a, v1, v2 = badges(3)
+    server.start_game()
+    server.advance(200)
+    _force_target(server, a, v1)
+    _force_target(server, v1, v2)               # so a inherits v2 after killing v1
+    a.report_kill(v1)
+    a.report_kill(v2)
+    out = a.flush()                             # both halves in a single POST
+    assert len(out["accepted"]) == 2 and out["rejected"] == [], out
+    assert service.player_by_pid(server.db, a.pid)["total_kills"] == 2
+    assert service.player_by_pid(server.db, v1.pid)["base_status"] == state.DEAD
+    assert service.player_by_pid(server.db, v2.pid)["base_status"] == state.DEAD
+
+
+def test_a_heartbeat_cannot_rotate_the_live_commitment(server, badges):
+    """C2 / §3.4: a victim being chased cannot heartbeat a fresh soul commitment
+    to invalidate the proof the assassin already holds. The commitment is binding
+    within a life; only a respawn (which opens a life with a NULL commitment) lets
+    a new one be published."""
+    a, v = badges(2)
+    server.start_game()
+    server.advance(200)
+    _force_target(server, a, v)
+    a.report_kill(v)                            # a captured v's current-life soul
+    fresh = v.rotate_soul()                     # v tries to move the goalposts...
+    v._queue("heartbeat", commitment=fresh, peers_seen=1, battery=80)
+    assert v.flush()["accepted"]                # heartbeat is accepted...
+    out = a.flush()                             # ...but the queued kill still lands
+    assert out["accepted"] and out["rejected"] == [], out
+    assert service.player_by_pid(server.db, v.pid)["base_status"] == state.DEAD
+
+
+def test_a_late_killed_by_after_respawn_leaves_the_victim_killable(server, badges):
+    """C3: a killed_by that sat in an offline queue across the victim's own
+    respawn resolves to the FINISHED life, not a voided marker on the live life.
+    Reachable with zero malice on the first afternoon at camp."""
+    a, v, b = badges(3)
+    server.start_game()
+    server.advance(200)
+    _force_target(server, a, v)
+    a.report_kill(v)                            # a's soul is v's life-0 soul
+    late = v.report_death(a)                    # v's own report; will be delayed
+    assert a.flush()["accepted"]                # v dies (life 0 -> 1)
+    server.advance(1900)
+    v.sync(flush=False)                         # reconcile respawns v; queue held
+    assert service.player_by_pid(server.db, v.pid)["base_status"] == state.ACTIVE
+    assert v.flush()["accepted"]                # the stale killed_by finally lands
+    # No voided marker was parked on v's live life...
+    assert int(server.db.scalar(
+        "SELECT COUNT(*) FROM kills WHERE victim_pid=? AND victim_life_id=1 "
+        "AND voided=1", (v.pid,), default=0)) == 0
+    # ...so a fresh hunter's legitimate kill on the current life still lands.
+    server.advance(100)                         # clear the 90 s respawn protection
+    _force_target(server, b, v)
+    b.report_kill(v)
+    assert b.flush()["accepted"], "victim is unkillable"
+    assert service.player_by_pid(server.db, v.pid)["base_status"] == state.DEAD
+
+
+def test_bounty_kill_does_not_orphan_the_victims_hunter(server, badges):
+    """D8: a bounty kill must NOT apply ring inheritance -- the assassin was not
+    the victim's hunter, so inheriting the victim's target strands the victim's
+    real hunter for the rest of camp (§3.2 rule 10, §3.3). The victim is spliced
+    out (their hunter inherits) and the assassin keeps its own target."""
+    hunter, leader, o3, spare = badges(4)
+    server.start_game()
+    server.advance(200)
+    # Give the leader a bounty streak without disturbing the ring's pointers.
+    server.db.execute("UPDATE players SET streak_at_last_kill=3, last_kill_at=? "
+                      "WHERE pid=?", (server.clock.now(), leader.pid))
+    server.db.commit()
+    _force_target(server, hunter, spare)        # hunter's own target (NOT leader)
+    _force_target(server, o3, leader)           # o3 is the leader's hunter
+    _force_target(server, leader, spare)        # the leader's target
+    hunter.report_kill(leader, as_kind="bounty")
+    assert hunter.flush()["accepted"]
+    # The assassin kept its own target -- it did not inherit the leader's.
+    assert service.player_by_pid(server.db, hunter.pid)["target_pid"] == spare.pid
+    # The leader's hunter inherited the leader's target, not a corpse.
+    o3t = service.player_by_pid(server.db, o3.pid)["target_pid"]
+    assert o3t == spare.pid and o3t != leader.pid
+    assert service.player_by_pid(server.db, leader.pid)["base_status"] == state.DEAD
+
+
+def test_heartbeat_app_version_is_capped(server, badges):
+    """C1: the admin dashboard interpolates app_version into innerHTML, and the
+    heartbeat was the one write path that stored it with no length bound."""
+    a = badges(1)
+    server.start_game()
+    server.advance(200)
+    a._queue("heartbeat", app_version="x" * 500, peers_seen=1, battery=80)
+    assert a.flush()["accepted"]
+    stored = service.player_by_pid(server.db, a.pid)["app_version"]
+    assert len(stored) <= 16

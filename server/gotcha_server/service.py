@@ -61,8 +61,39 @@ def config_for(game):
     return cfg
 
 
+def _coerce_tunable(key, value):
+    """Coerce an incoming admin tunable to the type of its default (D10).
+
+    A raw, unchecked value reaches the hot path: `auth.verify_request` does
+    `int(cfg["SIG_WINDOW_S"])` on *every* badge request, so a single
+    `{"SIG_WINDOW_S": "ten"}` from a curl one-liner is an unsigned, camp-wide
+    HTTP 500 that badges silently discard. Reject anything that will not coerce
+    rather than store it and brick the camp. Returns (ok, coerced_value).
+    """
+    default = DEFAULTS[key]
+    try:
+        if isinstance(default, bool):
+            if isinstance(value, bool):
+                return True, value
+            if isinstance(value, (int, float)):
+                return True, bool(value)
+            if isinstance(value, str):
+                return True, value.strip().lower() in ("1", "true", "yes", "on")
+            return False, None
+        if isinstance(default, int):          # bool already handled above
+            return True, int(value)
+        if isinstance(default, float):
+            return True, float(value)
+        if isinstance(default, str):
+            return True, str(value)
+    except (TypeError, ValueError):
+        return False, None
+    return True, value
+
+
 def set_tunables(db, game, updates):
-    """Merge admin tunable edits, keeping unknown keys out of the config blob."""
+    """Merge admin tunable edits, keeping unknown keys out of the config blob and
+    coercing every value to its default's type (D10)."""
     cfg = {}
     try:
         cfg = json.loads(game["config_json"] or "{}")
@@ -71,11 +102,15 @@ def set_tunables(db, game, updates):
     known = set(DEFAULTS)
     applied, rejected = {}, []
     for k, v in (updates or {}).items():
-        if k in known:
-            cfg[k] = v
-            applied[k] = v
-        else:
+        if k not in known:
             rejected.append(k)
+            continue
+        ok, coerced = _coerce_tunable(k, v)
+        if not ok:
+            rejected.append(k)
+            continue
+        cfg[k] = coerced
+        applied[k] = coerced
     db.execute("UPDATE games SET config_json=? WHERE id=?",
                (json.dumps(cfg, sort_keys=True), game["id"]))
     db.commit()
@@ -123,10 +158,17 @@ def set_groups(db, pid, groups):
 
 
 def start_life(db, pid, life_id, commitment, ts):
-    """Open a life with its soul commitment (§3.4). Idempotent."""
+    """Open a life with its soul commitment (§3.4). Idempotent.
+
+    The commitment is filled only when the life has none yet (C2): a life's soul
+    is binding once set, so a rotation cannot overwrite the proof already held by
+    an assassin. Opening a fresh life is an INSERT and unaffected; the post-respawn
+    case, where the life was opened with a NULL commitment, is still served.
+    """
     db.execute(
         "INSERT INTO lives(pid, life_id, commitment, started_at) VALUES(?,?,?,?) "
-        "ON CONFLICT(pid, life_id) DO UPDATE SET commitment=excluded.commitment",
+        "ON CONFLICT(pid, life_id) DO UPDATE SET commitment=excluded.commitment "
+        "WHERE lives.commitment IS NULL",
         (pid, life_id, commitment, ts))
 
 

@@ -329,9 +329,15 @@ class GameConfig(object):
         g = game_block if isinstance(game_block, dict) else {}
         sched = g.get("truce_schedule")
         if isinstance(sched, dict):
-            if sched.get("from"):
+            # Fail CLOSED (D25): only adopt a schedule whose BOTH ends parse as
+            # HH:MM. A host typing "22.00" instead of "22:00" must not silently
+            # disable the camp night truce on every badge -- the §10.4 failure mode
+            # is a screaming badge in a tent of sleeping children. A malformed
+            # value keeps the DEFAULTS 22:00-08:00 window.
+            tf = parse_hm(sched.get("from"))
+            tt = parse_hm(sched.get("to"))
+            if tf is not None and tt is not None:
                 cfg.d["truce_from"] = str(sched["from"])
-            if sched.get("to"):
                 cfg.d["truce_to"] = str(sched["to"])
         return cfg
 
@@ -870,8 +876,32 @@ class GotchaState(object):
             return
         b = _blank_state()
         for k in b:
-            if k in obj:
-                b[k] = obj[k]
+            if k not in obj:
+                continue
+            v = obj[k]
+            dv = b[k]
+            # Type-guard per key (D27): a structurally-corrupt but JSON-valid file
+            # (e.g. {"state": "broken"}) must not copy a wrong-typed value into
+            # state, where apply_sync would then do `s["alive"]=...` on a str and
+            # die on every sync forever. A key whose blank default is None has no
+            # type to enforce and is taken as-is.
+            if dv is None:
+                b[k] = v
+            elif isinstance(dv, bool):
+                if isinstance(v, bool):
+                    b[k] = v
+            elif isinstance(dv, dict):
+                if isinstance(v, dict):
+                    b[k] = v
+            elif isinstance(dv, list):
+                if isinstance(v, list):
+                    b[k] = v
+            elif isinstance(dv, (int, float)):
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    b[k] = v
+            elif isinstance(dv, str):
+                if isinstance(v, str):
+                    b[k] = v
         # Never trust a persisted queue that lost its dedup index.
         b["queue"] = [e for e in (obj.get("queue") or [])
                       if isinstance(e, dict) and isinstance(e.get("uuid"), str)]

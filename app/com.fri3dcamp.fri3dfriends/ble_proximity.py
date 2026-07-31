@@ -731,11 +731,17 @@ class BLEProximity:
         return a
 
     def current_peers(self):
-        # list of (name, shared_name, shared_id, rssi_ewma, age_ms) sorted by name
+        # list of (name, shared_name, shared_id, rssi_ewma, age_ms) sorted by name.
+        # Friends only: a game-admitted peer (the Gotcha target, D9) carries
+        # shared_id=None and must NOT surface in the friends UI -- it is not a
+        # friend, its group is unknown, and a None gid crashes the detail-row
+        # colour path (C5/D32). The hunt reads the target via peer_by_pid().
         from time import ticks_diff, ticks_ms
         now = ticks_ms()
         out = []
         for e in self._seen.values():
+            if e["shared_id"] is None:
+                continue
             out.append((
                 e["name"],
                 e["shared_name"],
@@ -747,7 +753,12 @@ class BLEProximity:
         return out
 
     def has_peers(self):
-        return len(self._seen) > 0
+        # Friends only (see current_peers): a game-only admit must not count as a
+        # nearby friend, or it suppresses the backlight dim and inflates the count.
+        for e in self._seen.values():
+            if e["shared_id"] is not None:
+                return True
+        return False
 
     # ---- validation ----
     @staticmethod

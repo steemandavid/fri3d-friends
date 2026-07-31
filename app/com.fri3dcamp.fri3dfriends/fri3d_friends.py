@@ -993,6 +993,11 @@ class Fri3dFriends(Activity):
                 pass
 
     def _color_for_gid(self, gid):
+        # None-tolerant (C5): a game-admitted peer has no shared group, and
+        # _sig_from_id(None) would raise inside the blanket-caught render tick and
+        # silently kill the LED bar, clock and battery for the rest of the hunt.
+        if gid is None:
+            return COL_MUTED
         hue, _ = _sig_from_id(gid)
         r, g, b = _hsv(hue)
         return (r << 16) | (g << 8) | b

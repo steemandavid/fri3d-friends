@@ -23,6 +23,12 @@ PAYLOADS = [
     {"server_time": 1786694400, "hitlist": [{"pid": 1001, "name": "Otter 1",
                                              "streak": 3}]},
     {"config": {"KILL_RSSI": -65, "PROX_ALPHA_UP": 0.6, "PING_ENABLED": True}},
+    # An integral-valued float (D11): the badge's canonical_json renders 1.0/2500.0
+    # as "1"/"2500"; the server must produce the identical bytes, or every response
+    # signature breaks the moment an admin stores an integral-valued tunable (e.g.
+    # PROX_ALPHA_UP: 1.0), silently killing sync camp-wide.
+    {"config": {"PROX_ALPHA_UP": 1.0, "KILL_HOLD_MS": 2500.0, "PROX_ALPHA_DOWN": 0.08}},
+    {"deep": {"vals": [1.0, 2.5, -0.0, 100.0]}},
     {"quote": 'he said "hi"\n\ttab', "backslash": "a\\b"},
     {"empty_list": [], "empty_obj": {}},
 ]

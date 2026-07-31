@@ -19,6 +19,22 @@ SYNC_S = 300                       # §5.4; jittered/overridden by the tunable
 CONN_EVERY_MS = 30000              # §7: re-check reachability this often
 RETRY_MS = 60000                   # back into sync soon after a failure
 
+FULLNAME = "com.fri3dcamp.fri3dfriends"
+
+
+def _app_version():
+    """This app's version from its MANIFEST (D31). The fleet histogram and the
+    update nudge both read app_version, so a hardcoded literal lies the moment the
+    build drifts past it -- always report the real version."""
+    import json as _json
+    for base in ("/apps", "/builtin/apps"):
+        try:
+            with open(base + "/" + FULLNAME + "/MANIFEST.JSON") as f:
+                return _json.load(f).get("version", "?")
+        except Exception:
+            pass
+    return "?"
+
 # Dutch status labels (D26). Mirrors server app.STATUS_NL; kept local so the
 # chip is right with no network.
 _STATUS_NL = {
@@ -101,6 +117,7 @@ class GotchaController(object):
         self._enrolling = False
         self._next_sync_ms = 0
         self._next_conn_ms = 0
+        self._last_sync_ms = None       # D5: anchor for the HUNT_SYNC_DEFER cap
         self._api_host = None
         self._game_block = None
         self._target_pid = None
@@ -122,6 +139,14 @@ class GotchaController(object):
         self._next_sync_ms = 0
         self._next_conn_ms = 0
         self._apply_prox_filter()
+        # D22: re-advertise the v2 game block and re-arm target admission/pinning
+        # right now, not only after the next sync. onResume() rebuilds the beacon
+        # via begin() with no game block, and a badge booting OFFLINE with a
+        # persisted target must still admit it or its radar stays dark (§10.3).
+        # Clear the change-gate caches so the push is not skipped as a no-op.
+        self._game_block = None
+        self._target_pid = None
+        self._push_game_context()
 
     def stop(self):
         self._running = False
@@ -149,13 +174,31 @@ class GotchaController(object):
             self._kick(self._do_enroll())
         if (self.enrolled and self.online and not self._syncing and self.api_url
                 and time.ticks_diff(now_ms, self._next_sync_ms) >= 0
-                and not self._bar_lit()):
+                and not self._defer_for_bar(now_ms)):
             self._kick(self._do_sync())
         self._refresh_view()
 
     def _bar_lit(self):
         # HUNT_SYNC_DEFER (§5.4): don't sync while the radar bar is lit.
         return self.radar_segs >= int(self.cfg.get("PING_FROM_SEG") or 3)
+
+    def _defer_for_bar(self, now_ms):
+        # HUNT_SYNC_DEFER (§5.4): hold sync while the radar bar is lit, so WiFi
+        # traffic never costs a player the endgame kill. But cap that hold at
+        # HUNT_SYNC_DEFER_MAX_S measured from the LAST SUCCESSFUL SYNC (the §5.4
+        # anchor, D5) -- otherwise a player parked next to their target keeps the
+        # bar lit forever, sync never runs, and at small scale the camp-wide
+        # silence reads as a server outage and pauses dormancy for everyone.
+        if not self._bar_lit():
+            return False
+        if self.cfg.get("HUNT_SYNC_DEFER") is False:    # admin switched deferral off
+            return False
+        if self._last_sync_ms is None:
+            return True                                 # no sync yet to anchor from
+        cap_s = int(self.cfg.get("HUNT_SYNC_DEFER_MAX_S") or 900)
+        if time.ticks_diff(now_ms, self._last_sync_ms) >= cap_s * 1000:
+            return False                                # cap reached: sync anyway
+        return True
 
     def _kick(self, coro):
         try:
@@ -212,9 +255,13 @@ class GotchaController(object):
             return                  # never silently re-enroll an opted-out badge
         self._enrolling = True
         try:
+            # D28: enroll under the player's chosen name; only auto-generate a
+            # BadgeXXXX nickname when they never set one. D31: report the real
+            # app version, not a hardcoded literal.
+            name = (self.name or "").strip() or _dev_name(None)
             ok = await self.sync.enroll(self.enroll_url or self.api_url,
-                                        self._badge_key(), _dev_name(self.name),
-                                        self.groups, "0.11.0", _board())
+                                        self._badge_key(), name,
+                                        self.groups, _app_version(), _board())
             if ok:
                 self.enrolled = True
                 self._next_sync_ms = 0
@@ -241,7 +288,9 @@ class GotchaController(object):
                     jit = (os.urandom(1)[0] / 255.0 - 0.5) * 0.4
                 except Exception:
                     jit = 0
-                self._next_sync_ms = time.ticks_add(time.ticks_ms(),
+                now = time.ticks_ms()
+                self._last_sync_ms = now         # D5: anchor the deferral cap
+                self._next_sync_ms = time.ticks_add(now,
                                                      int(secs * (1.0 + jit) * 1000))
             else:
                 self._next_sync_ms = time.ticks_add(time.ticks_ms(), RETRY_MS)
@@ -267,7 +316,16 @@ class GotchaController(object):
         if not self.state.is_enrolled():
             return None
         s = self.state.d.get("state") or {}
-        gf = bp.GFLAG_ALIVE
+        # D29: reflect the real liveness in the advertised flags. D11's "peer at
+        # someone's badge to see if they are safe to approach" relies on ALIVE
+        # meaning alive -- broadcasting it while dead reports the opposite of the
+        # truth. PROTECTED rides the same block so a fresh spawn shows as such.
+        status = s.get("status") or ("active" if s.get("alive", True) else "dead")
+        gf = 0
+        if status != "dead":
+            gf |= bp.GFLAG_ALIVE
+        if status == "protected":
+            gf |= bp.GFLAG_PROTECTED
         if int(s.get("streak") or 0) >= int(self.cfg.get("BOUNTY_STREAK")):
             gf |= bp.GFLAG_BOUNTY
         now = self.state.effective_now(int(time.time()))
@@ -320,16 +378,19 @@ class GotchaController(object):
         streak = int(s.get("streak") or 0)
         kills = int(s.get("total") or 0)
         base = self.status_nl or "?"
-        return "%s  ·  streak %d  ·  %d kills" % (base, streak, kills)
+        # ASCII only (D40): the built-in montserrat fonts have no U+00B7/U+2014
+        # glyph, so a middle dot or em dash renders as a blank box in the
+        # always-visible chip.
+        return "%s  -  streak %d  -  %d kills" % (base, streak, kills)
 
     def target_line_text(self):
         """The target strip: name, or a why-not state (Dutch)."""
         if self.halted:
             return "WAPENSTILSTAND"
         if self.radar_halted():
-            return (self.target_name or "?") + " — slaapt"
+            return (self.target_name or "?") + " - slaapt"
         if self.target_prox is None:
-            return (self.target_name or "?") + " — zoek..."
+            return (self.target_name or "?") + " - zoek..."
         return self.target_name or "?"
 
     def no_network(self):

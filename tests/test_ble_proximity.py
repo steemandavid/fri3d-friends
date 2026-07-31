@@ -513,3 +513,32 @@ def test_process_result_rssi_prox_is_asymmetric():
     b._process_result(0, addr, adv, -90, 3000)         # drop -> slow decay
     dn = b._seen[(0, addr)]["rssi_prox"]
     assert up > -75 and dn > -80                       # attacked fast, decayed slowly
+
+
+def test_current_peers_and_has_peers_exclude_game_admitted(monkeypatch):
+    """C5/D32: a game-admitted peer (the Gotcha target) carries shared_id=None and
+    must NOT surface in the friends UI. current_peers() feeds detail rows whose
+    colour path crashes on a None gid, and has_peers() gates the backlight dim and
+    the nearby-friends count. The hunt still reads the target via peer_by_pid()."""
+    import time as _time
+    monkeypatch.setattr(_time, "ticks_ms", lambda: 10_000, raising=False)
+    monkeypatch.setattr(_time, "ticks_diff", lambda a, b: a - b, raising=False)
+    b = _scanner("MyGroup")
+    b.set_game_context(admit_pids={4242}, pin_pids={4242})
+    # A real friend: shares a group -> shared_id is set.
+    b._process_result(0, b"\x01", build_payload(b._own_ids, "Otter 42"), -60, 1000)
+    # The Gotcha target: no shared group -> admitted only because it is the target.
+    tgt = build_payload(hash_groups(["OtherGroup"])[0], "Target",
+                        game={"pid": 4242, "gflags": GFLAG_ALIVE, "streak": 0})
+    b._process_result(0, b"\x09", tgt, -55, 1000)
+
+    assert b.peer_by_pid(4242) is not None              # still tracked for the hunt
+    peers = b.current_peers()
+    assert [p[0] for p in peers] == ["Otter 42"]        # the target is filtered out
+    assert all(p[2] is not None for p in peers)         # never a None gid (C5)
+    assert b.has_peers() is True                         # the friend counts
+
+    # With only the game peer left, it is not a "nearby friend".
+    del b._seen[(0, b"\x01")]
+    assert b.current_peers() == []
+    assert b.has_peers() is False

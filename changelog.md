@@ -1,3 +1,101 @@
+# !Fri3d Friends — Gotcha Phase 0–2 code-review fixes (5 CRITICALs + 12 MAJORs, +8 regression tests) — 2026-07-31
+
+Acted on **`Code_Review_Phase0-2_20260731_1803.md`** (the review from the previous
+session, entry below). Closed **all 5 CRITICALs**, the two "blocking" MAJORs, and a
+strong set of "strongly-recommended" MAJORs, each with a regression test that fails
+on `80568a9` and passes now. **Suite: 313 → 321 passed** (8 new tests), 0 failed.
+MANIFEST bumped **0.11.2 → 0.11.3** (app code changed). Not yet deployed to a badge.
+
+Syncthing was stopped for the duration of the edits (project dir is Syncthing-synced;
+heavy multi-file edits risk ENOENT/data-loss) and restarted at the end.
+
+## CRITICALs — all fixed
+
+| # | Fix | Files |
+|---|---|---|
+| **C-1** stored XSS on admin dashboard | Added `esc()` to the dashboard script; wrapped the 4 sinks (`app_version`, `broadcast`, 2×`display_name`); capped `app_version[:16]` in the heartbeat handler | `pages.py`, `events.py` |
+| **C-2** soul commitment not binding within a life | `_rotate_commitment` no-ops when the current life already has a commitment; `start_life` SQL gained `WHERE lives.commitment IS NULL` | `events.py`, `service.py` |
+| **C-3** voided row permanently blocks kills | Dup lookup filters `voided=0`; `reported_life` resolved from the `lives` window by `at` (inclusive end, earliest life); `_insert_kill` clears a stale voided marker before a genuine kill (avoids the `UNIQUE(victim_pid,victim_life_id)` collision) | `events.py` |
+| **C-4** half-applied kill committed | `db.rollback()` as first statement of both `except` arms in `ingest_batch` | `events.py` |
+| **C-5** game-admitted peer crashes render tick | `current_peers()`/`has_peers()` skip `shared_id is None` (root D-32 fix); `_color_for_gid` is `None`-tolerant (defense-in-depth) | `ble_proximity.py`, `fri3d_friends.py` |
+
+## MAJORs — fixed
+
+| # | Fix | Files |
+|---|---|---|
+| **D-8** bounty kill orphans a hunter | Ring inheritance only when `is_target`; otherwise `splice_out` the victim, leave assassin pointer alone | `events.py` |
+| **D-12** table sweep 2nd kill refused | `ingest_batch` uses a request-entry reporter snapshot for the 1st event, then folds in the reporter's target *after each accepted event* — captures intra-batch inheritance without adopting `reconcile`'s reassignment | `events.py` |
+| **D-9** spoofable `X-Forwarded-For` voids Sybil detector | Removed `proxy_headers`/`forwarded_allow_ips="*"` (this process is the edge) | `main.py` |
+| **D-10** `set_tunables` accepts any type | `_coerce_tunable` coerces each value to its default's type; uncoercible values rejected, not stored | `service.py` |
+| **D-11** integral-float tunable breaks response sigs | Server `canonical_json` normalizes integral floats to int form to match the badge's `_cj_float`, incl. the `-0.0` exception | `crypto.py` |
+| **D-5** `HUNT_SYNC_DEFER` had no cap | `_defer_for_bar` caps the hold at `HUNT_SYNC_DEFER_MAX_S` from the **last successful sync**; honours the on/off tunable | `gotcha_app.py` |
+| **D-22** game block lost on resume / offline target not admitted | `start()` clears the change-gate caches and re-pushes the game block + `set_game_context` | `gotcha_app.py` |
+| **D-25** malformed truce schedule fails open | `from_sync` adopts a schedule only when **both** ends parse as HH:MM; else keeps the DEFAULTS 22:00–08:00 window (fail closed) | `gotcha.py` |
+| **D-27** corrupt-but-valid-JSON state poisons sync | `load()` type-guards each key against its blank default (a wrong-typed value is rejected) | `gotcha.py` |
+| **D-28 / D-31** enrolls as BadgeXXXX / hardcoded version | Enroll under the chosen name (auto-nick only when unset); report the real MANIFEST version via `_app_version()` | `gotcha_app.py` |
+| **D-29** ALIVE advertised unconditionally | `_make_game_block` sets ALIVE only when not dead and PROTECTED when protected (derived from status) | `gotcha_app.py` |
+| **D-32** game peers leak into friends UI | Same root as C-5 (`current_peers`/`has_peers` filter) | `ble_proximity.py` |
+| **D-40** non-ASCII in the always-visible chip | `·`/`—` → `-` (built-in montserrat fonts are ASCII-only) | `gotcha_app.py` |
+
+## Regression tests added (8)
+
+`test_two_kills_in_one_batch_both_land` (D-12), `test_a_heartbeat_cannot_rotate_the_live_commitment` (C-2),
+`test_a_late_killed_by_after_respawn_leaves_the_victim_killable` (C-3),
+`test_bounty_kill_does_not_orphan_the_victims_hunter` (D-8),
+`test_heartbeat_app_version_is_capped` (C-1) — in `tests/test_server_api.py`;
+integral-float payloads incl. `-0.0` in `tests/test_server_crypto.py` (D-11);
+`test_current_peers_and_has_peers_exclude_game_admitted` (C-5/D-32) in `tests/test_ble_proximity.py`;
+`test_from_sync_malformed_truce_schedule_fails_closed` (D-25) and
+`test_gotcha_state_load_valid_json_wrong_types_degrades_safely` (D-27) in `tests/test_gotcha.py`.
+These close the two test shortcuts the review named: *one kill per batch after `_force_target`*,
+and *two group-sharing badges*.
+
+## Non-obvious implementation notes
+
+- **`killed_by` life resolution (C-3):** the query is
+  `started_at <= at AND (ended_at IS NULL OR ended_at >= at) ORDER BY life_id ASC LIMIT 1`.
+  Inclusive `>=` + earliest life is deliberate — `apply_death` sets the old life's
+  `ended_at` and the new life's `started_at` to the **same instant**, so a death that
+  lands on the boundary must map to the life that *ended* there, not the one that began.
+  Getting this wrong first broke `test_both_halves_of_one_death_dedupe` and
+  `test_a_replayed_soul_cannot_kill_the_next_life` (a spurious voided row on the new life).
+- **D-12 vs `reconcile`:** a naive per-event re-read of the reporter row also picks up
+  `reconcile`'s target reassignment (it strips a's target once the victim goes dormant),
+  which broke `test_a_kill_made_before_the_truce_still_counts_when_it_uploads_later`. The
+  fix uses the pre-`reconcile` entry snapshot for the first event and refreshes only *after*
+  an accepted event.
+- **D-11 float parity:** the badge's `_cj_float` keeps `-0.0` as `"-0.0"` (guarded), so the
+  server normalizer mirrors that exact exception — the crypto test pins it with a `-0.0`
+  payload.
+
+## Deferred (with reason) — not blocking, noted for follow-up
+
+- **D-20 / D-21 (radar segment mappings)** — the review sequences these *with* the
+  worn-on-worn walk as calibration; existing tests pin the current mapping. Re-deriving
+  `lit` blind risks miscalibrating the only proximity cue.
+- **D-23 / D-24 (blocking I/O on the OS loop; event-driven connectivity)** — a `_thread`
+  dispatch / `ConnectivityManager`-event refactor in untested glue; higher risk.
+- **D-6 / D-7 (opt-out / heartbeat reaching the server)** — need `flush_events`/heartbeat
+  call sites wired into the Activity loop; review scopes consequences to Phase 3+.
+- **D-26 (unsynced-clock phantom truce)** — needs nuanced cross-module sound-suppression.
+- **D-30, D-33, D-13–D-19** — HTTPS (Phase 5), hardware layout, and code-level anti-cheat
+  items, several unreproduced and off the Phase-3 critical path.
+- **D-38 / D-39 and other MINORs** — low real-world risk (ping wrap at 12.4 days vs 3-day
+  camp) with host-test friction.
+
+## Verification
+
+```bash
+python3 -m pytest -q     # 321 passed in ~8 s
+python3 -m py_compile app/com.fri3dcamp.fri3dfriends/{gotcha_app,fri3d_friends,ble_proximity,gotcha}.py
+```
+
+`gotcha_app.py` and `fri3d_friends.py` remain host-untested (the review flagged this);
+their fixes were compile-checked and kept to small, clearly-correct edits. The pure
+layers (`gotcha.py`, `ble_proximity.py` wire half, all server modules) carry the new tests.
+
+---
+
 # !Fri3d Friends — Gotcha Phases 0–2 full code review (5 CRITICALs, all reproduced) — 2026-07-31
 
 A read-only review of **Phase 0 (hardware spikes), Phase 1 (backend) and Phase 2

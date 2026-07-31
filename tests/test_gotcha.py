@@ -628,3 +628,40 @@ def test_enroll_body_shape():
     assert b == {"badge_key": "abcd1234", "display_name": "Otter 42",
                  "groups": ["Hack42"], "commitment": "c" * 64,
                  "app_version": "0.11.0", "board": "2026"}
+
+
+def test_from_sync_malformed_truce_schedule_fails_closed():
+    """D25: a host typing "22.00" instead of "22:00" must NOT disable the camp
+    night truce -- a malformed schedule keeps the DEFAULTS 22:00-08:00 window
+    (fail closed), the §10.4 "screaming badge in a tent of sleeping kids" case."""
+    cfg = gotcha.GameConfig.from_sync(
+        None, {"truce_schedule": {"from": "22.00", "to": "08:00"}})
+    assert cfg.get("truce_from") == "22:00"       # default kept, not "22.00"
+    assert cfg.get("truce_to") == "08:00"
+    # 23:00 camp-local (21:00 UTC) is inside the default night truce.
+    assert gotcha.truce_active(75600, cfg, None) == "camp"
+    # A well-formed schedule is still adopted.
+    ok = gotcha.GameConfig.from_sync(
+        None, {"truce_schedule": {"from": "23:00", "to": "07:00"}})
+    assert ok.get("truce_from") == "23:00" and ok.get("truce_to") == "07:00"
+
+
+def test_gotcha_state_load_valid_json_wrong_types_degrades_safely():
+    """D27: a structurally-corrupt but JSON-valid file ({"state": "broken"}) must
+    not copy a wrong-typed value into state, where apply_sync would then do
+    s["alive"]=... on a str and die on every sync forever."""
+    import json as _json
+    bad = _json.dumps({"enrolled": True, "pid": 1001, "state": "broken",
+                       "queue": "not-a-list", "clock_offset_s": "nope"})
+    store = {"gotcha.json": bad}
+    gs = gotcha.GotchaState("gotcha.json",
+                            reader=lambda: store.get("gotcha.json"),
+                            writer=lambda *a: None, renamer=lambda *a: None)
+    gs.load()
+    assert isinstance(gs.d["state"], dict)        # wrong-typed value rejected
+    assert isinstance(gs.d["queue"], list)
+    assert gs.d["clock_offset_s"] == 0
+    # apply_sync no longer explodes on the poisoned state.
+    gs.apply_sync({"server_time": 1000,
+                   "me": {"pid": 1001, "alive": True, "status": "active"}}, 900)
+    assert gs.d["state"]["alive"] is True

@@ -57,6 +57,14 @@ def ingest_batch(db, game, reporter, events, config=None, ts=None, rng=None):
     cfg = config or service.config_for(game)
     ts = clock.now() if ts is None else ts
     accepted, rejected = [], []
+    reporter_pid = int(reporter["pid"])
+    # A mutable, request-entry snapshot of the reporter. Handlers see this rather
+    # than a per-event DB re-read, so `reconcile` below (which repairs the ring for
+    # *other* players and may reassign this reporter's target once its victim goes
+    # dormant) cannot retroactively invalidate a kill the badge already committed
+    # to offline. Intra-batch target inheritance is folded back in explicitly after
+    # each accepted event (D12), so a table sweep still works.
+    reporter = dict(reporter)
 
     service.reconcile(db, game, cfg, ts, rng)
 
@@ -76,11 +84,13 @@ def ingest_batch(db, game, reporter, events, config=None, ts=None, rng=None):
         try:
             _handle(db, game, reporter, ev, cfg, ts, rng)
         except Rejected as r:
+            db.rollback()                             # discard any partial write
             _record(db, reporter, ev, ts, False, r.reason)
             rejected.append({"uuid": uuid, "reason": r.reason})
             db.commit()
             continue
         except Exception as exc:                      # a bug must not eat the batch
+            db.rollback()                             # C4: never commit a half kill
             _record(db, reporter, ev, ts, False, "error")
             rejected.append({"uuid": uuid, "reason": "error"})
             db.execute("UPDATE events SET payload_json=? WHERE uuid=?",
@@ -90,8 +100,15 @@ def ingest_batch(db, game, reporter, events, config=None, ts=None, rng=None):
         _record(db, reporter, ev, ts, True, None)
         accepted.append(uuid)
         db.commit()
+        # D12: a kill in this same batch may have moved the reporter's target via
+        # ring inheritance; fold it in so a table sweep's next kill is not refused
+        # `not_your_target`. Refreshed only after an accepted event -- rejects and
+        # errors rolled back, so nothing changed.
+        fresh = service.player_by_pid(db, reporter_pid)
+        if fresh is not None:
+            reporter = dict(fresh)
 
-    db.execute("UPDATE players SET last_event_at=? WHERE pid=?", (ts, reporter["pid"]))
+    db.execute("UPDATE players SET last_event_at=? WHERE pid=?", (ts, reporter_pid))
     db.commit()
     return accepted, rejected
 
@@ -154,8 +171,13 @@ def _h_kill(db, game, assassin, ev, cfg, ts, rng):
     if life is None:
         raise Rejected("bad_soul")
 
-    dup = db.one("SELECT * FROM kills WHERE victim_pid=? AND victim_life_id=?",
-                 (int(victim["pid"]), int(life["life_id"])))
+    # C3: a *voided* row (e.g. a `killed_by` that landed during spawn protection)
+    # must not occupy the life's kill slot -- otherwise every later genuine kill on
+    # this same live life is refused `already_dead` forever, and since the victim
+    # never dies, life_id never advances. A voided row spares the victim; it must
+    # not immunise them.
+    dup = db.one("SELECT * FROM kills WHERE victim_pid=? AND victim_life_id=? "
+                 "AND voided=0", (int(victim["pid"]), int(life["life_id"])))
     if dup is not None:
         # The victim's own report already landed: one death, two reports (§10.3).
         if int(dup["assassin_pid"]) == int(assassin["pid"]):
@@ -206,11 +228,27 @@ def _h_killed_by(db, game, victim, ev, cfg, ts, rng):
     if attacker is None:
         raise Rejected("no_such_attacker")
 
-    # Which life is this report about? If the victim is already marked dead, the
-    # life that ended is the previous one -- the assassin's half got here first.
-    reported_life = int(victim["life_id"])
-    if victim["base_status"] == state.DEAD and reported_life > 0:
-        reported_life -= 1
+    # Which life is this report about? Resolve it from the `lives` history by the
+    # time the death happened, NOT from players.life_id (C3): a killed_by that sat
+    # in an offline queue across the victim's own respawn is about the life that
+    # was live at `at`, which may be several lives back. Keying it to the current
+    # life instead parks a voided row on the live life and makes the victim
+    # permanently unkillable. Falls back to the dead-shift heuristic if no life
+    # window contains `at`.
+    # `ended_at >= at` (inclusive) and the earliest matching life: a death lands
+    # exactly on the life boundary (apply_death sets the old life's ended_at and
+    # the new life's started_at to the same instant), and the report is about the
+    # life that *ended* there -- so at a tie prefer the lower life_id.
+    lrow = db.one(
+        "SELECT life_id FROM lives WHERE pid=? AND started_at <= ? "
+        "AND (ended_at IS NULL OR ended_at >= ?) ORDER BY life_id ASC LIMIT 1",
+        (int(victim["pid"]), at, at))
+    if lrow is not None:
+        reported_life = int(lrow["life_id"])
+    else:
+        reported_life = int(victim["life_id"])
+        if victim["base_status"] == state.DEAD and reported_life > 0:
+            reported_life -= 1
 
     existing = db.one(
         "SELECT * FROM kills WHERE victim_pid=? AND victim_life_id=?",
@@ -291,8 +329,19 @@ def _apply_kill(db, game, assassin, victim, cfg, ts, at, rng,
     targets = service.targets_map(db, game["id"])
     huntable = service.huntable_set(db, game, cfg, ts) - {int(victim["pid"])}
     gbp = service.groups_by_pid(db, game["id"])
-    changes, conflicted = ring.inherit(targets, huntable, int(assassin["pid"]),
-                                       int(victim["pid"]), gbp, rng)
+    if is_target:
+        # Classic inheritance (§3.2): the assassin was hunting the victim, so it
+        # takes over the victim's target.
+        changes, conflicted = ring.inherit(targets, huntable, int(assassin["pid"]),
+                                           int(victim["pid"]), gbp, rng)
+    else:
+        # D8: a bounty kill -- the assassin is NOT the victim's hunter. Inheriting
+        # would hand the assassin the victim's target and orphan the victim's real
+        # hunter, who is then un-hunted for the rest of camp (§3.2 rule 10, §3.3).
+        # Splice the victim out so *their* hunter inherits, and leave the assassin's
+        # own pointer alone.
+        changes = ring.splice_out(targets, huntable, int(victim["pid"]))
+        conflicted = False
 
     kill_id = _insert_kill(db, game, assassin, victim, at, ts, points, kind,
                            rssi, reported_by, life_id=life_id)
@@ -313,28 +362,44 @@ def _apply_kill(db, game, assassin, victim, cfg, ts, at, rng,
 
 def _insert_kill(db, game, assassin, victim, at, server_at, points, kind, rssi,
                  reported_by, voided=0, void_reason=None, life_id=None):
+    life = int(victim["life_id"]) if life_id is None else int(life_id)
+    if not voided:
+        # C3: a prior voided marker on this same life (e.g. a killed_by rejected
+        # `protected`) would collide with UNIQUE(victim_pid, victim_life_id) and
+        # this genuine kill would be lost. Voided rows carry no score and no
+        # kill_groups, and the event stays in `events` for audit, so clearing the
+        # marker before the real death lands is safe.
+        db.execute("DELETE FROM kills WHERE victim_pid=? AND victim_life_id=? "
+                   "AND voided=1", (int(victim["pid"]), life))
     cur = db.execute(
         "INSERT INTO kills(game_id, assassin_pid, victim_pid, victim_life_id, at, "
         "server_at, points, kind, rssi, reported_by, voided, void_reason) "
         "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-        (game["id"], int(assassin["pid"]), int(victim["pid"]),
-         int(victim["life_id"]) if life_id is None else int(life_id),
+        (game["id"], int(assassin["pid"]), int(victim["pid"]), life,
          at, server_at, points, kind, rssi, reported_by, voided, void_reason))
     return int(cur.lastrowid)
 
 
 def _rotate_commitment(db, victim, commitment, ts):
-    """Install a fresh soul commitment for the victim's *current* life (§3.4).
+    """Install a soul commitment for the victim's *current* life (§3.4) -- but only
+    if that life has none yet.
 
-    Safe to accept at any time: because `lives` keeps the history, rotating
-    cannot invalidate a proof that is still in someone's offline queue, so a
-    victim gains nothing by rotating early.
+    C2: `lives` keeps history *across* lives, but a commitment must also be binding
+    *within* a life. If it is not, a victim being chased can heartbeat a fresh
+    commitment, overwrite in place the soul the assassin already holds, and every
+    queued genuine kill is then refused `bad_soul` -- the victim becomes unkillable
+    at will. A respawn opens the new life with a NULL commitment (`apply_death`),
+    so the legitimate post-respawn publish still lands; a second rotation within
+    the same life is silently ignored.
     """
     if not commitment:
         return
     pid = int(victim["pid"])
     row = db.one("SELECT life_id FROM players WHERE pid=?", (pid,))
     life = int(row["life_id"]) if row else int(victim["life_id"])
+    cur = db.one("SELECT commitment FROM lives WHERE pid=? AND life_id=?", (pid, life))
+    if cur is not None and cur["commitment"]:
+        return                       # already committed this life; do not overwrite
     db.execute("UPDATE players SET commitment=? WHERE pid=?", (commitment, pid))
     service.start_life(db, pid, life, commitment, ts)
 
@@ -458,7 +523,12 @@ def _h_heartbeat(db, game, player, ev, cfg, ts, rng):
     battery = _int_or_none(ev.get("battery"))
     peers = _int_or_none(ev.get("peers_seen"))
     bg = 1 if ev.get("background") else 0
+    # Cap like enrollment does (C1): the admin dashboard interpolates this into
+    # innerHTML, and the heartbeat is the one write path that otherwise stored it
+    # with no length bound at all.
     app_version = ev.get("app_version")
+    if isinstance(app_version, str):
+        app_version = app_version[:16]
     db.execute(
         "UPDATE players SET battery=COALESCE(?, battery), "
         "peers_seen=COALESCE(?, peers_seen), bg_service=?, "

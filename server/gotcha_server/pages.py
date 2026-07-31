@@ -247,6 +247,10 @@ async def admin_page(request: Request):
 </main>
 <script>
 async function j(u, opt){ const r = await fetch(u, opt); if(!r.ok) throw new Error(await r.text()); return r.json(); }
+// C1: every player-supplied string (display_name, app_version, broadcast) must be
+// escaped before it touches innerHTML -- a flashable badge is the stated threat
+// model and this dashboard runs same-origin with the gotcha_admin cookie.
+function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function stat(n,l,cls){ return '<div class="stat"><div class="n'+(cls?' '+cls:'')+'">'+n+'</div><div class="l">'+l+'</div></div>'; }
 async function tick(){
   let d;
@@ -273,19 +277,19 @@ async function tick(){
     stat(f.below_20,'onder 20%', f.below_20>0?'bad':'') + stat(f.split.app,'app open') +
     stat(f.split.background,'achtergrond');
   document.getElementById('versions').innerHTML = 'versies: ' +
-    Object.entries(f.versions).map(([k,v])=>'<span class="pill">'+k+': '+v+'</span>').join(' ');
+    Object.entries(f.versions).map(([k,v])=>'<span class="pill">'+esc(k)+': '+esc(v)+'</span>').join(' ');
   const g = d.game;
   document.getElementById('gamestate').innerHTML =
     '<span class="pill' + (g.state==='running'?' on':'') + '">' + g.state + '</span>' +
     (g.truce_active ? '<span class="pill warn">WAPENSTILSTAND</span>' : '') +
-    (g.broadcast ? '<span class="pill">omroep: ' + g.broadcast + '</span>' : '');
+    (g.broadcast ? '<span class="pill">omroep: ' + esc(g.broadcast) + '</span>' : '');
   const L = d.leaders;
   document.getElementById('leaders').innerHTML =
     '<table><tr><th>#</th><th>speler</th><th>punten</th><th>reeks</th></tr>' +
-    L.total.map((e,i)=>'<tr><td>'+(i+1)+'</td><td>'+e.name+' #'+e.pid+'</td><td>'+e.score+'</td><td>'+e.kills+'</td></tr>').join('') +
+    L.total.map((e,i)=>'<tr><td>'+(i+1)+'</td><td>'+esc(e.name)+' #'+e.pid+'</td><td>'+e.score+'</td><td>'+e.kills+'</td></tr>').join('') +
     '</table>';
   document.getElementById('hits').innerHTML = L.hitlist.length
-    ? L.hitlist.map(x=>'<span class="pill warn">'+x.name+' #'+x.pid+' &middot; '+x.streak+'</span>').join(' ')
+    ? L.hitlist.map(x=>'<span class="pill warn">'+esc(x.name)+' #'+x.pid+' &middot; '+x.streak+'</span>').join(' ')
     : 'niemand';
   document.getElementById('clock').textContent = new Date(d.server_time*1000).toLocaleTimeString('nl-BE');
 }

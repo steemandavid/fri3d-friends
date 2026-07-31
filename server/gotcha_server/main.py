@@ -29,9 +29,12 @@ def main(argv=None):
 
     settings = Settings(db_path=args.db, admin_password=args.admin_password)
     app = create_app(settings)
+    # D9: this process IS the edge -- there is no reverse proxy in front of it (see
+    # DEPLOY_LOG). Trusting X-Forwarded-For from any peer would let a Sybil farmer
+    # forge request.client.host per /v1/enroll and slip under §9.5's only Sybil
+    # signal (enroll_clusters grouped by ip). Take the real socket address.
     uvicorn.run(app, host=args.host, port=args.port, log_level="info",
-                access_log=True, proxy_headers=True,
-                forwarded_allow_ips="*")
+                access_log=True)
 
 
 if __name__ == "__main__":

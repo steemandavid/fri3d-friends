@@ -26,9 +26,40 @@ import os
 import secrets
 
 
+def _normalize_floats(obj):
+    """Render an integral-valued float the way the badge does (D11).
+
+    The badge's hand-rolled `canonical_json` emits `2500.0` and `1.0` as `2500`
+    and `1` (see `gotcha._cj_float`); stdlib `json.dumps` emits `2500.0`/`1.0`.
+    Because both sides HMAC over `canonical_json(payload)`, that one-character
+    disagreement silently breaks *every* response signature the moment an admin
+    stores an integral-valued tunable (e.g. `PROX_ALPHA_UP: 1.0`). Collapsing
+    integral floats to ints here makes the two implementations agree for all
+    values, whatever the wire JSON happens to look like.
+    """
+    if isinstance(obj, bool):
+        return obj
+    if isinstance(obj, float):
+        # Mirror the badge's _cj_float exactly, including its -0.0 guard: an
+        # integral float collapses to its int form, EXCEPT negative zero, which
+        # the badge renders as "-0.0".
+        try:
+            if obj == int(obj) and not (obj == 0.0 and str(obj) == "-0.0"):
+                return int(obj)
+        except (ValueError, OverflowError):
+            pass
+        return obj
+    if isinstance(obj, dict):
+        return {k: _normalize_floats(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_normalize_floats(v) for v in obj]
+    return obj
+
+
 def canonical_json(obj):
     """Keys sorted, no whitespace (plan §6.2)."""
-    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return json.dumps(_normalize_floats(obj), sort_keys=True,
+                      separators=(",", ":"), ensure_ascii=False)
 
 
 def hmac_hex(key, msg):
