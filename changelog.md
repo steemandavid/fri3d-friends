@@ -1,3 +1,259 @@
+# !Fri3d Friends — Gotcha Phases 0–2 full code review (5 CRITICALs, all reproduced) — 2026-07-31
+
+A read-only review of **Phase 0 (hardware spikes), Phase 1 (backend) and Phase 2
+(badge-side game)** at commit `80568a9` / MANIFEST 0.11.2, against
+`Implementation_Plan_Gotcha_20260726.md`. Output:
+**`Code_Review_Phase0-2_20260731_1803.md`** (1102 lines) in the project root.
+**No project file was modified** — `git status` shows only the new report.
+
+**Verdict: MAYBE — do not start Phase 3 until the five CRITICALs are closed.**
+Phase 3 (duel + Reveal) builds on the kill path, the ring and the LED radar bar;
+three CRITICALs are *in* the kill path and one disables the radar bar.
+
+## Method
+
+Plan mode first, then four parallel review agents (Phase 1 core / Phase 1 edge /
+Phase 2 pure half / Phase 2 integration), with **every load-bearing claim
+re-verified by me** before it entered the report. Findings are marked
+✅ *reproduced* (executed on this commit) vs ⚠️ *code-level* (read, not run).
+Two agent claims did **not** survive verification and were corrected or dropped —
+subagent output was treated as a lead, not as a finding.
+
+Repro harness: throwaway pytest files in the session scratchpad driving the real
+ASGI app through `tests/badge_sim.py`, run with
+
+```bash
+PYTHONPATH="$PWD/app/com.fri3dcamp.fri3dfriends:$PWD/server:$PWD/tests" \
+  python3 -m pytest <scratchpad>/test_verify.py -q -s -p no:cacheprovider -p conftest
+```
+
+(the `-p conftest` + `PYTHONPATH` dance is needed because the file lives outside
+the project rootdir, so pytest will not pick `tests/conftest.py` up on its own).
+
+Project suite at review time and after: **313 passed, 0 failed, 0 skipped** (7.7 s).
+
+## 1. Phase 0 — re-audited from raw data: PASS
+
+All three analysis tools were re-run against the committed logs. **Every published
+figure reproduces exactly**, which is the strongest single result of the review.
+
+| Tool | Reproduced |
+|---|---|
+| `tools/analyze_coex.py` | 3.66 → 3.01 → 1.53 adv/s at 50 % duty; worst gap 14.9 s vs `EVICT_MS` 30 s; GATT handle groups `[16,18] [21,23,25,27,30,32] [35,37,40,42]` |
+| `tools/analyze_rssi.py` | NO-GO across all five walks (up 32–69 %, bar 80 %) |
+| `tools/analyze_shadow.py` | §11.1's pre-committed `KILL_RSSI` table and the asymmetric-vs-symmetric arm windows, line for line |
+
+Both binding Phase 0 rules **are** honoured in shipped code: sync is deferred while
+the bar is lit (`gotcha_app.py:156-158`), and the scan stays at 50 % unconditionally
+so a hunt is never starved. The §11.1 correctness requirement — never ship the
+symmetric `a=0.3` EWMA on the hunt path — is also met.
+
+Phase 0 findings (all minor):
+
+- `KILL_RSSI` ships **−65** though §11.1 pre-committed **−68** when the worn-on-worn
+  walk is skipped (it was). *Nuance:* `analyze_shadow.py`'s own decision rule picks
+  −65 at both 0 dB and the expected −4 dB penalty, so −65 is defensible on the
+  evidence — but the point of a pre-commitment is not to relitigate it.
+- **Plan correction:** §11.1 says shipping −68 costs *"3 % false arming"*. Its own
+  table gives **10 %** at −68; 3 % is the −65 figure.
+- `tools/analyze_rssi.py`'s verdict banner states the **opposite** of its conclusion
+  (*"a single triple meets the >=80% bar"* — should be *"no single triple"*). Report
+  text is correct; only the tool string is inverted.
+- The 12.5 %-busy coex row rests on **n=9 adverts per peer**; don't quote it as precise.
+- The 12.5 % background scan duty is unimplemented (~37 mA unbanked) — safe direction,
+  belongs to the §8.7 lever-4 ladder.
+
+## 2. The five CRITICALs (all reproduced)
+
+| # | Where | What |
+|---|---|---|
+| **C-1** | `pages.py:275-289` | **Stored XSS on the admin dashboard.** The player card defines `esc()`; the admin script does not, and interpolates `app_version`, `broadcast`, `display_name` into `innerHTML`. `_h_heartbeat` (`events.py:460-466`) stores `app_version` with **no length cap** (enroll caps at 16). One signed heartbeat from any enrolled player → script runs same-origin with the `gotcha_admin` cookie on the host's phone. |
+| **C-2** | `events.py:326-339` → `service.py:125-130` | **The soul commitment is not binding.** `_rotate_commitment` calls `start_life` with the *current* `life_id`, and the upsert overwrites the live commitment in place. `lives` keeps history across lives, not within one. Reproduced: victim heartbeats a fresh commitment mid-chase → assassin's genuine kill returns `bad_soul`, victim stays active. Defeats §3.4 entirely. |
+| **C-3** | `events.py:157-165` + `:211-235` | **A voided kill row permanently blocks that life.** The dup lookup does not filter `voided=0`, and `kills` has `UNIQUE(victim_pid, victim_life_id)`. Reproduced **with zero malice**: assassin kills v (life 0→1) → v respawns → v's queued `killed_by` lands, voided as `protected` at life **1** → every later legitimate kill on life 1 returns `already_dead`, and since v never dies, `life_id` never advances. `RESPAWN_S` is 30 min, so this happens on the first camp afternoon. |
+| **C-4** | `events.py:83-89`, `db.py:292` | **No rollback anywhere.** The `except` arm records the event as *rejected* and commits. `Database.rollback` has **zero callers**; `db.lock`'s docstring ("held for the whole of a request's read-modify-write, see routes") is false — no route acquires it. A mid-handler failure banks the score, kills nobody, leaves an orphan `kills` row (→ C-3), and the badge drops the event. |
+| **C-5** | `fri3d_friends.py:1138` ← `ble_proximity.py:733` ← `:223` | **A game-admitted peer crashes the render tick.** `admit_peer` admits the target with **no shared group** (D9), so `shared_id=None`; `current_peers()` emits it; `_fill_row` calls `_color_for_gid(gid)` unguarded → `None * 137.508` → `TypeError`, swallowed by the loop's blanket `except Exception: pass` (`:1905`). Everything after `_refresh_nearby()` is skipped for as long as the target is in range — **`_update_leds` (the Phase 2 headline LED radar bar), battery, clock, NTP resync, banner auto-hide, backlight dim.** |
+
+C-5's blast radius, in loop order:
+
+```
+1883  self._render_gotcha()      <- runs (this is why the field test looked fine)
+1886  self._refresh_nearby()     <- RAISES
+1892  self._update_leds(now)     <- SKIPPED   <- the §8.8 LED radar bar
+1893-97 battery / clock / setup / NTP / banner / dim   <- SKIPPED
+```
+
+Phase 2's stated exit criterion (*"a live on-screen radar bar **and** a live LED
+bar"*) is therefore **not met**.
+
+## 3. Why none of this was caught
+
+Two specific test shortcuts, each of which removed exactly the condition under
+which the bug exists:
+
+1. **Every full-stack kill test posts one kill per batch after `_force_target`.**
+   C-3, the bounty-orphan bug and the sweep bug all live in that gap.
+2. **The two-badge hardware test used badges that share a group** (9070 + 1cdb),
+   so `shared_id` was never `None` and C-5 could not fire.
+
+Plus: `current_peers()` has **no test at all** (needs a `time.ticks_*` shim), and
+`gotcha_app.py` has **no tests at all**.
+
+Four tests also pin the *bug* rather than the spec — notably
+`test_hunt_ping_silent_below_floor_and_disabled` asserts `hunt_ping(-80) is None`,
+but −80 **is** `REVEAL_RSSI`, where §8.8.6 specifies a 700 ms ping.
+
+**Six cheap additions would have caught nine findings:** assert the alive-player
+pointer graph is one cycle after every full-stack kill test; post two kills in one
+flush; flush a `killed_by` after respawn; rotate a commitment via heartbeat between
+a kill and its flush; call `current_peers()` with a game-admitted peer; put an
+integral float in the crypto payload set.
+
+## 4. Selected MAJORs (33 total)
+
+**Reproduced:**
+
+- **Two kills in one batch → the second is rejected** `not_your_target`
+  (`events.py:61-96` reads the reporter row once per batch). D16 removed the kill
+  cooldown *specifically* so sweeps are legal, and `HUNT_SYNC_DEFER` guarantees a
+  sweep arrives as one batch. Streak under-counts too.
+- **Every bounty kill orphans a player.** `_apply_kill` applies §3.2's inheritance
+  to bounty kills, where the assassin is not the victim's hunter. Reproduced on a
+  10-player ring: `orphans=[1007] double-hunted={1010: [1002, 1003]}`. `reconcile()`
+  never repairs it — loop 3 checks every player *has* a target, never that every
+  player *has a hunter*.
+- **An integral-float tunable silently stops every badge syncing.** Badge
+  `canonical_json` renders `2500.0` as `2500`; the server's stdlib `json.dumps`
+  renders `2500.0`. Proved end-to-end: `PROX_ALPHA_UP: 1.0` → badge response
+  verification `False`. `set_tunables` stores admin values with no coercion.
+- **A malformed truce schedule fails OPEN.** `{"from": "22.00"}` → `truce_active`
+  at 23:00 camp returns `'none'`. A host typing `22.00` disables the night truce on
+  every badge within `SYNC_S`.
+- **An unsynced clock gives a 6 h phantom truce, then none ever**
+  (camp-local `02:00 + uptime`).
+- **Corrupt-but-valid-JSON `gotcha.json` kills syncing permanently** —
+  `{"state": "broken"}` → `apply_sync` raises `TypeError`, `_do_sync` catches,
+  logs and reschedules forever.
+- **Three different RSSI→segment mappings.** Screen bar `round(5f)`, spec `ceil(5f)`,
+  LED bar threshold-based — and the **LED bar is frozen at 4-of-5 amber across
+  −80…−66 dBm**, the entire final approach. At kill range the LED bar says 5/5 red
+  while the screen says 3/5.
+- **Hunt-ping silent floor off by one segment** (`thr = pfs/5.0` = 0.6, but the
+  screen bar's segment 3 starts at 0.5). §8.8.6's 700 ms rung is unreachable;
+  single-tap pings exist only in the 4 dB window −69…−65. `_bar_lit()` uses a
+  *third* threshold, so "the bar is at `PING_FROM_SEG`" means three different dBm
+  values in three places.
+
+**Code-level:**
+
+- `HUNT_SYNC_DEFER_MAX_S` defined on both sides, **enforced on neither** — the
+  server README explicitly says *"Phase 2 must implement it"*. A permanently lit bar
+  starves sync; at small scale the server reads it as a camp-wide outage.
+- **Opt-out never reaches the server.** `flush_events` has **no call site anywhere
+  in `app/`**, and no `optout` event is queued. A player who withdraws consent stays
+  somebody's target, unfindable, for up to `TARGET_STALE_H` (6 h).
+- **No heartbeat is ever sent** — yet `tests/badge_sim.py:107` implements the §9.3
+  cadence correctly. The reference harness and the shipped badge have diverged.
+- **The v2 game block is lost after any pause/resume** — `onResume` calls
+  `_ble.begin(...)` with no `game=`, and `_push_game_context` is cache-gated so it
+  never re-pushes. D3's "closing the app is a shield" arriving by accident. An
+  offline badge never admits its target at all.
+- `forwarded_allow_ips="*"` with **no reverse proxy** → client IP is caller-controlled,
+  voiding the enroll rate limit *and* §9.5's only Sybil detector.
+- `set_tunables` accepts any value of any type, including server-only `SIG_WINDOW_S`
+  → `{"SIG_WINDOW_S": "ten"}` is a camp-wide 500 with no signed error.
+- Blocking I/O on the OS asyncio loop: `_conn_probe` is an `async def` with **zero
+  awaits** containing a 4 s socket connect + an 8 s `urequests` GET, every 30 s.
+- §7 connectivity is **polled** (spec says event-driven), `online` is never
+  invalidated when WiFi drops, and the 1.1.1.1 fallback is missing.
+- `GFLAG_ALIVE` advertised unconditionally (dead badges broadcast ALIVE — inverts D11).
+- Badge enrolls as **`BadgeXXXX`**, never the player's chosen name (§13).
+- `app_version` hardcoded `"0.11.0"` vs MANIFEST `0.11.2`.
+- Enrollment posts `player_key` over **plain HTTP** (§6.2 requires the one TLS handshake).
+- Backdated/forward-dated `at` bypasses spawn protection, truce and quiet hours.
+- `peers_seen > 0` refreshes your **own** `last_seen`, so §10.1 never fires in company.
+- `ATTACK_COOLDOWN_MS` is written to `attacks` and **never read**.
+- Batch overflow returns kills in the `rejected` list → the reference badge drops them.
+- Admin: cleartext password/cookie on :8080, no login throttle, 120k-round PBKDF2
+  synchronously on the event loop, unbounded body buffered pre-auth.
+
+## 5. Notable MINOR/INFO
+
+- `gotcha_dbg.txt` is change-gated on a **float** (`prox`), so it writes to flash
+  ~1–3×/s during a hunt, on the render thread. Comment claims "negligible flash wear".
+- `SILENT = True` still ships in 0.11.2 — the hunt ping is mute on every badge.
+- The demo task is untracked and uncancelled (`_stop_task` covers `_task`,
+  `_splash_task`, `_exch_task` only) — the F-4 class the exchange task is guarded against.
+- `solid_frame` is written **and tested** but has **no caller** → §8.8.3's
+  dead/protected/battery-low strip states never appear. §8.8.7 `KWIJT` is absent entirely.
+- `_hex` is **defined twice** (`gotcha.py:40, 704`); the second shadows the first.
+- Three non-ASCII chars (`·`, `—`) in the always-visible status chip; the built-in
+  fonts are ASCII-only (the codebase already avoids U+2026 for this reason).
+- `hunt_ping` uses raw `now_ms - last_ping_ms` instead of `ticks_diff` → permanently
+  silent after the 2³⁰ wrap (~12.4 days; camp is 3 days).
+- **`DESIGN.md` §11 is not marked superseded**, which §8.8.1 requires when the radar
+  bar ships. §13's required README statement ("Gotcha is an optional online mode")
+  is absent from both `README.md` and the MANIFEST `long_description`.
+- The truce close-out note is **stale**: both sides already ship 22:00–08:00, not
+  23:00–07:00. Two of the three pre-camp dev flags remain.
+- **Demo mode is built**, contrary to "demo deferred" in the commit message — what
+  was deferred is the on-badge tap-verification.
+
+## 6. Things confirmed correct (worth not re-reviewing)
+
+- §4 HSNT v2 wire format byte-for-byte; `OVERHEAD = 12` reproduces the plan's arithmetic;
+  company-id + magic gating, reserved-bit rejection, UTF-8 boundary truncation.
+- `admit_peer` / `evict_lru` pure and correct; the target survives eviction as the
+  oldest entry. IRQ discipline preserved (bounded 256-entry `_pending`; all parsing
+  on the loop thread).
+- Request signing matches the server byte-for-byte including the **full request target
+  with query** (server README interpretation #1); nonce replay via
+  `PRIMARY KEY (pid, nonce)` with no TOCTOU; constant-time compare throughout.
+- Badge tunable defaults vs server: **zero value mismatches** on shared keys.
+- Atomic temp+rename persistence with correct MicroPython flush/close semantics.
+- Truce/quiet half-open windows with midnight wrap; `_coerce` checks `bool` before `int`.
+- `state.py`'s interval algebra and `test_server_plan_parity.py`, which *measures* the
+  `outage_intervals()` rounding direction across all 60 bucket phases.
+- Prior Phase 5 review's five MAJORs (F-1…F-5) all fixed and recorded.
+- The opt-out fix `1191558` is complete **on the badge side** — every local path back
+  into enrollment traced; only the server half is missing.
+- No `WifiService.save_network/forget_network/disconnect` anywhere; no credential in
+  the repo. No age/cohort, no location, no `witnesses[]` in the schema (§13 honoured).
+
+## 7. Recommended fix order (from §9 of the report)
+
+**Blocking, before Phase 3 (~one focused day):** C-5 (one line in `_fill_row`) →
+C-2 (one `WHERE lives.commitment IS NULL`) → C-3 (`AND voided=0` + resolve
+`reported_life` from `lives` by `at`) → C-1 (`esc()` + cap `app_version`) →
+C-4 (`db.rollback()`) → sweep fix (re-read the reporter row per event) →
+bounty inheritance gate.
+
+**Then re-run the two-badge test with badges that do NOT share a group.**
+
+**Before the first playtest:** the `forwarded_allow_ips` one-liner, tunable type
+validation (fixes both the brick and the float-signature bug), the game-block
+re-push, the deferral cap, the three fail-open badge paths, the radar mappings
+(**before** the worn-on-worn walk — the walk calibrates a bar that currently
+disagrees with itself), and the name/alive-flag/version one-liners.
+
+**Then:** run the §11.1 walk and set `KILL_RSSI` from data rather than the fallback.
+
+## Notes
+
+- The review was read-only by construction: `git status` after the session shows a
+  single `??` entry, the report itself. Repro scripts live in the session scratchpad
+  and are ephemeral.
+- The project's habit of **writing reasons down at the code** (the four server
+  interpretation calls, `ring._interleave`'s local-minimum analysis, `clock.py`'s
+  fixed camp offset) made the audit tractable — worth keeping.
+- Conversely, four docstrings assert the **opposite** of their code
+  (`_rotate_commitment`, `db.lock`, `html_escape`, `_g_dbg`) and each actively
+  prevented its bug from being found.
+- The defects are not carelessness. They are two test shortcuts, each of which
+  removed exactly the condition under which the bug exists. Closing those two gaps
+  is worth more than any individual fix on the list.
+
+---
+
 # !Fri3d Friends — Gotcha Phase 2 close-out: first-run consent (§13) — 2026-07-31
 
 The last Phase 2 code piece — the **§13 first-run consent screen** — is built,
