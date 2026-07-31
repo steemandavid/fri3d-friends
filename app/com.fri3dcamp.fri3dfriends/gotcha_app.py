@@ -82,9 +82,12 @@ class GotchaController(object):
         self.name = ""
         self.groups = []
         self.sound_on = True
-        self.auto_enroll = True        # dev: enroll as soon as online + not yet.
+        self.auto_enroll = False       # consent (§13) drives enrollment, not auto
+        self.declined = False          # consent declined this session (re-asks boot)
         # derived view state (read by the renderer)
         self.online = None             # None=unknown, True/False
+        self.game_state = None         # /healthz game_state (lobby/running/...)
+        self.game_live = False         # a running game exists -> consent may show
         self.enrolled = False
         self.halted = False            # MY truce/quiet
         self.tgt_halted = False        # target's truce/quiet (gflags bit3)
@@ -175,6 +178,18 @@ class GotchaController(object):
             c.connect(addr)
             c.close()
             self.online = True
+            # game state (unsigned /healthz) -> drives the first-run consent gate
+            try:
+                import urequests
+                r = urequests.get(self.api_url.rstrip("/") + "/healthz", timeout=8)
+                try:
+                    d = r.json() if r.status_code == 200 else None
+                finally:
+                    r.close()
+                self.game_state = (d or {}).get("game_state")
+                self.game_live = self.game_state == "running"
+            except Exception:
+                pass
         except Exception:
             self.online = False
 
@@ -340,3 +355,19 @@ class GotchaController(object):
         self.state.save()
         self._next_sync_ms = 0         # re-join on the next sync
         self.enrolled = self.state.is_enrolled()
+
+    # -- first-run consent (§13) ---------------------------------------------
+    def consent_needed(self):
+        """Show the join-acknowledgement overlay? Only before the first ever
+        join, when a game is actually live, and not already declined/enrolling."""
+        return (self.online and self.game_live
+                and not self.ever_enrolled() and not self.declined
+                and not self._enrolling)
+
+    def request_enroll(self):
+        # Consent given -> enroll now. _do_enroll no-ops if somehow opted out.
+        if self.api_url and not self._enrolling:
+            self._kick(self._do_enroll())
+
+    def decline_consent(self):
+        self.declined = True           # session-only: re-asks next boot until joined

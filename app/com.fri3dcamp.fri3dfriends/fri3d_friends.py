@@ -251,6 +251,10 @@ class Fri3dFriends(Activity):
         self._g_target_last = None
         self._g_dbg_last = None
         self._g_log = []
+        # First-run Gotcha consent overlay (§13).
+        self._consent = None
+        self._consent_open = False
+        self._consent_rows = []
         self._config = {}
         self._own_table = []
         self._unconfigured = False
@@ -457,6 +461,7 @@ class Fri3dFriends(Activity):
             self._g_bars.append(self._rbox(scr, bx, H - 12 - bh, 3, bh,
                                            COL_BAR_OFF, radius=1))
             bx += 4
+        self._build_consent(scr)
 
     def _gc_log(self, msg):
         self._g_log.append(str(msg))
@@ -520,6 +525,111 @@ class Fri3dFriends(Activity):
         except Exception:
             pass
 
+    # ------------------------------------------------------------- consent (§13)
+    def _build_consent(self, scr):
+        # First-run "join the game?" overlay, modelled on the Configure-me
+        # mini-menu: a short explanation + 3 focusable rows. Shown once per boot
+        # when a live game is detected and the badge has never joined. Built once,
+        # hidden; only ever show/hide (never delete -- §8.4 landmine #1).
+        ov = self._rbox(scr, 0, 0, W, H, COL_BG, radius=0)
+        try:
+            ov.remove_flag(lv.obj.FLAG.SCROLLABLE)
+        except Exception:
+            pass
+        self._label(ov, 0, 12, "Gotcha", COL_HINT,
+                    font=lv.font_montserrat_24, center=True)
+        exp = self._label(ov, 0, 46,
+                          "Een spel: andere spelers zien als je dichtbij bent "
+                          "en kunnen je pakken.", COL_NONE,
+                          font=lv.font_montserrat_14, center=True)
+        try:
+            exp.set_long_mode(lv.label.LONG_MODE.WRAP)
+        except Exception:
+            pass
+        self._consent_rows = []
+        cw = W - 2 * MENU_PAD
+        items = [("Meedoen", "join"),
+                 ("Niet meedoen", "decline"),
+                 ("Laat zien wat de badge doet", "demo")]
+        for i, (label, action) in enumerate(items):
+            row = lv.button(ov)
+            row.set_size(cw, MENU_ROW_H)
+            row.set_pos(MENU_PAD, 110 + i * MENU_ROW_H)
+            try:
+                row.set_style_bg_color(_col(COL_CARD), 0)
+                row.set_style_bg_opa(lv.OPA.COVER, 0)
+                row.set_style_radius(8, 0)
+                row.set_style_border_width(0, 0)
+                row.set_style_shadow_width(0, 0)
+                row.set_style_pad_all(0, 0)
+            except Exception:
+                pass
+            lbl = lv.label(row)
+            lbl.set_text(label)
+            lbl.set_style_text_color(_col(COL_NAME), 0)
+            lbl.set_style_text_font(lv.font_montserrat_16, 0)
+            try:
+                lbl.align(lv.ALIGN.LEFT_MID, 10, 0)
+            except Exception:
+                lbl.set_pos(10, 4)
+            self._make_focusable(row)
+            self._bind_event(row, self._make_consent_cb(action), lv.EVENT.CLICKED)
+            self._consent_rows.append(row)
+        ov.add_flag(lv.obj.FLAG.HIDDEN)
+        self._consent = ov
+
+    def _make_consent_cb(self, action):
+        def cb(e):
+            self._do_consent_action(action)
+        return cb
+
+    def _do_consent_action(self, action):
+        self._wake()
+        if action == "join":
+            self._gc.request_enroll()
+            self._close_consent()
+        elif action == "decline":
+            self._gc.decline_consent()
+            self._close_consent()
+        elif action == "demo":
+            # Close so the demo colours are visible; the tick re-raises consent
+            # afterwards (still never-joined + not declined).
+            self._close_consent()
+            TaskManager.create_task(self._gotcha_demo())
+
+    def _open_consent(self):
+        if self._consent is None or self._consent_open:
+            return
+        try:
+            self._consent.remove_flag(lv.obj.FLAG.HIDDEN)
+            self._consent.move_foreground()
+        except Exception:
+            pass
+        self._consent_open = True
+        self._set_focus(self._consent_rows)
+
+    def _close_consent(self):
+        self._consent_open = False
+        if self._consent is not None:
+            try:
+                self._consent.add_flag(lv.obj.FLAG.HIDDEN)
+            except Exception:
+                pass
+        self._establish_focus()
+
+    def _maybe_show_consent(self):
+        # Only on the plain nametag (not splash/swap/setup/menu) and when the
+        # controller says consent is needed. Highest-priority overlay.
+        if (self._consent is None or self._consent_open or not self._entered
+                or self._menu_open or self._exchanging or self._setup_open
+                or self._setup_task is not None or self._adopt_open or self._detail):
+            return
+        try:
+            if self._gc is not None and self._gc.consent_needed():
+                self._open_consent()
+        except Exception:
+            pass
+
     def _gc_tick(self, now):
         if self._gc is None:
             return
@@ -527,6 +637,7 @@ class Fri3dFriends(Activity):
             self._gc.tick(now, self._wifi_connected(), self._sound)
         except Exception as e:
             self._gc_log("tick err %r" % (e,))
+        self._maybe_show_consent()
 
     def _set_gotcha_bars(self, segs, halted):
         if halted:
@@ -707,7 +818,9 @@ class Fri3dFriends(Activity):
         """Re-derive the focus set for the current foreground state (on resume,
         after _release_focus emptied the group)."""
         self._focus_held = True
-        if self._menu_open:
+        if self._consent_open:
+            objs = self._consent_rows
+        elif self._menu_open:
             objs = self._menu_rows[:self._menu_count]
         elif self._adopt_open:
             objs = self._adopt_rows[:self._adopt_count] + [self._adopt_join]
@@ -2289,6 +2402,10 @@ class Fri3dFriends(Activity):
         # X = back/close. Close the topmost overlay before letting the framework
         # finish (quit) the activity. Returning True consumes the press and keeps
         # us foregrounded; returning False (nothing open) quits to the launcher.
+        if self._consent_open:
+            # Consent must be acknowledged: X == "Niet meedoen" (decline, §13).
+            self._do_consent_action("decline")
+            return True
         if self._menu_open:
             self._close_menu()
             return True
