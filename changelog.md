@@ -1,3 +1,284 @@
+# !Fri3d Friends — Gotcha Phase 2: integrated into the shipping app (radar live) — 2026-07-30
+
+The Phase 2 exit is now in the **shipping `fri3d_friends.py` app**, not just the
+probe: two real badges run the actual app, enroll, sync, target each other, and
+show a **live on-screen radar bar lit red at kill range**.
+
+**On-badge result (9070 + 1cdb → `192.168.1.57:8080`, game `running`):**
+
+| badge | online | halted | radar | rssi_prox | chip | target |
+|---|---|---|---|---|---|---|
+| 9070 (Badgebac8) | ✅ | no | **segs 5 (red)** | −50 dBm | LEEFT · streak 0 · 0 kills | Badge9de4 |
+| 1cdb (Badge9de4) | ✅ | no | **segs 5 (red)** | −47 dBm | LEEFT · streak 0 · 0 kills | Badgebac8 |
+
+Read off each badge's `gotcha_dbg.txt` (a dev-only, change-gated status file the
+renderer writes — see below). This validates, in the real app: `GotchaController`
+drive from the main loop, enroll-on-online, the signed sync + `apply_sync`, the
+**§7 connectivity probe** (`online=True` — and it correctly distinguishes a
+hotspot-with-no-route, which hung the probe), the v2 beacon + `set_game_context`
+(target admitted/pinned out-of-group), asymmetric `rssi_prox`, the **truce
+evaluation** (correctly `halt=True` at 22:12 camp time under the 22:00–08:00
+schedule; lifted after a schedule change + re-sync), and the **UI** (status chip
++ target strip + 5-seg radar, colour-ramped blue→amber→red).
+
+## Files
+
+- `app/…/gotcha_app.py` (**new**) — `GotchaController`: the non-lvgl glue that
+  ties `GotchaState`/`GotchaSync`/`GameConfig` to the live `BLEProximity`. Drives
+  the §7 connectivity probe, enroll-on-online, periodic sync (deferred while the
+  radar bar is lit, ±20 % jitter), and pushes the v2 game block + admit/pin the
+  target on every sync. Network I/O on `TaskManager.create_task` tasks; `tick()`
+  is called from the Activity loop. No host tests (app glue) — the pure half it
+  relies on is covered.
+- `app/…/fri3d_friends.py` — surgical Gotcha hooks: `_setup_gotcha()` (lazy
+  `import gotcha_app` in a try/except, so a Gotcha fault → "no game", never "no
+  nametag", §8.6), the pre-built hidden status-chip/target-strip/radar widgets
+  (`_render_gotcha`, set_text + show/hide only), lifecycle hooks
+  (`_gc_start`/`_gc_stop`/`_gc_tick`), and a dev-only `_g_dbg` status-file write.
+  `__init__` gotcha attrs; `MENU_MAX` and the friend-LED path are untouched
+  (those are the remaining tasks). Every entry point is try/except-wrapped.
+- `app/…/MANIFEST.JSON` — **0.10.0 → 0.11.0** (the version string is now
+  load-bearing, §8.10.3).
+- `tools/deploy.sh` — `gotcha_app.py` added to the deploy file list.
+
+## Test caveats (restore before camp)
+
+- It is **22:12 camp time** (night), so under the real 22:00–08:00 schedule the
+  radar is correctly dark (`WAPENSTILSTAND`). To film the lit radar I
+  **temporarily shifted the truce schedule to 23:00–07:00** (`POST
+  /v1/admin/truce_schedule`) and force-re-synced each badge
+  (`AppManager.restart_launcher()` → `start_app`, which re-fires onResume →
+  immediate sync). **Restore the schedule to 22:00–08:00** (`{"from":"22:00",
+  "to":"08:00"}`) when done; the instant truce is already off.
+- `_g_dbg` writes `gotcha_dbg.txt` (change-gated, so negligible flash wear) — a
+  dev aid only; **remove for camp**.
+- **`SILENT = True` in `fri3d_friends.py` suppresses the physical buzzer entirely**
+  (added so the night test didn't wake anyone): `_setup_buzzer` skips PWM init, so
+  `_sting`/`_ping_chirp` are physically mute; the hunt ping still runs its logic and
+  bumps `self._g_pings` (visible in `gotcha_dbg.txt`). **Flip to `SILENT = False` and
+  redeploy to re-enable sound.** (The on-badge ping *counter* needs the guard fix
+  in `_hunt_ping` deployed — it's local but a wedged-deploy left the old copy; the
+  muting itself is unaffected.)
+- 1cdb wedged mid-deploy (advertising boot-beacon + an interrupted deploy); a
+  single `mpremote reset` recovered it. Deploy the app with
+  `tools/deploy.sh <serial-id>` (sha-verified, by-id); push a dev `config.json`
+  (name/groups/`gotcha.api`) separately.
+
+## Remaining for Phase 2
+
+The **LED radar bar + hunt ping (task 9) are now DONE too** (see the next entry):
+`_update_leds` renders `hunt_bar` when hunting (friend LEDs otherwise), and
+`_hunt_ping`/`_ping_chirp` add the falling-chirp double-tap on the buzzer
+priority ladder. Verified running on 9070 (prox −50 → 5 red LEDs + double-tap
+ping). **Task 10 CODE-COMPLETE (2026-07-31):** the menu grows two rows when a game
+has ever been joined -- **`Gotcha demo`** (cycles the LED colour language
+blue→amber→red→gold→green with Dutch captions, ~8 s; sound muted under
+`SILENT`) and **`Stoppen met Gotcha`/`Meedoen met Gotcha`** (§13 opt-out/in:
+persists, drops/re-raises the game block, re-syncs on rejoin). Done as menu
+ITEMS reusing the existing focus/click machinery (`MENU_MAX` 5→7, row height
+30→26 to fit) -- no new focusable-screen system. Controller gained
+`ever_enrolled`/`is_opted_out`/`opt_out`/`opt_in`. 313 host tests green;
+build is on 9070's flash (sha-verified). **Not yet tap-verified on-device**
+(the wedge blocked a clean relaunch) -- needs a 9070 reboot + Menu tap-test.
+
+---
+
+# !Fri3d Friends — Gotcha Phase 2, Layer A: the host-testable pure half — 2026-07-30
+
+Phase 2 has started, layered (pure half first, then on-badge). This entry lands
+**Layer A** — everything in the badge-side game logic that is unit-testable on a
+host with no hardware and no network. It compiles and the full suite is green
+(**313 passed**, up from 246). Nothing is deployed to a badge yet; that is
+Layer B.
+
+Scope chosen: build the pure logic + HSNT v2 beacon + persistence first, report
+green, **then** move to the on-badge UI/LED/menu. Backend for on-badge testing
+will be the shared `192.168.1.57:8080` instance (Phase 0 already proved badges
+reach it). Checkpoint target stays the plan's Phase 2 exit: two badges enrolled,
+each showing the other as target with a live on-screen + LED radar bar.
+
+## Files
+
+- `app/…/gotcha.py` — the pure half grows from crypto-only (248 lines) to the
+  full game-logic layer. Added (all host-tested, no `bluetooth`/`mpos`/`lvgl`):
+  - **GameConfig.from_sync** — defensive parse of the §5.4 tunables block + the
+    `game.truce_schedule`; coerces types, drops unknown keys, falls back to
+    badge defaults (mirrors `server/…/config.py` TUNABLE_DEFAULTS). Never raises.
+  - **Time / truce / quiet** — `camp_minutes`, `parse_hm`, `hm_str`,
+    `truce_active` (returns "none"/"camp"/"personal"/"both"; only camp pauses
+    decay, §2.2), `clamp_quiet` (snaps a personal window into the 20:00–10:00
+    band, rejects inverted/garbage). Camp-local HH:MM via a fixed **+2 h CEST**
+    offset, matching `server/…/clock.py` (server times are UTC; badge is
+    NTP-UTC, `clock_offset_s` aligns it).
+  - **Proximity** — `prox_filter` (the §8.8.2 asymmetric EWMA, fast-attack /
+    slow-decay — the difference between a working kill and a broken one),
+    `prox_fraction` (canonical 0..1 over the −90…−55 dBm band, n-independent so
+    `PING_FROM_SEG` means the same proximity on the 4-LED 2024 and 5-LED 2026),
+    `hunt_segments` / `hunt_bar` (the LED radar; keys off live `KILL_RSSI`/
+    `REVEAL_RSSI` so "all red = kill range" holds after a camp retune),
+    `breathe_period_ms`, `solid_frame` (the §8.8.3 whole-strip states).
+  - **hunt_ping** — (freq, burst, interval, taps) on the same clock as the bar;
+    silent below `PING_FROM_SEG`, double-tap at kill range, "drop not queue" made
+    pure via a `last_ping_ms` arg (§8.8.6).
+  - **score_preview** — optimistic §2 UI update (target 1 / bounty 2 / repeat 0).
+  - **EventQueue** — bounded (MAX_QUEUE 40), dedup-by-uuid, drops oldest
+    non-kill on overflow, never a kill/killed_by.
+  - **GotchaState** — atomically-persisted `gotcha.json` (temp + `os.rename`,
+    injectable FS so it is host-tested), merges a verified `/v1/sync` payload
+    (me↔target↔state↔dodges↔quiet↔hitlist↔app↔clock_offset), enroll/opt-in/out.
+  - **Signed-HTTP shaping + GotchaSync** — pure `signed_get`/`signed_post`/
+    `verify_response`/`enroll_body`/`new_nonce` (host-tested; sign over the full
+    request target incl. query, matching `server auth.signing_path`), plus the
+    on-badge **`GotchaSync`** `urequests` client (`enroll`/`sync`/`flush_events`,
+    clock-bootstrap from `/healthz`, `finally`-safe socket close). NOT host-tested
+    (urequests is MP-only) — the shaping it relies on is.
+- `app/…/ble_setup.py` — `sanitize_config` gains a validated `gotcha` block
+  (`enrolled`/`quiet`/`enroll`/`api`); a hostile `null` can't wipe it, and the
+  personal quiet window is clamped via `gotcha.clamp_quiet` (daytime start snaps
+  to 20:00; inverted → None = camp truce). +6 host tests.
+- `app/…/ble_proximity.py` — **HSNT v2** beacon (plan §4): `VERSION` 1→2, a
+  `blocks` byte + optional 5-byte game block (`pid`/`gflags`/`streak`);
+  `build_payload`/`parse_payload` now carry `game` (v1 still parsed for safety);
+  `name_budget(game=...)`; `build_game_block`/`parse_game_block`; gflag bit
+  constants. Plus the §4 pre-existing fix: **`admit_peer`** (widens admission to
+  the target pid / bounty during a live game) and **`evict_lru`** (64-entry LRU
+  that pins target/bounty), wired into `BLEProximity` with a new `rssi_prox`
+  peer field (asymmetric, via `set_prox_filter`), `set_game_context`,
+  `peer_by_pid`. `current_peers()` shape unchanged → no base-app break.
+- `tests/test_gotcha.py` — +40 tests (62 total). `tests/test_ble_proximity.py` —
+  +10 tests (55 total). `tests/test_ble_setup.py` — +6 gotcha-sanitize tests.
+  Existing v1 beacon tests updated for the v2 `blocks` byte (name budget −1).
+  **Full suite: 313 passed** (was 246), no regressions.
+
+## Interpretations worth flagging (Layer B must match)
+
+- **Radar mapping.** The LED bar (`hunt_segments`) keys off the live
+  `KILL_RSSI`/`REVEAL_RSSI` thresholds (so the affordance survives a retune);
+  `prox_fraction` is a separate linear map over the fixed −90…−55 band used by
+  the on-screen bar and the ping's silent floor. Both are monotonic in
+  `rssi_prox`; the exact LED count at a given dBm is display polish, all
+  server-retunable. Breathe period is a geometric 3800→700 ramp (exact
+  endpoints, approximates the §8.8.2 table).
+- **Sync clock.** Badge stores `clock_offset_s = server_time − time.time()` and
+  derives camp-local minutes as `(effective_now_min + 120) % 1440` (CEST). This
+  is the one place a camp timezone constant lives on the badge; it is documented
+  and must change with `server/…/clock.py` if the camp is ever run in winter.
+- **`synced_at`** is stored as the integer `server_time` (not an ISO string) —
+  simpler and directly usable for "synced N min ago".
+
+## Next (Layer B, on-badge)
+
+The host-testable work is exhausted. Remaining for the Phase 2 exit, all
+on-badge: the **§7 connectivity check** (a TCP-connect probe to the API host in
+a `TaskManager` task, surfacing `no network — check WiFi in Settings`); wiring
+`GotchaState` + `GotchaSync` + the v2 beacon game block + `set_game_context`
+into `fri3d_friends.py` (status chip, target strip, on-screen + LED radar bar,
+hunt ping, `Gotcha` menu row + screen, focus integration, demo mode) and
+`beacon_service.py` (advertise the game block); then deploy to two badges,
+flip the shared backend to `running`, enroll both, and verify the Phase 2 exit —
+each shows the other as target with a live on-screen + LED radar bar.
+
+Two on-badge API probes (9070 + 1cdb, 2026-07-30) fix the plan's §8.3
+assumptions: **`TaskManager.wait_for(coro, timeout=…)` DOES exist** on this
+firmware (the app just hasn't used it yet), and **`DownloadManager.post_url`
+does NOT** (only `download_url`). So `GotchaSync` uses **`urequests`** (the path
+the §11 1000-sync soak already proved) under a `TaskManager` task. Corrected in
+memory `mpos-firmware-api-gaps`.
+
+---
+
+# !Fri3d Friends — Gotcha Phase 2: Layer B proven on real badges (the probe) — 2026-07-30
+
+The Phase 2 exit condition — *two badges enrolled, each showing the other as
+target with a live radar* — is **proven on real hardware** via a throwaway probe,
+before touching the shipping `fri3d_friends.py`. This validates every piece of
+Layer A end-to-end on-device and caught one real bug.
+
+**Result (badges 9070 + 1cdb → shared backend `192.168.1.57:8080`, game `running`):**
+
+| badge | pid | status | target | seen? | rssi_prox |
+|---|---|---|---|---|---|
+| 9070 (Devbac8) | 1003 | active | Dev9de4 (1004) | **SEEN** | **−47 dBm** |
+| 1cdb (Dev9de4) | 1004 | protected | Devbac8 (1003) | **SEEN** | **−46 dBm** |
+
+Proven on-device: **enroll** (unsigned POST), **signed sync** (HMAC verify +
+`apply_sync`), **target assignment** (the ring correctly paired the two active
+badges 1003↔1004 and ignored two leftover stale "Soak" players), **HSNT v2
+beacon** (game block carrying `pid`), the **widened admission** (`set_game_context`
+admits the out-of-group target) + **pinned LRU**, the **asymmetric `rssi_prox`**
+filter, **`gotcha.json` persistence**, and the **clock bootstrap** from `/healthz`
+(`clock_offset_s` correctly maps the badge's ~30-yr-off RTC to server time).
+
+## The bug it caught (fixed)
+
+`gotcha.py`'s crypto half — inherited, host-tested only — called
+**`hashlib.sha256(...).hexdigest()`**, which **does not exist on MicroPython**
+(`sha256` has `.digest()` only; the `mpos-firmware-api-gaps` memory already
+warned this). `commitment()`/`verify_soul()`/`_new_uuid()` crashed on the badge
+*before* enroll's `try/except`, silently breaking enrollment (and would have
+broken kill proofs in Phase 3). The soak probe never hit it because it carried
+its own crypto (`ubinascii.hexlify`), not `gotcha.py`'s. **Fix:** a portable
+`_hex(bytes)` helper (manual lowercase hex over `.digest()`, identical to
+CPython's `hexdigest()`), used in all three. Verified on-badge with a full crypto
+self-test (RFC 4231 HMAC, commitment, sign/verify_response). 313 host tests still
+green. `bytes.fromhex()` (used by `sign_request`) **does** work on this firmware.
+
+## Files
+
+- `app/…/gotcha.py` — the `_hex` fix (commitment/verify_soul/_new_uuid).
+- `app/…/ble_proximity.py` — `BLEProximity.begin(game=...)` + `set_game(game)` to
+  advertise/refresh the v2 game block (needed by the probe and the integration).
+- `probes/gotcha_b1_pkg/{MANIFEST.JSON,gotcha_b1.py}` — the throwaway probe:
+  enroll → sync → advertise v2 → admit target → show it when seen with
+  `rssi_prox`. Writes a pollable status file (BLE advertise+scan wedges USB-CDC,
+  but per-file `mpremote cp` still works when exec is wedged).
+
+## What remains (integration into the shipping app)
+
+The probe replaces nothing in `fri3d_friends.py` yet. Remaining for the *shipped*
+Phase 2 exit: wire `GotchaState`/`GotchaSync`/`set_game`/`set_game_context` into
+`fri3d_friends.py` and `beacon_service.py`; render the **on-screen radar bar +
+LED radar bar** (`hunt_bar`) + **hunt ping** from the now-proven `rssi_prox`; the
+**status chip / target strip / `Gotcha` menu row / focus integration / demo
+mode**; and the **§7 connectivity check** (the probe passed `is_connected()` but
+hung on a badge that was actually a hotspot with no route — the TCP-connect probe
+is the sufficiency test the shipping code needs). Method proven; integration next.
+
+## Reproducing the on-badge test (resume here)
+
+Backend: the shared instance `192.168.1.57:8080` (a separate host from `john-ai`/
+192.168.1.165). It must be in state `running` for target assignment; flip it with
+the admin cookie (password is session-only, NOT in this public repo — read it on
+`.57` with `sudo grep GOTCHA_ADMIN_PASSWORD /etc/gotcha/gotcha.env`):
+
+```bash
+curl -c /tmp/gc -X POST http://192.168.1.57:8080/admin/login -d "host=claude&password=<PW>"
+curl -b /tmp/gc -X POST http://192.168.1.57:8080/v1/admin/game/1/state \
+     -H 'Content-Type: application/json' -d '{"state":"running"}'
+```
+
+Probe deploy + launch (per badge — `gotcha.py` + `ble_proximity.py` ride along):
+
+```bash
+P=/dev/serial/by-id/usb-Espressif_Systems_Espressif_Device_<mac>-if00
+mpremote connect "$P" exec "import os; os.mkdir('/apps/gotcha.b1')"
+mpremote connect "$P" cp probes/gotcha_b1_pkg/MANIFEST.JSON \
+    probes/gotcha_b1_pkg/gotcha_b1.py \
+    app/com.fri3dcamp.fri3dfriends/gotcha.py \
+    app/com.fri3dcamp.fri3dfriends/ble_proximity.py :/apps/gotcha.b1/
+mpremote connect "$P" exec "from mpos import AppManager; AppManager.refresh_apps(); print(AppManager.start_app('gotcha.b1'))"
+sleep 12
+mpremote connect "$P" cp :/gotcha_b1_status.txt .   # poll (exec is wedged while BLE advertises; cp still works)
+mpremote connect "$P" reset                          # stand down
+```
+
+Leftover stale "Soak" players (1001/1002) target the dev badges but can't be
+targeted back; ignore them or `POST /v1/admin/player/<pid> {"action":"kick"}`.
+The dev badges (Devbac8=1003 on 9070, Dev9de4=1004 on 1cdb) re-enroll idempotently
+by BLE-MAC `badge_key`, so they keep their pids across probe restarts.
+
+---
+
 # !Fri3d Friends — Gotcha Phase 0 §11 item 2: the on-badge 1000-sync soak — 2026-07-30
 
 The **last Phase 0 action** is done: the **on-badge half** of the 1000-signed-sync

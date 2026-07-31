@@ -193,3 +193,438 @@ def test_version_lt_equal_and_higher():
 def test_version_lt_handles_unequal_length_and_suffix():
     assert gotcha.version_lt("0.9", "0.9.0") is False        # padded equal
     assert gotcha.version_lt("0.9.1-rc1", "0.9.1") is False  # suffix ignored -> equal
+
+
+# ===========================================================================
+# GameConfig.from_sync (§5.4) -- defensive parse of the tunables block
+# ===========================================================================
+
+def test_gameconfig_defaults_when_no_sync():
+    cfg = gotcha.GameConfig()
+    assert cfg.get("KILL_RSSI") == -65
+    assert cfg.get("PING_ENABLED") is True
+    assert cfg.get("PROX_ALPHA_UP") == 0.60
+    assert cfg.get("truce_from") == "22:00"
+
+
+def test_gameconfig_from_sync_coerces_and_keeps_known_only():
+    cfg = gotcha.GameConfig.from_sync(
+        {"KILL_RSSI": "-68", "PING_ENABLED": "false", "PROX_ALPHA_UP": "0.5",
+         "bogus_key": 99},
+        {"truce_schedule": {"from": "23:00", "to": "07:00"}})
+    assert cfg.get("KILL_RSSI") == -68            # string -> int
+    assert cfg.get("PING_ENABLED") is False       # "false" -> bool
+    assert cfg.get("PROX_ALPHA_UP") == 0.5
+    assert cfg.get("truce_from") == "23:00"
+    assert cfg.get("truce_to") == "07:00"
+    assert cfg.get("bogus_key") is None           # unknown key dropped
+
+
+def test_gameconfig_from_sync_garbage_falls_back():
+    cfg = gotcha.GameConfig.from_sync("not a dict", {"truce_schedule": None})
+    assert cfg.get("KILL_RSSI") == -65           # untouched -> default
+    assert cfg.get("truce_from") == "22:00"
+    cfg2 = gotcha.GameConfig.from_sync({"KILL_RSSI": object()})
+    assert cfg2.get("KILL_RSSI") == -65          # uncoercible -> default
+
+
+# ===========================================================================
+# Time / truce / quiet hours (§10.4, §10.4a)
+# ===========================================================================
+
+def test_time_hm_roundtrip():
+    assert gotcha.parse_hm("22:00") == 1320
+    assert gotcha.parse_hm("08:00") == 480
+    assert gotcha.parse_hm("garbage") is None
+    assert gotcha.parse_hm(None) is None
+    assert gotcha.hm_str(1320) == "22:00"
+    assert gotcha.hm_str(480) == "08:00"
+
+
+def test_camp_minutes_is_cest():
+    # 20:00 UTC == 22:00 CEST (camp-local), i.e. minute 1320.
+    assert gotcha.camp_minutes(72000) == 1320
+    # 06:00 UTC == 08:00 CEST, minute 480.
+    assert gotcha.camp_minutes(21600) == 480
+
+
+def test_truce_active_camp_window_wraps_midnight():
+    cfg = gotcha.GameConfig()                    # truce 22:00-08:00
+    assert gotcha.truce_active(72000, cfg, None) == "camp"    # 22:00 start (inclusive)
+    assert gotcha.truce_active(21540, cfg, None) == "camp"    # 07:59 still in
+    assert gotcha.truce_active(21600, cfg, None) == "none"    # 08:00 boundary out
+    assert gotcha.truce_active(64800, cfg, None) == "none"    # 18:00 UTC=20:00 camp, before
+
+
+def test_truce_active_personal_and_both():
+    cfg = gotcha.GameConfig()
+    quiet = {"from": "20:30", "to": "08:00"}     # earlier than camp truce
+    assert gotcha.truce_active(66600, cfg, quiet) == "personal"  # 20:30 camp, before camp truce
+    assert gotcha.truce_active(72000, cfg, quiet) == "both"      # 22:00: both windows
+
+
+def test_clamp_quiet_valid_passthrough():
+    cfg = gotcha.GameConfig()
+    assert gotcha.clamp_quiet({"from": "20:30", "to": "07:00"}, cfg) == \
+        {"from": "20:30", "to": "07:00"}
+
+
+def test_clamp_quiet_snaps_daytime_bound_into_night_band():
+    cfg = gotcha.GameConfig()                    # band 20:00-10:00
+    # Start 18:00 is daytime (before 20:00) -> snapped up to the band edge.
+    out = gotcha.clamp_quiet({"from": "18:00", "to": "08:00"}, cfg)
+    assert out is not None
+    assert gotcha.parse_hm(out["from"]) >= gotcha.parse_hm("20:00")
+
+
+def test_clamp_quiet_rejects_inverted_and_garbage():
+    cfg = gotcha.GameConfig()
+    assert gotcha.clamp_quiet({"from": "23:00", "to": "20:00"}, cfg) is None  # inverted
+    assert gotcha.clamp_quiet({"from": "oops", "to": "08:00"}, cfg) is None
+    assert gotcha.clamp_quiet(None, cfg) is None
+
+
+# ===========================================================================
+# Proximity filter + fraction (§8.8.2)
+# ===========================================================================
+
+def test_prox_filter_first_sample_and_asymmetry():
+    cfg = gotcha.GameConfig()
+    assert gotcha.prox_filter(None, -70, cfg) == -70.0           # first sample
+    # Fast attack: a stronger sample jumps most of the way.
+    up = gotcha.prox_filter(-80.0, -60, cfg)                     # a_up 0.60
+    assert up == (1.0 - 0.60) * -80.0 + 0.60 * -60
+    # Slow decay: a weaker sample barely moves it.
+    dn = gotcha.prox_filter(-60.0, -80, cfg)                     # a_down 0.08
+    assert dn == (1.0 - 0.08) * -60.0 + 0.08 * -80
+    assert abs(up - -60) < abs(dn - -80)                         # attack faster than decay
+
+
+def test_prox_fraction_band_and_clamp():
+    cfg = gotcha.GameConfig()
+    assert gotcha.prox_fraction(None, cfg) == 0.0
+    assert gotcha.prox_fraction(-90, cfg) == 0.0                 # floor
+    assert gotcha.prox_fraction(-55, cfg) == 1.0                 # ceil
+    assert gotcha.prox_fraction(-100, cfg) == 0.0                # below floor
+    assert gotcha.prox_fraction(-40, cfg) == 1.0                 # above ceil
+    assert 0.0 < gotcha.prox_fraction(-72, cfg) < 1.0
+
+
+# ===========================================================================
+# LED radar bar (§8.8.2 / §8.8.3)
+# ===========================================================================
+
+def test_breathe_period_endpoints_and_monotonic():
+    assert gotcha.breathe_period_ms(1, 5) == 3800                # far
+    assert gotcha.breathe_period_ms(4, 5) == 700                 # near (n-1)
+    assert gotcha.breathe_period_ms(5, 5) is None                # kill range steady
+    periods = [gotcha.breathe_period_ms(l, 5) for l in range(1, 5)]
+    assert all(periods[i] >= periods[i + 1] for i in range(len(periods) - 1))
+
+
+def test_hunt_segments_matches_table_n5():
+    cfg = gotcha.GameConfig()                    # KILL=-65, REVEAL=-80
+    assert gotcha.hunt_segments(None, cfg, 5) is None           # no target
+    assert gotcha.hunt_segments(-95, cfg, 5) is None           # below floor
+    assert gotcha.hunt_segments(-90, cfg, 5) == (1, "blue", 0.20)
+    assert gotcha.hunt_segments(-80, cfg, 5) == (4, "amber", 0.45)   # reveal -> n-1
+    assert gotcha.hunt_segments(-70, cfg, 5) == (4, "amber", 0.45)
+    assert gotcha.hunt_segments(-65, cfg, 5) == (5, "red", 0.55)     # kill -> all n
+
+
+def test_hunt_segments_n4_and_kill_only_led():
+    cfg = gotcha.GameConfig()
+    assert gotcha.hunt_segments(-80, cfg, 4) == (3, "amber", 0.45)   # n-1
+    assert gotcha.hunt_segments(-65, cfg, 4) == (4, "red", 0.55)
+    # Single-LED board never shows kill red unless in range.
+    assert gotcha.hunt_segments(-80, cfg, 1) == (1, "blue", 0.20)
+
+
+def test_hunt_bar_dark_and_red_states():
+    cfg = gotcha.GameConfig()
+    assert gotcha.hunt_bar(None, 0, cfg, 5) == [(0, 0, 0)] * 5
+    assert gotcha.hunt_bar(-70, 0, cfg, 5, halted=True) == [(0, 0, 0)] * 5  # truce -> dark
+    red = gotcha.hunt_bar(-65, 0, cfg, 5)                       # kill range, steady
+    assert len(red) == 5
+    assert all(c == red[0] for c in red)
+    assert red[0] == gotcha._scale_colour("red", 0.55)
+
+
+def test_hunt_bar_is_pure_cacheable():
+    cfg = gotcha.GameConfig()
+    a = gotcha.hunt_bar(-72, 1234, cfg, 5)
+    b = gotcha.hunt_bar(-72, 1234, cfg, 5)
+    assert a == b                                               # identical in -> identical out
+
+
+def test_solid_frame_dead_pulse_and_protected():
+    dead = gotcha.solid_frame("red", 5, 0.20, now_ms=0, pulse_period_ms=2000)
+    assert len(dead) == 5 and all(c == dead[0] for c in dead)
+    prot = gotcha.solid_frame("white", 5, 0.30)
+    assert prot[0] == gotcha._scale_colour("white", 0.30)
+
+
+# ===========================================================================
+# Hunt ping (§8.8.6)
+# ===========================================================================
+
+def test_hunt_ping_silent_below_floor_and_disabled():
+    cfg = gotcha.GameConfig()                    # PING_FROM_SEG=3 -> thr 0.6 -> -69 dBm
+    assert gotcha.hunt_ping(-80, 0, None, cfg) is None         # far below floor
+    assert gotcha.hunt_ping(-60, 0, None, cfg, enabled=False) is None
+    assert gotcha.hunt_ping(-60, 0, None, cfg, sound_on=False) is None
+
+
+def test_hunt_ping_kill_range_is_double_tap():
+    cfg = gotcha.GameConfig()
+    res = gotcha.hunt_ping(-60, 0, None, cfg)                  # >= KILL_RSSI
+    assert res == (2400, 40, 350, 2)                           # near freq, near interval, 2 taps
+
+
+def test_hunt_ping_single_tap_at_threshold_and_not_due():
+    cfg = gotcha.GameConfig()
+    res = gotcha.hunt_ping(-69, 0, None, cfg)                  # f ~= thr -> far pitch
+    assert res is not None
+    assert res[3] == 1
+    assert res[0] == 1400                                      # PING_FREQ_FAR
+    # Not due within the interval -> dropped (§8.8.6: drop, never queue).
+    interval = res[2]
+    assert gotcha.hunt_ping(-69, interval - 1, 0, cfg) is None
+    assert gotcha.hunt_ping(-69, interval, 0, cfg) is not None
+
+
+def test_hunt_ping_pitch_rises_with_proximity():
+    cfg = gotcha.GameConfig()
+    near_thr = gotcha.hunt_ping(-69, 0, None, cfg)[0]
+    closer = gotcha.hunt_ping(-67, 0, None, cfg)[0]
+    assert closer >= near_thr                                   # monotonic up
+
+
+# ===========================================================================
+# Score preview (§2)
+# ===========================================================================
+
+def test_score_preview_target_bounty_repeat():
+    # total_kills is a *count* (one per kill); points is separate (1 or 2).
+    assert gotcha.score_preview(5, 2, 4, "target") == (6, 3, 4, 1)
+    assert gotcha.score_preview(5, 2, 4, "bounty") == (6, 3, 4, 2)
+    # A repeat scores 0 and does not advance streak/total in the optimistic UI.
+    assert gotcha.score_preview(5, 2, 4, "repeat") == (5, 2, 4, 0)
+
+
+def test_score_preview_best_streak_rises():
+    assert gotcha.score_preview(0, 4, 4, "target") == (1, 5, 5, 1)   # new best
+
+
+# ===========================================================================
+# EventQueue (§8.2 / §9.3) -- bounded, dedup, never drops a kill
+# ===========================================================================
+
+def test_eventqueue_dedup_and_bounded():
+    q = gotcha.EventQueue()
+    assert q.add({"uuid": "a", "type": "heartbeat"})
+    assert not q.add({"uuid": "a", "type": "heartbeat"})      # dup dropped
+    assert len(q) == 1
+    for i in range(gotcha.MAX_QUEUE + 5):                     # overflow
+        q.add({"uuid": "u%d" % i, "type": "heartbeat"})
+    assert len(q) == gotcha.MAX_QUEUE
+
+
+def test_eventqueue_never_drops_kill_when_full_of_kills():
+    q = gotcha.EventQueue()
+    for i in range(gotcha.MAX_QUEUE):
+        q.add({"uuid": "k%d" % i, "type": "kill"})
+    assert len(q) == gotcha.MAX_QUEUE
+    assert not q.add({"uuid": "kNEW", "type": "kill"})        # refused, none to drop
+    assert len(q) == gotcha.MAX_QUEUE
+
+
+def test_eventqueue_drops_oldest_nonkill_to_save_kill():
+    q = gotcha.EventQueue()
+    q.add({"uuid": "h1", "type": "heartbeat"})
+    q.add({"uuid": "h2", "type": "heartbeat"})
+    for i in range(gotcha.MAX_QUEUE - 1):
+        q.add({"uuid": "k%d" % i, "type": "kill"})
+    assert len(q) == gotcha.MAX_QUEUE
+    assert q.add({"uuid": "h3", "type": "heartbeat"})         # makes room by dropping h1
+    assert len(q) == gotcha.MAX_QUEUE
+    assert "h1" not in [e["uuid"] for e in q.peek_batch(100)]
+    assert all(e["uuid"] != "h1" for e in q.peek_batch(100))
+
+
+def test_eventqueue_remove_and_uuid_mint():
+    q = gotcha.EventQueue([{"uuid": "a", "type": "kill"},
+                           {"uuid": "b", "type": "dodge"}])
+    assert len(q) == 2
+    q.remove(["a"])
+    assert len(q) == 1
+    q2 = gotcha.EventQueue()
+    assert q2.add({"type": "reveal"})                         # uuid minted
+    e = q2.peek_batch()[0]
+    assert isinstance(e["uuid"], str) and len(e["uuid"]) >= 8
+
+
+# ===========================================================================
+# GotchaState persistence + sync merge (§8.2, §8.3)
+# ===========================================================================
+
+def _fake_fs():
+    store = {}
+
+    def reader():
+        return store.get("gotcha.json")
+
+    def writer(tmp, data):
+        store[tmp] = data
+
+    def renamer(tmp, path):
+        store[path] = store.pop(tmp, None)
+
+    return store, reader, writer, renamer
+
+
+def test_gotcha_state_save_load_roundtrip():
+    _, r, w, rn = _fake_fs()
+    gs = gotcha.GotchaState("gotcha.json", reader=r, writer=w, renamer=rn)
+    gs.enroll(4711, "deadbeef", 1, soul=bytes(range(16)), commitment_hex="a" * 64)
+    gs.d["state"]["streak"] = 3
+    gs.queue.add({"uuid": "x", "type": "kill"})
+    assert gs.save() is True
+
+    gs2 = gotcha.GotchaState("gotcha.json", reader=r, writer=w, renamer=rn)
+    gs2.load()
+    assert gs2.is_enrolled()
+    assert gs2.d["pid"] == 4711
+    assert gs2.d["player_key"] == "deadbeef"
+    assert gs2.d["state"]["streak"] == 3
+    assert len(gs2.queue) == 1
+
+
+def test_gotcha_state_load_corrupt_degrades_to_blank():
+    store = {"gotcha.json": "{not json"}
+    gs = gotcha.GotchaState("gotcha.json",
+                            reader=lambda: store.get("gotcha.json"),
+                            writer=lambda *a: None, renamer=lambda *a: None)
+    gs.load()
+    assert not gs.is_enrolled()
+    assert gs.d["pid"] is None
+
+
+def test_gotcha_state_apply_sync_merges_everything():
+    _, r, w, rn = _fake_fs()
+    gs = gotcha.GotchaState(reader=r, writer=w, renamer=rn)
+    gs.enroll(100, "keyhex", 1)
+    payload = {
+        "server_time": 1000000,
+        "me": {"pid": 100, "alive": True, "status": "active", "streak": 2,
+               "best_streak": 5, "total_kills": 11, "score": 13, "deaths": 1,
+               "respawn_at": None, "protected_until": None, "dodges": {"7": 1},
+               "quiet": {"from": "22:00", "to": "08:00"}, "card_token": "TOK"},
+        "target": {"pid": 200, "name": "Otter 42", "commitment": "dead",
+                   "last_seen_ago_s": 240, "halted": False},
+        "hitlist": [{"pid": 3, "name": "Fox", "streak": 4}],
+        "broadcast": "hello",
+        "app": {"min_version": "0.11.0", "latest_version": "0.11.2"},
+    }
+    gs.apply_sync(payload, local_time_s=999990)
+    assert gs.d["clock_offset_s"] == 1000000 - 999990
+    assert gs.d["synced_at"] == 1000000
+    assert gs.d["state"]["streak"] == 2
+    assert gs.d["state"]["total"] == 11
+    assert gs.d["state"]["score"] == 13
+    assert gs.d["target"]["name"] == "Otter 42"
+    assert gs.d["target"]["seen_ago_s"] == 240
+    assert gs.d["dodges"] == {"7": 1}
+    assert gs.d["quiet"] == {"from": "22:00", "to": "08:00"}
+    assert gs.d["broadcast"] == "hello"
+    assert gs.d["app"]["latest_version"] == "0.11.2"
+    assert gs.effective_now(999990) == 1000000
+
+
+def test_gotcha_state_target_none_when_no_target():
+    gs = gotcha.GotchaState()
+    gs.apply_sync({"server_time": 50, "me": {"pid": 1}, "target": None},
+                  local_time_s=50)
+    assert gs.d["target"] is None
+    assert gs.target_pid() is None
+
+
+def test_gotcha_state_opt_out_round_trip():
+    gs = gotcha.GotchaState()
+    gs.enroll(1, "k", 1)
+    assert gs.is_enrolled()
+    gs.opt_out()
+    assert not gs.is_enrolled()                  # opted out reads as not playing
+    gs.opt_in()
+    assert gs.is_enrolled()
+
+
+# ===========================================================================
+# Signed-HTTP request/response shaping (§6.2, §9.1)
+# ===========================================================================
+_KEY = "a" * 64        # 32-byte player_key as hex
+
+
+def test_new_nonce_is_hex():
+    n = gotcha.new_nonce()
+    assert len(n) == 16
+    assert all(c in "0123456789abcdef" for c in n)
+
+
+def test_signed_get_headers_and_signature():
+    url, headers = gotcha.signed_get(4711, _KEY, "http://h:8080/", "/v1/sync",
+                                     ts=123, nonce="abcd")
+    assert url == "http://h:8080/v1/sync"
+    assert headers["X-Pid"] == "4711"
+    assert headers["X-Ts"] == "123"
+    assert headers["X-Nonce"] == "abcd"
+    # The signature is over GET || "/v1/sync" || ts || nonce || "" (no body).
+    assert headers["X-Sig"] == gotcha.sign_request(_KEY, "GET", "/v1/sync",
+                                                   123, "abcd", b"")
+
+
+def test_signed_get_signs_full_target_with_query():
+    url, headers = gotcha.signed_get(1, _KEY, "http://h", "/v1/leaderboard",
+                                     ts=5, nonce="n",
+                                     query={"limit": 50, "board": "total"})
+    # query is sorted into the signed target, matching the server's signing_path.
+    assert url == "http://h/v1/leaderboard?board=total&limit=50"
+    assert headers["X-Sig"] == gotcha.sign_request(
+        _KEY, "GET", "/v1/leaderboard?board=total&limit=50", 5, "n", b"")
+
+
+def test_signed_post_body_signed_byte_for_byte():
+    obj = {"events": [{"uuid": "x", "type": "kill"}]}
+    url, headers, body = gotcha.signed_post(1, _KEY, "http://h", "/v1/events",
+                                            obj, ts=7, nonce="n")
+    assert url == "http://h/v1/events"
+    assert body == gotcha.canonical_json(obj).encode("utf-8")
+    assert headers["X-Sig"] == gotcha.sign_request(_KEY, "POST", "/v1/events",
+                                                   7, "n", body)
+
+
+def test_verify_response_accepts_valid_envelope():
+    payload = {"server_time": 100, "me": {"pid": 1}}
+    env = gotcha.make_envelope(100, "n1",
+                               gotcha.response_sig(_KEY, 100, "n1", payload), payload)
+    assert gotcha.verify_response(_KEY, "n1", env) == payload
+
+
+def test_verify_response_rejects_tamper_and_mismatch():
+    payload = {"server_time": 100}
+    good = gotcha.make_envelope(100, "n1",
+                                gotcha.response_sig(_KEY, 100, "n1", payload), payload)
+    assert gotcha.verify_response(_KEY, "OTHER", good) is None     # wrong nonce
+    bad_sig = dict(good); bad_sig["sig"] = "00" * 32
+    assert gotcha.verify_response(_KEY, "n1", bad_sig) is None     # bad sig
+    tampered = dict(good); tampered["payload"] = {"server_time": 999}
+    assert gotcha.verify_response(_KEY, "n1", tampered) is None    # payload re-signed
+    assert gotcha.verify_response(_KEY, "n1", "nope") is None      # not a dict
+
+
+def test_enroll_body_shape():
+    b = gotcha.enroll_body("abcd1234", "Otter 42", ["Hack42"], "c" * 64,
+                           "0.11.0", "2026")
+    assert b == {"badge_key": "abcd1234", "display_name": "Otter 42",
+                 "groups": ["Hack42"], "commitment": "c" * 64,
+                 "app_version": "0.11.0", "board": "2026"}

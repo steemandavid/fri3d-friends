@@ -444,3 +444,47 @@ def test_config_to_settings_defaults_on_empty_config():
     assert prefs["rssi_floor"] == "Volledig bereik (standaard)"
     assert prefs["banner_s"] == "5"
     assert set(prefs) == set(bs.SETTINGS_KEYS)
+
+
+# --------------------------------------------------------------- gotcha block
+def test_sanitize_gotcha_valid_passthrough_and_clamp():
+    cfg = sanitize_config({"gotcha": {"quiet": {"from": "20:30", "to": "07:00"},
+                                      "enroll": "https://h/", "api": "http://h:8080"}},
+                         {})
+    g = cfg["gotcha"]
+    assert g["quiet"] == {"from": "20:30", "to": "07:00"}     # in-band -> kept
+    assert g["enroll"] == "https://h/"
+    assert g["api"] == "http://h:8080"
+    assert g["enrolled"] is False                              # safe default
+
+
+def test_sanitize_gotcha_daytime_start_snaps_to_band_edge():
+    # 18:00 is before QUIET_EARLIEST (20:00) -> snapped up to 20:00 (§10.4a:
+    # "start no earlier than QUIET_EARLIEST"), 09:00 stays -> a valid window.
+    cfg = sanitize_config({"gotcha": {"quiet": {"from": "18:00", "to": "09:00"}}}, {})
+    assert cfg["gotcha"]["quiet"] == {"from": "20:00", "to": "09:00"}
+
+
+def test_sanitize_gotcha_inverted_window_becomes_none():
+    # An inverted/empty window is unusable -> None (fall back to the camp truce).
+    cfg = sanitize_config({"gotcha": {"quiet": {"from": "23:00", "to": "20:00"}}}, {})
+    assert cfg["gotcha"]["quiet"] is None
+
+
+def test_sanitize_gotcha_null_does_not_wipe_base():
+    base = {"gotcha": {"quiet": {"from": "21:00", "to": "08:00"},
+                       "enrolled": True, "api": "http://h", "enroll": ""}}
+    cfg = sanitize_config({"gotcha": None}, base)             # hostile null
+    assert cfg["gotcha"]["quiet"] == {"from": "21:00", "to": "08:00"}  # base kept
+    assert cfg["gotcha"]["enrolled"] is True
+
+
+def test_sanitize_gotcha_absent_keeps_base():
+    base = {"gotcha": {"quiet": {"from": "21:00", "to": "08:00"}, "enrolled": False}}
+    cfg = sanitize_config({"name": "X"}, base)                # no gotcha in new
+    assert cfg["gotcha"] == base["gotcha"]
+
+
+def test_sanitize_gotcha_default_block_when_absent_everywhere():
+    cfg = sanitize_config({"name": "X"}, {})
+    assert cfg["gotcha"] == {"enrolled": False, "quiet": None, "enroll": "", "api": ""}

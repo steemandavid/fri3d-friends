@@ -17,7 +17,9 @@ import ble_proximity as bp
 from ble_proximity import (
     fnv1a_16, normalize_group, hash_groups, name_budget, truncate_utf8,
     build_payload, parse_payload, intersect, shared_name_for, build_own_table,
-    MAGIC, VERSION, ADV_TOTAL, OVERHEAD, MAX_GROUPS,
+    build_game_block, parse_game_block, admit_peer, evict_lru,
+    MAGIC, VERSION, ADV_TOTAL, OVERHEAD, MAX_GROUPS, SEEN_CAP,
+    BLOCK_GAME, GAME_BLOCK_LEN, GFLAG_ALIVE, GFLAG_BOUNTY,
 )
 
 
@@ -120,7 +122,7 @@ def test_roundtrip_one_group():
 
 
 def test_roundtrip_several_groups():
-    ids, _ = hash_groups(["Hack42", "RevSpace", "Makerspace Baasrode", "Hacker Hotel"])
+    ids, _ = hash_groups(["Hack42", "RevSpace", "Makerspace Baasrode"])
     adv = build_payload(ids, "Alice ON4XYZ")
     info = parse_payload(adv)
     assert info is not None
@@ -196,7 +198,58 @@ def test_unknown_version_rejected():
     adv = bytearray(build_payload(ids, "n"))
     # version byte sits at: AD(2) + company(2) + magic(4) = offset 8
     assert adv[8] == VERSION
-    adv[8] = 0x02                              # a future version
+    adv[8] = 0x09                              # a future version
+    assert parse_payload(bytes(adv)) is None
+
+
+# ---------------------------------------------------------------------------
+# HSNT v2 game block (plan §4)
+# ---------------------------------------------------------------------------
+def test_v2_no_game_costs_one_byte_vs_v1_name():
+    # The blocks byte is the only v2 overhead when idle; the name shrinks by 1.
+    ids, _ = hash_groups(["A"])
+    adv = build_payload(ids, "n")
+    info = parse_payload(adv)
+    assert info is not None
+    assert info["version"] == VERSION
+    assert info["game"] is None                # no game block -> game None
+    assert adv[9] == 0x00                      # blocks byte clear
+
+
+def test_game_block_roundtrip():
+    ids, _ = hash_groups(["A"])
+    g = {"pid": 0x123456, "gflags": GFLAG_ALIVE | GFLAG_BOUNTY, "streak": 7}
+    adv = build_payload(ids, "Otter 42", game=g)
+    assert len(adv) <= ADV_TOTAL
+    info = parse_payload(adv)
+    assert info is not None
+    assert info["game"] == {"pid": 0x123456,
+                            "gflags": GFLAG_ALIVE | GFLAG_BOUNTY, "streak": 7}
+
+
+def test_game_block_name_is_shorter():
+    ids, _ = hash_groups(["A"])
+    plain = name_budget(len(ids))
+    with_game = name_budget(len(ids), game=True)
+    assert with_game == plain - GAME_BLOCK_LEN
+
+
+def test_game_block_truncated_parses_name_game_none():
+    ids, _ = hash_groups(["A"])
+    g = {"pid": 1, "gflags": GFLAG_ALIVE, "streak": 0}
+    adv = bytearray(build_payload(ids, "n", game=g))
+    # The 5-byte game block sits at the very end; chop the last byte.
+    info = parse_payload(bytes(adv[:-1]))
+    assert info is not None
+    assert info["name"] == "n"
+    assert info["game"] is None                # block short -> None, never raises
+
+
+def test_reserved_blocks_bit_dropped():
+    ids, _ = hash_groups(["A"])
+    adv = bytearray(build_payload(ids, "n"))
+    assert adv[9] == 0x00                      # blocks byte
+    adv[9] = 0x80                              # a reserved bit set
     assert parse_payload(bytes(adv)) is None
 
 
@@ -363,3 +416,100 @@ def test_merge_groups_result_still_hashes():
     merged, _ = bp.merge_groups(["Alpha"], ["Beta"])
     ids, _ = hash_groups(merged)
     assert ids == hash_groups(["Alpha", "Beta"])[0]
+
+
+# ===========================================================================
+# Peer-table admission + LRU (plan §4)
+# ===========================================================================
+def test_admit_peer_friend_match_and_game_rules():
+    own = hash_groups(["X"])[0]
+    assert admit_peer(own, {"group_ids": own, "name": "a", "game": None}) is True
+    assert admit_peer(own, {"group_ids": [999], "name": "b", "game": None}) is False
+
+    target = {"group_ids": [999], "name": "t",
+              "game": {"pid": 42, "gflags": GFLAG_ALIVE, "streak": 0}}
+    assert admit_peer(own, target, admit_pids={42}, game_live=True) is True
+    assert admit_peer(own, target, admit_pids={42}, game_live=False) is False
+
+    bounty = {"group_ids": [999], "name": "B",
+              "game": {"pid": 7, "gflags": GFLAG_BOUNTY, "streak": 5}}
+    assert admit_peer(own, bounty, game_live=True) is True
+
+    stranger = {"group_ids": [999], "name": "r",
+                "game": {"pid": 8, "gflags": GFLAG_ALIVE, "streak": 0}}
+    assert admit_peer(own, stranger, game_live=True) is False
+
+
+def test_evict_lru_drops_oldest_nonpinned():
+    seen = {("a", 1): {"last_seen_ms": 10},
+            ("a", 2): {"last_seen_ms": 30},
+            ("a", 3): {"last_seen_ms": 20}}
+    evicted = evict_lru(seen, cap=2)
+    assert evicted == [("a", 1)]
+    assert ("a", 1) not in seen and len(seen) == 2
+
+
+def test_evict_lru_respects_pins():
+    seen = {("a", 1): {"last_seen_ms": 10},
+            ("a", 2): {"last_seen_ms": 30},
+            ("a", 3): {"last_seen_ms": 20}}
+    evict_lru(seen, cap=2, pinned_keys={("a", 1)})
+    assert ("a", 1) in seen            # pinned -> never evicted
+    assert len(seen) == 2
+
+
+# ----- BLEProximity._process_result is host-testable (no bluetooth needed) ----
+def _scanner(own_group):
+    b = bp.BLEProximity()
+    b._own_ids = hash_groups([own_group])[0]
+    b._own_table = build_own_table([own_group])
+    b._rssi_floor = -120
+    return b
+
+
+def test_process_result_friend_admitted_with_arrival():
+    b = _scanner("Makerspace Baasrode")
+    adv = build_payload(b._own_ids, "Otter 42")
+    b._process_result(0, b"\x01\x02\x03", adv, -70, 1000)
+    assert len(b._seen) == 1
+    e = list(b._seen.values())[0]
+    assert e["name"] == "Otter 42" and e["rssi_prox"] == -70.0
+    assert len(b.take_arrivals()) == 1
+
+
+def test_process_result_game_target_admitted_no_arrival():
+    b = _scanner("MyGroup")
+    b.set_game_context(admit_pids={4242}, pin_pids={4242})
+    tgt_ids = hash_groups(["OtherGroup"])[0]      # no friend match
+    adv = build_payload(tgt_ids, "Target",
+                        game={"pid": 4242, "gflags": GFLAG_ALIVE, "streak": 0})
+    b._process_result(0, b"\x09\x09", adv, -70, 1000)
+    assert b.peer_by_pid(4242) is not None
+    assert b.take_arrivals() == []                # game-only admit -> no friend arrival
+
+
+def test_process_result_lru_caps_and_pins_target():
+    b = _scanner("G")
+    b._seen_cap = 3
+    b.set_game_context(admit_pids={999}, pin_pids={999})
+    tgt = build_payload(hash_groups(["Z"])[0], "T",
+                        game={"pid": 999, "gflags": GFLAG_ALIVE, "streak": 0})
+    b._process_result(0, b"\x01", tgt, -60, 5000)     # target, oldest, pinned
+    for i in range(5):                                 # flood with friends
+        b._process_result(0, bytes([i + 10]), build_payload(b._own_ids, "f%d" % i),
+                          -70, 5000 + i)
+    assert len(b._seen) <= b._seen_cap
+    assert b.peer_by_pid(999) is not None              # survived despite being oldest
+
+
+def test_process_result_rssi_prox_is_asymmetric():
+    b = _scanner("G")
+    b.set_prox_filter(0.6, 0.08)                       # fast attack, slow decay
+    addr = b"\xaa"
+    adv = build_payload(b._own_ids, "p")
+    b._process_result(0, addr, adv, -80, 1000)
+    b._process_result(0, addr, adv, -60, 2000)         # jump up -> fast attack
+    up = b._seen[(0, addr)]["rssi_prox"]
+    b._process_result(0, addr, adv, -90, 3000)         # drop -> slow decay
+    dn = b._seen[(0, addr)]["rssi_prox"]
+    assert up > -75 and dn > -80                       # attacked fast, decayed slowly

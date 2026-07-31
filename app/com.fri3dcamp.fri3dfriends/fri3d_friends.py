@@ -125,9 +125,9 @@ MENU_BTN_Y = H - 24                 # bottom of the nametag
 MENU_PAD = 10                       # overlay side margin
 MENU_W = W - 2 * MENU_PAD
 MENU_TITLE_Y = 10
-MENU_ROWS_TOP = 44
-MENU_ROW_H = 30
-MENU_MAX = 5                        # Vrienden / Ruilen / Geluid / Telefoon / Instellingen
+MENU_ROWS_TOP = 40
+MENU_ROW_H = 26
+MENU_MAX = 7                        # + Gotcha demo / Stoppen-Meedoen when enrolled
 
 BANNER_MS_DEFAULT = 5000
 TICK_MS = 30
@@ -172,6 +172,11 @@ MAX_PILLS = 4
 # directly: the keypad drives the LVGL focus group, so no pin maps remain.
 BUZZER_PIN_2024 = 46
 BUZZER_PIN_2026 = 38
+# DEV: suppress the physical buzzer entirely (people are sleeping during the
+# night test). With this True the PWM is never initialised, so _sting/_ping_chirp
+# no-op physically; the hunt ping still runs its logic and bumps self._g_pings so
+# it is observable in gotcha_dbg.txt. Flip to False to re-enable sound.
+SILENT = True
 
 COL_BG = 0x0B0E14
 COL_NAME = 0xFFFFFF
@@ -235,6 +240,17 @@ class Fri3dFriends(Activity):
     def __init__(self):
         super().__init__()
         self._ble = BLEProximity()
+        # Gotcha (Phase 2). self._gc is created in _setup_gotcha() (needs config +
+        # the live screen). A Gotcha fault degrades to "no game", never "no
+        # nametag" (§8.6) -- every entry point is try/except-wrapped.
+        self._gc = None
+        self._g_chip = None
+        self._g_target = None
+        self._g_bars = []
+        self._g_chip_last = None
+        self._g_target_last = None
+        self._g_dbg_last = None
+        self._g_log = []
         self._config = {}
         self._own_table = []
         self._unconfigured = False
@@ -259,6 +275,9 @@ class Fri3dFriends(Activity):
         self._banner_is_arrival = False
         self._alert_names = []
         self._buzzer = None
+        self._buzzer_until = 0           # buzzer busy until this (ping priority)
+        self._g_last_ping_ms = 0         # last hunt ping (drop-not-queue, §8.8.6)
+        self._g_pings = 0                 # hunt pings fired (observable when SILENT)
         self._dimmed = False
         self._led_next_ms = 0
         self._led_override_until = 0
@@ -403,6 +422,186 @@ class Fri3dFriends(Activity):
         except Exception:
             pass
 
+    # ------------------------------------------------------------- Gotcha (P2)
+    # Every entry point is wrapped so a Gotcha fault degrades to "no game",
+    # never "no nametag" (plan §8.6). self._gc is created in _setup_gotcha()
+    # (needs the live screen + config); the controller owns state/sync/connectivity
+    # and the renderer here reads its getters.
+    def _setup_gotcha(self):
+        if self._gc is not None:
+            return
+        try:
+            import gotcha_app
+            self._gc = gotcha_app.GotchaController(
+                self._ble, APP_DIR + "/gotcha.json", log=self._gc_log)
+            self._gc.configure(self._config.get("gotcha"),
+                               self._config.get("name"), self._config.get("groups"))
+        except Exception as e:
+            self._gc_log("setup err %r" % (e,))
+            self._gc = None
+            return
+        # Pre-built hidden widgets (set_text/toggle only -- never delete, §8.4).
+        scr = self._scr
+        self._g_chip = self._label(scr, 8, H - 42, "", COL_NEAR,
+                                   font=lv.font_montserrat_12)
+        self._g_target = self._label(scr, 8, H - 24, "", COL_NAME,
+                                     font=lv.font_montserrat_14)
+        try:
+            self._g_target.set_long_mode(lv.label.LONG_MODE.WRAP)
+            self._g_target.set_width(W - 40)
+        except Exception:
+            pass
+        bx = W - 30
+        for i in range(5):
+            bh = 4 + i * 2
+            self._g_bars.append(self._rbox(scr, bx, H - 12 - bh, 3, bh,
+                                           COL_BAR_OFF, radius=1))
+            bx += 4
+
+    def _gc_log(self, msg):
+        self._g_log.append(str(msg))
+        if len(self._g_log) > 24:
+            self._g_log = self._g_log[-24:]
+
+    def _gc_start(self):
+        if self._gc is not None:
+            try:
+                self._gc.start()
+            except Exception as e:
+                self._gc_log("start err %r" % (e,))
+
+    def _gc_stop(self):
+        if self._gc is not None:
+            try:
+                self._gc.stop()
+            except Exception:
+                pass
+
+    def _gotcha_toggle(self):
+        # Opt out / back in (§13). Controller persists it, drops/re-raises the
+        # game block, and re-syncs on opt-in. A banner confirms the change.
+        if self._gc is None:
+            return
+        try:
+            if self._gc.is_opted_out():
+                self._gc.opt_in()
+                self._show_banner("Gotcha: je doet weer mee")
+            else:
+                self._gc.opt_out()
+                self._show_banner("Gotcha: je bent gestopt")
+            self._wake()
+        except Exception as e:
+            self._gc_log("toggle err %r" % (e,))
+
+    async def _gotcha_demo(self):
+        # §8.4 demo: walk the colour language so the first time a player sees a
+        # colour is not the first time it matters. Re-flashes each step so the
+        # LED override stays active against the main loop's _update_leds. Sound
+        # is muted under SILENT; the colours + captions carry it.
+        if self._gc is None:
+            return
+        steps = [
+            ((0, 0, 255), "VER -- doel in de buurt"),
+            ((255, 150, 0), "DICHTBIJ -- nadert"),
+            ((255, 0, 0), "AANVALLEN -- op raakafstand"),
+            ((255, 200, 0), "ONTHULLEN -- goud"),
+            ((0, 255, 0), "GOTCHA -- punt gescoord"),
+        ]
+        try:
+            for (r, g, b), cap in steps:
+                self._show_banner(cap)
+                for _ in range(2):      # hold ~1.6 s, re-flash to keep override
+                    self._flash_leds(r, g, b)
+                    await asyncio.sleep_ms(800)
+            self._hide_banner()
+            self._led_last = None       # let _update_leds repaint normally
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
+
+    def _gc_tick(self, now):
+        if self._gc is None:
+            return
+        try:
+            self._gc.tick(now, self._wifi_connected(), self._sound)
+        except Exception as e:
+            self._gc_log("tick err %r" % (e,))
+
+    def _set_gotcha_bars(self, segs, halted):
+        if halted:
+            segs = 0
+        if segs <= 0:
+            on = _col(0x4488ff)
+            lit = 0
+        elif segs >= 5:
+            on = _col(0xff4444)
+            lit = 5
+        elif segs >= 3:
+            on = _col(0xffaa00)
+            lit = segs
+        else:
+            on = _col(0x4488ff)
+            lit = segs
+        off = _col(COL_BAR_OFF)
+        for i, b in enumerate(self._g_bars):
+            try:
+                b.set_style_bg_color(on if i < lit else off, 0)
+            except Exception:
+                pass
+
+    def _render_gotcha(self):
+        gc = self._gc
+        if gc is None or self._g_chip is None:
+            return
+        try:
+            if gc.enrolled:
+                chip = gc.status_chip_text()
+                if chip != self._g_chip_last:
+                    self._g_chip_last = chip
+                    self._g_chip.set_text(chip)
+                self._g_chip.remove_flag(lv.obj.FLAG.HIDDEN)
+            else:
+                self._g_chip.add_flag(lv.obj.FLAG.HIDDEN)
+
+            halted = gc.radar_halted()
+            if gc.show_strip():
+                line = gc.target_line_text()
+                if line != self._g_target_last:
+                    self._g_target_last = line
+                    self._g_target.set_text(line)
+                self._g_target.remove_flag(lv.obj.FLAG.HIDDEN)
+                self._set_gotcha_bars(gc.radar_segs, halted)
+            elif gc.enrolled and gc.no_network():
+                if self._g_target_last != "net":
+                    self._g_target_last = "net"
+                    self._g_target.set_text("geen netwerk -- WiFi in Instellingen")
+                self._g_target.remove_flag(lv.obj.FLAG.HIDDEN)
+                self._set_gotcha_bars(0, True)
+            else:
+                self._g_target.add_flag(lv.obj.FLAG.HIDDEN)
+                self._set_gotcha_bars(0, True)
+            self._g_dbg(gc, halted)
+        except Exception as e:
+            self._gc_log("render err %r" % (e,))
+
+    def _g_dbg(self, gc, halted):
+        # Dev-only: a change-gated one-line status file so the host can read what
+        # the chip/strip/radar are showing (BLE wedges exec; cp still works).
+        # Writes only on a state change -> negligible flash wear. Remove for camp.
+        try:
+            line = "enr=%s online=%s halt=%s segs=%d prox=%s pings=%d chip=%s tgt=%s" % (
+                gc.enrolled, gc.online, halted, gc.radar_segs,
+                gc.target_prox, self._g_pings, gc.status_chip_text(), gc.target_line_text())
+            if line != self._g_dbg_last:
+                self._g_dbg_last = line
+                f = open(APP_DIR + "/gotcha_dbg.txt", "w")
+                f.write(line + "\n")
+                f.flush()
+                f.close()
+        except Exception:
+            pass
+
     # ------------------------------------------------------- focus group (drawer fix)
     # The badge keypad drives the shared DEFAULT LVGL focus group. While our app
     # is foregrounded that group is otherwise EMPTY, so any press would fall back
@@ -534,6 +733,9 @@ class Fri3dFriends(Activity):
 
     # ------------------------------------------------------------------ buzzer
     def _setup_buzzer(self):
+        if SILENT:
+            self._buzzer = None            # no PWM -> every beep is physically mute
+            return
         try:
             from machine import PWM, Pin
             pin = BUZZER_PIN_2026 if self._is_2026 else BUZZER_PIN_2024
@@ -542,8 +744,11 @@ class Fri3dFriends(Activity):
             self._buzzer = None
 
     async def _sting(self, freq):
-        if not self._sound or not self._buzzer:
+        if SILENT or not self._sound or not self._buzzer:
             return
+        # Sound priority (§8.8.6): an arrival sting pre-empts the hunt ping. Mark
+        # the buzzer busy so a due ping is dropped rather than queued/overlapped.
+        self._buzzer_until = time.ticks_add(time.ticks_ms(), 250)
         try:
             self._buzzer.freq(int(freq))
             self._buzzer.duty_u16(16000)
@@ -551,6 +756,53 @@ class Fri3dFriends(Activity):
             self._buzzer.freq(int(freq) * 3 // 2)
             await asyncio.sleep_ms(90)
             self._buzzer.duty_u16(0)
+        except Exception:
+            pass
+
+    def _hunt_ping(self, now):
+        # The hunt ping (§8.8.6): a short FALLING chirp, rate = how close, silent
+        # below PING_FROM_SEG, a double-tap at kill range. Lowest sound priority
+        # -> dropped (never queued) if the buzzer is busy or any gate fails. Only
+        # the hunter hears it; suppressed by truce/quiet/mute. Buzzer PWM does not
+        # disable IRQs (unlike lights.write), so it is safe alongside the scan.
+        gc = self._gc
+        # NOTE: do NOT bail on `self._buzzer is None` -- under SILENT the buzzer is
+        # never initialised, but the ping logic (+ the observable pings counter)
+        # must still run. The physical chirp is gated separately below.
+        if (gc is None or not gc.enrolled or not self._sound or gc.radar_halted()
+                or gc.target_prox is None):
+            return
+        if time.ticks_diff(now, self._buzzer_until) < 0:
+            return                        # buzzer busy -> drop this ping
+        try:
+            import gotcha
+            ping = gotcha.hunt_ping(gc.target_prox, now, self._g_last_ping_ms,
+                                    gc.cfg, enabled=gc.cfg.get("PING_ENABLED"))
+        except Exception:
+            return
+        if ping is None:
+            return                        # below the silent floor, or not due
+        self._g_last_ping_ms = now
+        self._g_pings += 1                # observable even when SILENT (dbg)
+        if not SILENT and self._buzzer:
+            TaskManager.create_task(self._ping_chirp(ping[0], ping[1], ping[3]))
+
+    async def _ping_chirp(self, freq, burst_ms, taps):
+        # Falling chirp (freq -> 0.75f), distinguishable from the rising arrival
+        # sting. Quieter than an alert. `taps` doubles it at kill range.
+        if not self._buzzer:
+            return
+        self._buzzer_until = time.ticks_add(time.ticks_ms(), 120)
+        try:
+            for t in range(taps if taps > 1 else 1):
+                self._buzzer.freq(int(freq))
+                self._buzzer.duty_u16(9000)
+                await asyncio.sleep_ms(burst_ms)
+                self._buzzer.freq(int(freq) * 3 // 4)
+                await asyncio.sleep_ms(max(15, burst_ms // 2))
+                self._buzzer.duty_u16(0)
+                if taps > 1 and t < taps - 1:
+                    await asyncio.sleep_ms(70)      # double-tap gap
         except Exception:
             pass
 
@@ -1291,14 +1543,43 @@ class Fri3dFriends(Activity):
         return 5 if self._is_2026 else 4
 
     def _update_leds(self, now):
-        # One LED per nearby friend, slowly + dimly breathing that friend's group
-        # colour (friend 1 -> LED 0, friend 2 -> LED 1, ...). Others off.
+        # Gotcha owns the whole strip while a game is live (§8.8.1): the radar bar
+        # from the target's rssi_prox, dark when no target / truce. Otherwise the
+        # per-friend breathing LEDs (one per nearby group-mate) -- unchanged.
         if time.ticks_diff(now, self._led_next_ms) < 0:
             return
         self._led_next_ms = time.ticks_add(now, LED_UPDATE_MS)
         if self._led_override_until and time.ticks_diff(now, self._led_override_until) < 0:
             return                      # a flash is currently showing
         n = self._led_count()
+        if self._gc is not None and self._gc.enrolled:
+            frame = self._led_hunt_frame(now, n)
+        else:
+            frame = self._led_friend_frame(now, n)
+        if frame == self._led_last:     # skip redundant writes (dark/steady cost 0)
+            return
+        self._led_last = frame
+        try:
+            for i, (r, g, b) in enumerate(frame):
+                lights.set_led(i, r, g, b)
+            lights.write()
+        except Exception:
+            pass
+
+    def _led_hunt_frame(self, now, n):
+        # The §8.8.2 radar bar: [(r,g,b)]*n, brightness+breathe applied, dark when
+        # halted/no target. Frame-cacheable (the caller dedups the whole frame).
+        try:
+            import gotcha
+            gc = self._gc
+            return gotcha.hunt_bar(gc.target_prox, now, gc.cfg, n,
+                                   halted=gc.radar_halted())
+        except Exception:
+            return [(0, 0, 0)] * n
+
+    def _led_friend_frame(self, now, n):
+        # One LED per nearby friend, slowly + dimly breathing that friend's group
+        # colour (friend 1 -> LED 0, friend 2 -> LED 1, ...). Others off.
         peers = [] if self._unconfigured else self._ble.current_peers()
         frame = []
         span = LED_DIM_MAX - LED_DIM_MIN
@@ -1313,15 +1594,7 @@ class Fri3dFriends(Activity):
                 frame.append((int(r * s), int(g * s), int(b * s)))
             else:
                 frame.append((0, 0, 0))
-        if frame == self._led_last:     # skip redundant writes (e.g. all-off)
-            return
-        self._led_last = frame
-        try:
-            for i, (r, g, b) in enumerate(frame):
-                lights.set_led(i, r, g, b)
-            lights.write()
-        except Exception:
-            pass
+        return frame
 
     # ------------------------------------------------------------------ lifecycle
     def onCreate(self):
@@ -1337,6 +1610,7 @@ class Fri3dFriends(Activity):
         # cleanly (no ghost splash — see _build_splash).
         self._scr = lv.obj()
         self._build_idle(self._scr)
+        self._setup_gotcha()
         self._splash_scr = self._build_splash(self._scr)
         self.setContentView(self._scr)
         # add_focus_border enrols every focusable in the default group at build
@@ -1369,6 +1643,7 @@ class Fri3dFriends(Activity):
         # group was emptied by _release_focus on pause so the launcher/editor
         # got a clean group).
         self._establish_focus()
+        self._gc_start()
         if not self._entered and self._splash_task is None:
             self._splash_task = TaskManager.create_task(self._splash_then_enter())
         self._task = TaskManager.create_task(self._loop())
@@ -1379,6 +1654,7 @@ class Fri3dFriends(Activity):
         self._stop_task()
         self._stop_setup()
         self._teardown_ble()
+        self._gc_stop()
         self._set_brightness(255)
         self._led_last = None
         try:
@@ -1491,6 +1767,9 @@ class Fri3dFriends(Activity):
                     except Exception:
                         pass
                 self._ble.tick(now, dt)
+                self._gc_tick(now)
+                self._render_gotcha()
+                self._hunt_ping(now)
                 self._drain_arrivals()
                 self._refresh_nearby()
                 # While a setup session runs (Configure-me on an unconfigured
@@ -1886,6 +2165,12 @@ class Fri3dFriends(Activity):
             ("Telefoon-setup", "setup"),
             ("Instellingen", "settings"),
         ]
+        # Gotcha rows appear once a game has ever been joined (§13: opt-out is
+        # always reachable in a few seconds; opt-in brings you back).
+        if self._gc is not None and self._gc.ever_enrolled():
+            items.append(("Gotcha demo", "gotcha_demo"))
+            items.append(("Stoppen met Gotcha" if not self._gc.is_opted_out()
+                          else "Meedoen met Gotcha", "gotcha_toggle"))
         self._menu_actions = [act for _, act in items]
         self._menu_count = len(items)
         for i in range(MENU_MAX):
@@ -1947,6 +2232,20 @@ class Fri3dFriends(Activity):
         elif action == "settings":
             self._close_menu()
             self._open_settings()
+        elif action == "gotcha_demo":
+            self._close_menu()
+            TaskManager.create_task(self._gotcha_demo())
+        elif action == "gotcha_toggle":
+            # Opt out / back in in place (§13). Stay in the menu and refresh the
+            # row label so the change is visible immediately.
+            self._gotcha_toggle()
+            try:
+                idx = self._menu_actions.index("gotcha_toggle")
+                self._menu_row_labels[idx].set_text(
+                    "Stoppen met Gotcha" if not self._gc.is_opted_out()
+                    else "Meedoen met Gotcha")
+            except Exception:
+                pass
 
     def _make_cfg_cb(self, action):
         def cb(e):

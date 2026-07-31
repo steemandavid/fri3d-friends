@@ -23,21 +23,39 @@
 # ---------------------------------------------------------------------------
 
 MAGIC = b"HSNT"                 # "Hackerspace NameTag" — identifies any badge running this app
-VERSION = 1                     # wire-format version byte
+VERSION = 2                     # wire-format version byte (HSNT v2, plan §4)
 COMPANY_ID = b"\xff\xff"        # little-endian placeholder (reserved/testing range)
 AD_TYPE_MFG = 0xFF              # Manufacturer Specific Data
 
 MAX_GROUPS = 5                  # cap on advertised group IDs (2 bytes each on the wire)
 
-# 31-byte legacy adv budget, no Flags AD emitted (non-connectable beacon):
-#   2 (AD len+type) + 2 (company) + 4 (magic) + 1 (version) + 1 (group count)
-#   + 2*G (groups) + 1 (name len)  =  11 + 2*G  of overhead, name gets the rest.
+# HSNT v2 adds a `blocks` byte (always present) after the version, and an
+# optional 5-byte game block after the name when bit0 of `blocks` is set
+# (plan §4). When no game is running the bit is clear and the beacon is the
+# same size as v1, so Gotcha costs nothing when idle.
+BLOCK_GAME = 0x01               # bit0 of `blocks`: a game block is appended
+GAME_BLOCK_LEN = 5              # pid(3) + gflags(1) + streak(1)
+
+# gflags bits on air (plan §4). Let a nearby badge render bounty/streak/alive
+# and the "protected"/"truce" states with no backend round-trip.
+GFLAG_ALIVE = 0x01
+GFLAG_UNDER_ATTACK = 0x02
+GFLAG_BOUNTY = 0x04
+GFLAG_TRUCE = 0x08
+GFLAG_PROTECTED = 0x10
+GFLAG_SEEKING_TRAINING = 0x20
+
+# 31-byte adv budget, no Flags AD emitted (non-connectable beacon):
+#   2 (AD len+type) + 2 (company) + 4 (magic) + 1 (version) + 1 (blocks)
+#   + 1 (group count) + 2*G (groups) + 1 (name len)  =  12 + 2*G  of overhead,
+#   name gets the rest; +5 more when a game block is present.
 ADV_TOTAL = 31
-OVERHEAD = 2 + 2 + 4 + 1 + 1 + 1   # AD-header + company + magic + version + gcount + namelen
+OVERHEAD = 2 + 2 + 4 + 1 + 1 + 1 + 1   # +1 vs v1 for the `blocks` byte
 
 # Tuning (radio wrapper)
 ADV_MS = 250                    # advertise interval (ms)
 EVICT_MS = 30000                # peer gone if not seen for this long (ms)
+SEEN_CAP = 64                   # LRU cap on the peer table (plan §4)
 # Scanning: a CONTINUOUS, dense scan with an explicit interval/window. This is
 # critical — MicroPython's gap_scan() with DEFAULT args enables NimBLE's
 # duplicate filter, so each peer is reported only ~once and presence flaps as
@@ -105,10 +123,29 @@ def hash_groups(groups, max_groups=MAX_GROUPS):
     return ids, dropped
 
 
-def name_budget(num_groups, total=ADV_TOTAL, overhead=OVERHEAD):
-    """Bytes available for the name field given `num_groups` advertised ids."""
-    nb = total - overhead - 2 * num_groups
+def name_budget(num_groups, total=ADV_TOTAL, overhead=OVERHEAD, game=False):
+    """Bytes available for the name field given `num_groups` advertised ids.
+
+    `game` True reserves the 5-byte game block too (the v2 `blocks` byte is
+    already counted in OVERHEAD)."""
+    extra = GAME_BLOCK_LEN if game else 0
+    nb = total - overhead - extra - 2 * num_groups
     return nb if nb > 0 else 0
+
+
+def build_game_block(pid, gflags=0, streak=0):
+    """The 5-byte v2 game block: pid(3 LE) + gflags(1) + streak(1) (plan §4)."""
+    pid = int(pid or 0) & 0xFFFFFF
+    return bytes([pid & 0xFF, (pid >> 8) & 0xFF, (pid >> 16) & 0xFF,
+                  int(gflags) & 0xFF, int(streak) & 0xFF])
+
+
+def parse_game_block(b):
+    """Inverse of build_game_block. Bad input -> None, never raises."""
+    if not isinstance(b, (bytes, bytearray)) or len(b) < GAME_BLOCK_LEN:
+        return None
+    return {"pid": b[0] | (b[1] << 8) | (b[2] << 16),
+            "gflags": b[3], "streak": b[4]}
 
 
 def truncate_utf8(s, max_bytes):
@@ -126,27 +163,31 @@ def truncate_utf8(s, max_bytes):
     return enc[:cut].decode("utf-8", "ignore")
 
 
-def build_payload(group_ids, name):
-    """Build the full legacy advertising payload (one manufacturer AD structure).
+def build_payload(group_ids, name, game=None):
+    """Build the v2 advertising payload (one manufacturer AD structure).
 
     `group_ids` must already be deduped/sorted/capped (use hash_groups()).
-    `name` is truncated to the available budget on a UTF-8 boundary.
-    Returns bytes of length <= ADV_TOTAL.
+    `name` is truncated to the available budget on a UTF-8 boundary. `game`, if
+    a dict with a `pid`, appends the 5-byte game block (plan §4) and sets the
+    blocks bit so the name is budgeted for it. Returns bytes of length <= ADV_TOTAL.
     """
     gids = sorted(set(int(g) & 0xFFFF for g in group_ids))[:MAX_GROUPS]
-    nb = name_budget(len(gids))
+    has_game = isinstance(game, dict) and game.get("pid") is not None
+    nb = name_budget(len(gids), game=has_game)
     disp = truncate_utf8(name or "", nb)
     name_b = disp.encode("utf-8")
 
     body = (
         COMPANY_ID +
         MAGIC +
-        bytes([VERSION]) +
-        bytes([len(gids)]) +
+        bytes([VERSION, BLOCK_GAME if has_game else 0x00, len(gids)]) +
         b"".join(_u16_le(g) for g in gids) +
         bytes([len(name_b)]) +
         name_b
     )
+    if has_game:
+        body += build_game_block(game.get("pid"), game.get("gflags", 0),
+                                 game.get("streak", 0))
     # AD structure: [length-of-following, type, body...]
     return bytes([len(body) + 1, AD_TYPE_MFG]) + body
 
@@ -155,9 +196,10 @@ def parse_payload(adv):
     """Defensively parse an advertising payload and extract our beacon if present.
 
     `adv` is the raw advertisement bytes (one or more AD structures). Returns a
-    dict {version, group_ids, name} on a valid v1 HSNT beacon, or None for:
-    anything malformed, wrong magic, unknown version, or length fields that
-    overrun the buffer. Never raises.
+    dict {version, group_ids, name, game} on a valid HSNT v1/v2 beacon, or None
+    for anything malformed, wrong magic/company, unknown version, reserved blocks
+    bits, or length fields that overrun the buffer. `game` is None unless a v2
+    game block is present and well-formed. Never raises.
     """
     if not isinstance(adv, (bytes, bytearray)):
         return None
@@ -181,31 +223,49 @@ def parse_payload(adv):
         if field[2:2 + len(MAGIC)] != MAGIC:
             continue
         rest = field[2 + len(MAGIC):]
-        # rest = version(1) gcount(1) gids(2*gcount) namelen(1) name(namelen)
-        if len(rest) < 2:
+        if len(rest) < 1:
             continue
         version = rest[0]
-        if version != VERSION:
-            continue            # unknown version -> drop (forward-compat)
-        gcount = rest[1]
-        gid_end = 2 + 2 * gcount
+        if version == 1:
+            # v1: ver gcount gids namelen name (no blocks byte, no game block)
+            blocks = 0
+            if len(rest) < 2:
+                continue
+            gcount = rest[1]
+            p = 2
+        elif version == 2:
+            # v2: ver blocks gcount gids namelen name [game block]
+            if len(rest) < 3:
+                continue
+            blocks = rest[1]
+            if blocks & ~BLOCK_GAME:        # reserved bits set -> drop (forward-compat)
+                continue
+            gcount = rest[2]
+            p = 3
+        else:
+            continue                        # unknown version -> drop
+        gid_end = p + 2 * gcount
         if len(rest) < gid_end + 1:
-            continue            # truncated
+            continue                        # truncated
         gids = []
         for k in range(gcount):
-            lo = rest[2 + 2 * k]
-            hi = rest[3 + 2 * k]
+            lo = rest[p + 2 * k]
+            hi = rest[p + 2 * k + 1]
             gids.append(lo | (hi << 8))
         namelen = rest[gid_end]
         name_start = gid_end + 1
         if len(rest) < name_start + namelen:
-            continue            # truncated
+            continue                        # truncated
         name_b = rest[name_start:name_start + namelen]
         try:
             name = name_b.decode("utf-8", "replace")
         except Exception:
             name = ""
-        return {"version": version, "group_ids": gids, "name": name}
+        game = None
+        if version == 2 and (blocks & BLOCK_GAME):
+            gb = rest[name_start + namelen:name_start + namelen + GAME_BLOCK_LEN]
+            game = parse_game_block(gb)     # None if truncated/short
+        return {"version": version, "group_ids": gids, "name": name, "game": game}
     return None
 
 
@@ -334,7 +394,61 @@ def new_groups_from(existing, incoming, max_groups=MAX_GROUPS):
 
 
 # ---------------------------------------------------------------------------
-# 2. RADIO WRAPPER  (lazy `import bluetooth`)
+# 2b. PEER-TABLE ADMISSION + LRU (pure; plan §4 pre-existing weakness)
+# ---------------------------------------------------------------------------
+#
+# Today _process_result() drops any advert sharing no group, which keeps _seen
+# small by accident. Once game-block peers are admitted (a Gotcha target is by
+# design almost never in your group, D9), 700 badges mean unbounded growth. So
+# admission widens during a live game (target pid / bounty / alive-dead display)
+# AND the table is capped with an LRU that pins the current target + bounty
+# peers so a dense crowd can never evict the one peer the game is about.
+
+def admit_peer(own_ids, info, admit_pids=None, game_live=False):
+    """Should this parsed advert enter the peer table?
+
+    Admit if it shares a group (the friend finder), OR -- during a live game --
+    it carries a v2 game block and is the current target / a wanted bounty
+    player. Defensive; never raises."""
+    if not isinstance(info, dict):
+        return False
+    if intersect(own_ids, info.get("group_ids") or []):
+        return True
+    if game_live:
+        g = info.get("game")
+        if isinstance(g, dict):
+            pid = g.get("pid")
+            if admit_pids and pid in admit_pids:
+                return True
+            if g.get("gflags", 0) & GFLAG_BOUNTY:
+                return True
+    return False
+
+
+def evict_lru(seen, cap, pinned_keys=None):
+    """If len(seen) > cap, drop the lowest-last_seen NON-pinned entries until it
+    fits. `seen` is mutated in place; returns the evicted keys. If every entry is
+    pinned, stops (the table may briefly exceed the cap rather than lose a pin)."""
+    pinned = pinned_keys or set()
+    evicted = []
+    while len(seen) > cap:
+        victim = None
+        victim_t = None
+        for k, e in seen.items():
+            if k in pinned:
+                continue
+            t = e.get("last_seen_ms", 0)
+            if victim is None or t < victim_t:
+                victim, victim_t = k, t
+        if victim is None:
+            break
+        del seen[victim]
+        evicted.append(victim)
+    return evicted
+
+
+# ---------------------------------------------------------------------------
+# 3. RADIO WRAPPER  (lazy `import bluetooth`)
 # ---------------------------------------------------------------------------
 
 class BLEProximity:
@@ -352,6 +466,7 @@ class BLEProximity:
         self._own_table = []          # [(name, id), ...]
         self._rssi_floor = RSSI_FLOOR_DEFAULT
         self._seen = {}               # key (addr_type, addr_bytes) -> dict
+        self._seen_cap = SEEN_CAP     # LRU cap on the peer table (plan §4)
         self._arrivals = []           # queued new-arrival events for UI
         self._pending = []            # raw scan results captured in the IRQ, drained in tick()
         self._adv = None              # current adv payload
@@ -359,9 +474,17 @@ class BLEProximity:
         self._irq_scan_result = 5     # bluetooth._IRQ_SCAN_RESULT (seeded in begin)
         self._name = ""
         self._suspended = False       # True while the contact-exchange window owns the radio
+        # Gotcha game context (plan §4, §8.8.2). Defaults make rssi_prox behave
+        # like the symmetric friends EWMA until Gotcha supplies the asymmetric
+        # hunt alphas; admission/pinning stay friend-only until a game is live.
+        self._prox_alpha_up = 0.3
+        self._prox_alpha_down = 0.3
+        self._admit_pids = set()      # extra pids to admit during a live game
+        self._pin_pids = set()        # pids never evicted by the LRU (target/bounty)
+        self._game = None             # current v2 game block on air (plan §4)
 
     # ---- lifecycle ----
-    def begin(self, groups, name, rssi_floor=RSSI_FLOOR_DEFAULT):
+    def begin(self, groups, name, rssi_floor=RSSI_FLOOR_DEFAULT, game=None):
         import bluetooth
         from bluetooth import BLE
         self._own_ids, _ = hash_groups(groups)
@@ -371,8 +494,9 @@ class BLEProximity:
         self._name = name if isinstance(name, str) else ""
         self._rssi_floor = self._validate_floor(rssi_floor)
         self._irq_scan_result = getattr(bluetooth, "_IRQ_SCAN_RESULT", 5)
+        self._game = game
 
-        self._adv = build_payload(self._own_ids, self._name)
+        self._adv = build_payload(self._own_ids, self._name, game=self._game)
 
         self._ble = BLE()
         self._ble.active(True)
@@ -387,6 +511,19 @@ class BLEProximity:
         self._next_rearm_ms = 0       # start the continuous scan on the first tick()
         self._active = True
         return adv_ok
+
+    def set_game(self, game):
+        """Update the v2 game block on air (pid/gflags/streak change after a
+        sync). Rebuilds the adv payload and re-advertises; a None game drops the
+        block (idle beacon). Safe to call before begin() (just stores it)."""
+        self._game = game
+        self._adv = build_payload(self._own_ids, self._name, game=self._game)
+        if self._ble and self._active and not self._suspended:
+            try:
+                self._ble.gap_advertise(ADV_MS * 1000, adv_data=self._adv,
+                                        connectable=False)
+            except Exception:
+                pass
 
     def end(self):
         if not self._ble:
@@ -490,14 +627,16 @@ class BLEProximity:
         info = parse_payload(adv_data)
         if info is None:
             return
-        shared = intersect(self._own_ids, info["group_ids"])
-        if not shared:
-            return                  # disjoint -> ignore
+        game_live = bool(self._admit_pids) or bool(self._pin_pids)
+        if not admit_peer(self._own_ids, info, self._admit_pids, game_live):
+            return                  # not a friend, and not a game-admitted peer
         if rssi < self._rssi_floor:
             return                  # below noise floor
         key = (addr_type, addr)
         entry = self._seen.get(key)
         shared_id, shared_name = shared_name_for(self._own_table, info["group_ids"])
+        game = info.get("game")
+        pid = game.get("pid") if isinstance(game, dict) else None
         is_new = entry is None
         if is_new:
             entry = {
@@ -505,25 +644,75 @@ class BLEProximity:
                 "shared_id": shared_id,
                 "shared_name": shared_name,
                 "addr_type": addr_type,
+                "pid": pid,
+                "gflags": game.get("gflags", 0) if isinstance(game, dict) else 0,
                 "rssi": rssi,
                 "rssi_ewma": float(rssi),
+                "rssi_prox": float(rssi),
                 "last_seen_ms": now,
             }
             self._seen[key] = entry
-            self._arrivals.append({
-                "name": info["name"],
-                "shared_id": shared_id,
-                "shared_name": shared_name,
-                "rssi": rssi,
-            })
+            # A friend-arrival is announced only for group-sharing peers, never
+            # for a game-only admit (the target is rarely a group-mate, D9).
+            if shared_id is not None:
+                self._arrivals.append({
+                    "name": info["name"],
+                    "shared_id": shared_id,
+                    "shared_name": shared_name,
+                    "rssi": rssi,
+                })
+            self._enforce_cap()
         else:
             entry["last_seen_ms"] = now
             a = 0.3
             entry["rssi_ewma"] = (1 - a) * entry["rssi_ewma"] + a * rssi
+            entry["rssi_prox"] = self._filter_prox(entry["rssi_prox"], rssi)
             entry["rssi"] = rssi
             entry["name"] = info["name"]     # refresh (peer may have been renamed)
             entry["shared_name"] = shared_name
             entry["shared_id"] = shared_id
+            entry["pid"] = pid
+            if isinstance(game, dict):
+                entry["gflags"] = game.get("gflags", 0)
+
+    # ---- Gotcha game context (admission widening + LRU pinning + hunt filter) ----
+    def set_game_context(self, admit_pids=None, pin_pids=None):
+        """Tell the scanner which extra peers to admit (target pid, alive-dead
+        display) and which to pin against LRU eviction (target + bounty), during
+        a live game. Pass empty/None to return to friend-only admission."""
+        self._admit_pids = set(admit_pids or [])
+        self._pin_pids = set(pin_pids or [])
+
+    def set_prox_filter(self, alpha_up=None, alpha_down=None):
+        """Set the asymmetric hunt-path rssi_prox coefficients (plan §8.8.2).
+        Defaults 0.3/0.3 mirror the friends EWMA; Gotcha passes the live
+        PROX_ALPHA_UP/DOWN tunables so rssi_prox attacks fast and decays slow."""
+        if alpha_up is not None:
+            self._prox_alpha_up = alpha_up
+        if alpha_down is not None:
+            self._prox_alpha_down = alpha_down
+
+    def _filter_prox(self, prev, rssi):
+        a = self._prox_alpha_up if rssi > prev else self._prox_alpha_down
+        return (1.0 - a) * prev + a * rssi
+
+    def _enforce_cap(self):
+        if len(self._seen) <= self._seen_cap:
+            return
+        pinned = set()
+        if self._pin_pids:
+            for k, e in self._seen.items():
+                if e.get("pid") in self._pin_pids:
+                    pinned.add(k)
+        evict_lru(self._seen, self._seen_cap, pinned)
+
+    def peer_by_pid(self, pid):
+        """The _seen entry for the peer advertising this game pid, or None.
+        The hunt reads the target's rssi_prox from here (§8.8.2)."""
+        for e in self._seen.values():
+            if e.get("pid") == pid:
+                return e
+        return None
 
     # ---- eviction ----
     def _evict(self, now_ms):

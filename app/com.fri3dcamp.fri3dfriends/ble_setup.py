@@ -218,7 +218,35 @@ def sanitize_config(new, base):
     elif not isinstance(cfg.get("contact"), dict):
         cfg["contact"] = {}
 
+    # gotcha: {enrolled, quiet{from,to}, enroll, api} -- plan §8.2, §6.3, §10.4a.
+    # Validated explicitly so a hostile/null `gotcha` cannot wipe the block, and
+    # the personal quiet window is clamped to the allowed night band (falling
+    # back to None == "use the camp truce" on anything unparseable; never raise,
+    # never store a half-valid window).
+    if "gotcha" in new:
+        cfg["gotcha"] = _sanitize_gotcha(new.get("gotcha"), cfg.get("gotcha"))
+    elif not isinstance(cfg.get("gotcha"), dict):
+        cfg["gotcha"] = _sanitize_gotcha(None, None)
+
     return cfg
+
+
+def _sanitize_gotcha(g, base):
+    """Coerce a phone-supplied `gotcha` block into a safe {enrolled, quiet,
+    enroll, api}. Pure + host-testable (imports only the pure gotcha helpers)."""
+    import gotcha as _g
+    base = base if isinstance(base, dict) else {}
+    g = g if isinstance(g, dict) else {}
+    out = {}
+    out["enrolled"] = bool(g.get("enrolled", base.get("enrolled", False)))
+    # clamp_quiet validates + clamps; None means "fall back to the camp truce".
+    quiet = g.get("quiet", base.get("quiet"))
+    out["quiet"] = _g.clamp_quiet(quiet, _g.GameConfig())
+    enroll = g.get("enroll", base.get("enroll", ""))
+    out["enroll"] = enroll if isinstance(enroll, str) else ""
+    api = g.get("api", base.get("api", ""))
+    out["api"] = api if isinstance(api, str) else ""
+    return out
 
 
 # ---------------------------------------------------------------------------

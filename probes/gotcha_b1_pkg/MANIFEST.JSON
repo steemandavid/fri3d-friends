@@ -1,0 +1,18 @@
+{
+  "name": "Gotcha B1",
+  "publisher": "test",
+  "short_description": "Phase 2 Layer-B spike: enroll + sync + HSNT v2 beacon + target detection on a real badge (throwaway)",
+  "long_description": "throwaway",
+  "fullname": "gotcha.b1",
+  "version": "0.1.0",
+  "category": "utilities",
+  "activities": [
+    {
+      "entrypoint": "gotcha_b1.py",
+      "classname": "GotchaB1Activity",
+      "intent_filters": [
+        { "action": "main", "category": "launcher" }
+      ]
+    }
+  ]
+}

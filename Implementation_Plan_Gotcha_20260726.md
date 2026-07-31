@@ -2776,6 +2776,33 @@ match: full-request-target signing, and `lives`-based soul verification) and
 their skeleton.
 
 **Phase 2 — badge: connectivity check, enrollment, sync, v2 beacon, radar.** No kills.
+**Layer A DONE (2026-07-30): the host-testable pure half is built and green —
+`gotcha.py` (GameConfig, truce/quiet, the §8.8.2 asymmetric proximity filter +
+radar bar + hunt ping, score preview, EventQueue, GotchaState persistence) and
+the HSNT v2 beacon build/parse + name budget + gflags in `ble_proximity.py`,
+plus the §4 widened admission (`admit_peer`) + pinned 64-entry LRU (`evict_lru`)
+and a new `rssi_prox` peer field wired into `BLEProximity`. 300 host tests
+pass. Nothing deployed yet — Layer B (on-badge: `GotchaSync` HTTP client,
+connectivity check, UI/LED/menu wiring) is next.** See changelog 2026-07-30.
+**Layer B PROVEN ON A PROBE (2026-07-30):** a throwaway Activity
+(`probes/gotcha_b1_pkg/`) drove two real badges (9070 + 1cdb) against the live
+backend `192.168.1.57:8080` — both enrolled, synced, were assigned each other as
+target (1003↔1004), and each detected the other over the v2 beacon at −46/−47
+dBm `rssi_prox`. This validates the whole Layer A + `GotchaSync` end-to-end on
+hardware and caught a real bug: `gotcha.py`'s crypto half used `.hexdigest()`
+(absent on MicroPython) — fixed via a portable `_hex()`; the on-badge crypto
+self-test now passes. **Remaining for the *shipped* exit:** integrate into
+`fri3d_friends.py`/`beacon_service.py` (UI radar bar + LED bar + ping + menu +
+demo + §7 connectivity check). The method is proven; only the wiring remains.
+**INTEGRATED + PROVEN IN THE SHIPPING APP (2026-07-30):** `gotcha_app.py`
+`GotchaController` + surgical `fri3d_friends.py` hooks (lifecycle, `_gc_tick`,
+`_render_gotcha` status chip + target strip + 5-seg on-screen radar) drive the
+real app. Two badges (9070 + 1cdb) enroll, sync, target each other, and show a
+**live on-screen radar lit red at kill range** (segs 5, rssi_prox −47/−50), with
+the §7 connectivity probe, truce evaluation and v2 beacon all working in-app.
+MANIFEST bumped 0.11.0. **Remaining:** the LED radar-bar rewrite of
+`_update_leds` + hunt ping (§8.8), and the `Gotcha` menu/screen/focus/demo
+(§8.4) — additive LVGL/sound work. See changelog 2026-07-30.
 Includes the **widened peer admission + pinned LRU** (§4), the **LED radar bar
 replacing the friend LEDs** (§8.8), the **hunt strip + `Gotcha` menu row + focus
 integration** (§8.4, D29), and **demo mode** — all independent of the duel and
