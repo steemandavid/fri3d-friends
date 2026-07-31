@@ -136,8 +136,13 @@ class GotchaController(object):
         if wifi_up and self._api_host and time.ticks_diff(now_ms, self._next_conn_ms) >= 0:
             self._next_conn_ms = time.ticks_add(now_ms, CONN_EVERY_MS)
             self._kick(self._conn_probe())
-        if (self.auto_enroll and wifi_up and self.online and not self.enrolled
-                and not self._enrolling and self.api_url):
+        # Auto-enroll ONCE (first ever join). NOT on `not self.enrolled`, which is
+        # also true while opted out -- that would re-enroll (GotchaState.enroll
+        # resets opted_out) and silently undo an opt-out the moment after it
+        # happens. Re-joining is the explicit opt-in menu action.
+        if (self.auto_enroll and wifi_up and self.online
+                and not self.ever_enrolled() and not self._enrolling
+                and self.api_url):
             self._kick(self._do_enroll())
         if (self.enrolled and self.online and not self._syncing and self.api_url
                 and time.ticks_diff(now_ms, self._next_sync_ms) >= 0
@@ -188,6 +193,8 @@ class GotchaController(object):
             return "badge0000"
 
     async def _do_enroll(self):
+        if self.is_opted_out():
+            return                  # never silently re-enroll an opted-out badge
         self._enrolling = True
         try:
             ok = await self.sync.enroll(self.enroll_url or self.api_url,
