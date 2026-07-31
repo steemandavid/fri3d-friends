@@ -2803,6 +2803,17 @@ the §7 connectivity probe, truce evaluation and v2 beacon all working in-app.
 MANIFEST bumped 0.11.0. **Remaining:** the LED radar-bar rewrite of
 `_update_leds` + hunt ping (§8.8), and the `Gotcha` menu/screen/focus/demo
 (§8.4) — additive LVGL/sound work. See changelog 2026-07-30.
+**PHASE 2 CODE-COMPLETE (2026-07-31):** the LED radar bar + hunt ping, the
+`Gotcha` menu (demo + opt-out/opt-in), AND the §13 first-run consent screen are
+all built and on-badge (MANIFEST 0.11.2). Opt-out was briefly undone by
+auto-re-enroll (fixed: enroll-once gate). **Phase 2 is CLOSED pending two field
+items, neither of which is code:** (1) the §11.1 worn-on-worn threshold walk
+(~30 min, two people, `tools/analyze_shadow.py`) to finalise `KILL_RSSI` — if
+skipped, ship `−68` (one step loose) and measure at the first playtest; (2)
+tap-verify the consent flow + demo on a fresh (never-enrolled) badge.
+**Before camp (dev flags):** `SILENT=True→False`, truce schedule `23:00–07:00
+→22:00–08:00`, remove the `gotcha_dbg.txt` writer. Next: **Phase 3 (the duel +
+Reveal).**
 Includes the **widened peer admission + pinned LRU** (§4), the **LED radar bar
 replacing the friend LEDs** (§8.8), the **hunt strip + `Gotcha` menu row + focus
 integration** (§8.4, D29), and **demo mode** — all independent of the duel and

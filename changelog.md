@@ -1,3 +1,31 @@
+# !Fri3d Friends — Gotcha Phase 2 close-out: first-run consent (§13) — 2026-07-31
+
+The last Phase 2 code piece — the **§13 first-run consent screen** — is built,
+deployed (MANIFEST 0.11.2) and **verified on-badge (bac8)**: a never-enrolled
+badge that detects a running game shows a one-time 'Gotcha' overlay (explanation
++ `Meedoen` / `Niet meedoen` / `Laat zien wat de badge doet`); Meedoen enrolls,
+Niet meedoen declines for the session, X = decline. Auto-enroll was removed —
+consent drives enrollment. Controller gained a `/healthz` game-state probe +
+`consent_needed`/`request_enroll`/`decline_consent`.
+
+Bug fixed en route: opt-out was instantly undone because `tick()` gated
+auto-enroll on `not self.enrolled` (also true while opted out) → re-enrolled
+(`GotchaState.enroll` resets `opted_out`) → 'Meedoen' re-opts-out. Now gated on
+`not ever_enrolled()` + a defensive `_do_enroll` guard (commit `1191558`).
+
+**Known issue, deferred:** the in-consent / menu **demo mode** runs but does not
+render correctly (colours/captions off) — to investigate later. Logged, not
+blocking.
+
+**Phase 2 is CODE-COMPLETE.** Two field items remain (neither is code):
+1. §11.1 worn-on-worn threshold walk (~30 min, two people, `tools/analyze_shadow.py`)
+   to finalise `KILL_RSSI`; if skipped, ship −68 and measure at first playtest.
+2. Before camp: `SILENT=True→False`, truce schedule `23:00–07:00→22:00–08:00`,
+   remove the `gotcha_dbg.txt` writer.
+Next: **Phase 3 (the duel + Reveal).**
+
+---
+
 # !Fri3d Friends — Gotcha Phase 2: integrated into the shipping app (radar live) — 2026-07-30
 
 The Phase 2 exit is now in the **shipping `fri3d_friends.py` app**, not just the
