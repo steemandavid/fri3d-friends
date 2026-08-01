@@ -774,7 +774,7 @@ class ContactExchange:
                     pass
 
     async def duel_session(self, addr_type, addr, attack_payload,
-                           overall_timeout_ms=12000):
+                           overall_timeout_ms=12000, log=None):
         """The hunter's central side of the §5.3 duel. A longer sibling of
         gatt_write: connect -> discover ATTACK/DUEL/SPOILS -> subscribe DUEL
         notify -> write ATTACK -> wait for DUEL{ENGAGED} then DUEL{KILLED|DODGED|
@@ -809,6 +809,13 @@ class ContactExchange:
         spoils_raw = [None]           # SPOILS read result bytes
         write_acked = [False]
 
+        def _lg(m):
+            if log is not None:
+                try:
+                    log("  ds " + m)
+                except Exception:
+                    pass
+
         def _dirq(event, data):
             try:
                 if event == E["peripheral_connect"]:
@@ -834,12 +841,15 @@ class ContactExchange:
         try:
             self._ble.gap_connect(addr_type, addr)
         except Exception:
+            _lg("gap_connect raised")
             return fail
         try:
             while time.ticks_diff(deadline, time.ticks_ms()) > 0 and conn[0] is None:
                 await asyncio.sleep_ms(20)
             if conn[0] is None:
+                _lg("no connect (timeout)")
                 return fail
+            _lg("connected conn=%s" % conn[0])
             try:
                 self._ble.gattc_exchange_mtu(conn[0])
             except Exception:
@@ -855,7 +865,10 @@ class ContactExchange:
                    and (h["attack"] is None or h["duel"] is None)):
                 await asyncio.sleep_ms(20)
             if conn[0] is None or h["attack"] is None or h["duel"] is None:
+                _lg("discover incomplete a=%s d=%s s=%s" % (
+                    h["attack"], h["duel"], h["spoils"]))
                 return fail
+            _lg("handles a=%s d=%s s=%s" % (h["attack"], h["duel"], h["spoils"]))
             # Best-effort notify subscribe: the CCCD sits at duel_value + 1 in the
             # NimBLE layout. Harmless if wrong -- we also poll-read DUEL below.
             try:
@@ -866,7 +879,9 @@ class ContactExchange:
             write_acked[0] = False
             try:
                 self._ble.gattc_write(conn[0], h["attack"], attack_payload, 1)
+                _lg("ATTACK written")
             except Exception:
+                _lg("ATTACK write raised")
                 return fail
             # Wait for a terminal DUEL state, poll-reading as a notify fallback.
             next_poll = time.ticks_add(time.ticks_ms(), 200)
@@ -877,9 +892,11 @@ class ContactExchange:
                     s = d.get("s")
                     if s == gotcha.DUEL_ENGAGED and engaged is None:
                         engaged = d
+                        _lg("ENGAGED hold=%s dleft=%s" % (d.get("h"), d.get("d")))
                     elif s in (gotcha.DUEL_KILLED, gotcha.DUEL_DODGED, gotcha.DUEL_REFUSED):
-                        return self._duel_result(d, engaged, conn, h, spoils_raw,
-                                                 gotcha, time, asyncio, deadline)
+                        _lg("terminal=%s" % s)
+                        return await self._duel_result(d, engaged, conn, h, spoils_raw,
+                                                       gotcha, time, asyncio, deadline)
                 if time.ticks_diff(time.ticks_ms(), next_poll) >= 0:
                     next_poll = time.ticks_add(time.ticks_ms(), 200)
                     try:
@@ -890,9 +907,12 @@ class ContactExchange:
             # No terminal state before the deadline / the link dropped.
             if conn[0] is None and engaged is not None:
                 # Link dropped mid-hold after engaging -> the victim escaped (§5.3).
+                _lg("link dropped mid-hold -> dodged")
                 return {"outcome": "dodged", "hold_ms": engaged.get("h"),
                         "dodges_left": engaged.get("d"), "reason": None,
                         "spoils": None}
+            _lg("timeout no terminal (engaged=%s conn=%s)" % (
+                engaged is not None, conn[0]))
             return fail
         finally:
             if conn[0] is not None:

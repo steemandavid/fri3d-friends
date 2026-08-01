@@ -91,6 +91,14 @@ class GotchaController(object):
         self.sync = gotcha.GotchaSync(self.state)
         self.cfg = gotcha.GameConfig()
         self.log = log or (lambda m: None)
+        # Persistent, append-only duel log next to gotcha.json, so a duel walked
+        # untethered (on battery, no USB) can be reviewed after re-plugging. Duels
+        # are rare -> negligible flash wear. flush()+close() every line (a bare
+        # os-rename-free append is fine here; we never need atomicity).
+        try:
+            self._logpath = state_path.rsplit("/", 1)[0] + "/duel_log.txt"
+        except Exception:
+            self._logpath = "duel_log.txt"
         self._exch = exchange         # ContactExchange: owns the central connect path
         # endpoints / prefs (set by configure)
         self.api_url = ""
@@ -155,6 +163,8 @@ class GotchaController(object):
 
     def start(self):
         self._running = True
+        self._plog("---- start v%s pid=%s tgt=%s ----" % (
+            _app_version(), self.state.d.get("pid"), self.state.target_pid()))
         self._next_sync_ms = 0
         self._next_conn_ms = 0
         self._apply_prox_filter()
@@ -644,6 +654,30 @@ class GotchaController(object):
         self._duel_msg = msg
         self._duel_msg_until = time.ticks_add(time.ticks_ms(), ms)
 
+    def _plog(self, msg):
+        """Append a timestamped line to the persistent duel log (see __init__).
+        Never raises. `msg` is a short ASCII string. Also mirrored to self.log so
+        it shows in the in-memory dev log."""
+        try:
+            self.log(msg)
+        except Exception:
+            pass
+        try:
+            ms = time.ticks_ms()
+        except Exception:
+            ms = 0
+        try:
+            now_s = self.state.effective_now(int(time.time()))
+        except Exception:
+            now_s = 0
+        try:
+            f = open(self._logpath, "a")
+            f.write("%d t=%d %s\n" % (now_s, ms, msg))
+            f.flush()
+            f.close()
+        except Exception:
+            pass
+
     # hunter side (we press A to attack our target) --------------------------
     def request_attack(self):
         """The hunter pressed A on the hunt strip in kill range. Kicks the duel if
@@ -695,6 +729,7 @@ class GotchaController(object):
             nonce = "n0"
         payload = gotcha.build_attack_payload(group, my_pid, tp, gotcha.ATTACK_TARGET,
                                               nonce).encode("utf-8")
+        self._plog("HUNT attack->%s prox=%s" % (tp, self.target_prox))
         now_s = self.state.effective_now(int(time.time()))
         # §5.8: sending an ATTACK ends OUR OWN protection immediately. Clear it
         # locally and queue attack_started so the server does the same on ingest.
@@ -713,9 +748,11 @@ class GotchaController(object):
             except Exception:
                 pass
             try:
-                result = await self._exch.duel_session(addr[0], addr[1], payload)
-            except Exception:
+                result = await self._exch.duel_session(addr[0], addr[1], payload,
+                                                        log=self._plog)
+            except Exception as e:
                 result = {"outcome": "failed"}
+                self._plog("HUNT duel_session err %r" % (e,))
         finally:
             try:
                 self.ble.resume()
@@ -727,6 +764,10 @@ class GotchaController(object):
 
     def _handle_duel_result(self, victim_pid, result, now_s):
         outcome = result.get("outcome") if isinstance(result, dict) else None
+        self._plog("HUNT result=%s reason=%s hold=%s dleft=%s spoils=%s" % (
+            outcome, (result or {}).get("reason"), (result or {}).get("hold_ms"),
+            (result or {}).get("dodges_left"),
+            bool((result or {}).get("spoils"))))
         if outcome == "killed":
             spoils = result.get("spoils") or {}
             soul = spoils.get("soul")
@@ -741,6 +782,7 @@ class GotchaController(object):
             if not ok:
                 # The soul did not match the target's commitment -- do NOT claim a
                 # kill (§3.4: no soul, no kill). The server would reject it anyway.
+                self._plog("HUNT kill REJECTED bad_soul soul=%s comm=%s" % (soul, comm))
                 self._set_reveal_msg("bewijs ongeldig", 2500)
                 return
             s = self.state.d.setdefault("state", {})
@@ -763,6 +805,8 @@ class GotchaController(object):
             self.state.save()
             self._push_game_context()          # re-pin the inherited target
             self._next_sync_ms = 0             # report the kill soon
+            self._plog("HUNT KILL ok victim=%s new_tgt=%s" % (
+                victim_pid, self.state.target_pid()))
             self._set_reveal_msg("GOTCHA!", 3000)
         elif outcome == "dodged":
             self.state.queue.add(gotcha.dodge_event(victim_pid=victim_pid, at=now_s))
@@ -824,6 +868,7 @@ class GotchaController(object):
             bool(self.game_live), self.cfg, protected=protected, on_cooldown=on_cd,
             in_duel=self._duel.active(), radio_busy=(self._revealing or self._attacking))
         if verdict != "ok":
+            self._plog("VICTIM attack from=%s REFUSED verdict=%s" % (attacker, verdict))
             self._refuse_attack(conn, verdict)
             return
         decay_s = int(self.cfg.get("DODGE_DECAY_MS")) // 1000
@@ -837,6 +882,8 @@ class GotchaController(object):
         self._duel.begin_attack(attacker, hold_ms, dodges_left, time.ticks_ms())
         self.state.save()                      # persist the ledger stamp
         self._push_game_context()              # advertise UNDER_ATTACK (gflags)
+        self._plog("VICTIM ENGAGED by=%s hold=%d dleft=%d" % (
+            attacker, hold_ms, dodges_left))
         if self._svc is not None:
             self._svc.notify_duel(
                 gotcha.build_duel_payload(gotcha.DUEL_ENGAGED, hold_ms=hold_ms,
@@ -865,6 +912,7 @@ class GotchaController(object):
                                                 at=now_s))
         self.state.save()
         self._push_game_context()              # clear UNDER_ATTACK
+        self._plog("VICTIM DODGED (link drop) attacker=%s" % (self._duel_attacker,))
         self._set_duel_msg("ONTSNAPT!", 2500)
 
     def _on_duel_kill(self, duel):
@@ -894,6 +942,7 @@ class GotchaController(object):
         self.state.save()
         self._push_game_context()              # advertise dead immediately (D29)
         self._next_sync_ms = 0                 # report the death soon
+        self._plog("VICTIM KILLED by=%s new_comm=%s" % (self._duel_attacker, new_comm[:12]))
         self._set_duel_msg("UITGESCHAKELD", 4000)
 
     # -- opt-in / opt-out (§13) ------------------------------------------------
