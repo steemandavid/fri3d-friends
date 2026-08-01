@@ -283,6 +283,11 @@ class Fri3dFriends(Activity):
         self._g_last_ping_ms = 0         # last hunt ping (drop-not-queue, §8.8.6)
         self._g_pings = 0                 # hunt pings fired (observable when SILENT)
         self._spotted_was = False        # prior is_spotted (Reveal gold-flash edge, §5.7)
+        # Duel (§5.3): edge trackers for the alarm + banners, and the siren task.
+        self._under_attack_was = False
+        self._attacking_was = False
+        self._duel_banner = False        # we currently own the banner (duel state)
+        self._siren_task = None          # in-flight under-attack alarm task
         self._dimmed = False
         self._led_next_ms = 0
         self._led_override_until = 0
@@ -447,7 +452,8 @@ class Fri3dFriends(Activity):
             # writes through BLEProximity's IRQ, and give the controller the responder.
             try:
                 import gotcha_gatt
-                svc = gotcha_gatt.GotchaService(on_reveal=self._gc.apply_reveal)
+                svc = gotcha_gatt.GotchaService(on_reveal=self._gc.apply_reveal,
+                                                on_attack=self._gc.apply_attack)
                 self._exch.attach_gotcha(svc)
                 self._gc.set_service(svc)
                 self._ble.set_gatt_dispatch(svc.handle_irq)
@@ -670,8 +676,14 @@ class Fri3dFriends(Activity):
         act = gc.strip_action()
         if act == "reveal":
             gc.request_reveal()
-        # 'attack'/'abort' arrive with Phase 3b; 'radar'/'none' -> no-op here (the
-        # menu is opened via the Menu button, not the hunt strip).
+        elif act == "attack":
+            gc.request_attack()                  # Phase 3b: the duel (§5.3)
+        elif act == "abort":
+            # Abort whichever of our own actions is live (§10.2). Cancelling the
+            # attack drops the link, which the victim reads as an escape.
+            gc.cancel_attack()
+            gc.cancel_reveal()
+        # 'radar'/'none' -> no-op here (the menu opens via the Menu button).
 
     def _ensure_gatt_services(self):
         # Register the Gotcha (+ exchange + setup) GATT services on the radio
@@ -713,6 +725,93 @@ class Fri3dFriends(Activity):
                 except Exception:
                     pass
         self._spotted_was = spotted
+
+    def _render_duel(self, now):
+        # Drive the duel effects (§5.3, §5.5). Victim side: on the rising edge of
+        # under_attack, ONE red-LED write held for the whole hold + a buzzer siren
+        # (PWM, IRQ-safe) + a full-screen "ONDER AANVAL -- RENNEN!"; ONE LED write
+        # (dark) at the end. Attacker side: an "AANVALLEN <name>" banner. Outcome
+        # (death / escape) shows via the transient duel message. No LED animation
+        # during the hold -- lights.write disables IRQs and would starve the link.
+        gc = self._gc
+        if gc is None:
+            return
+        try:
+            ua = gc.under_attack()
+            at = gc.attacking()
+            if ua and not self._under_attack_was:
+                try:
+                    hold = int(gc.cfg.get("KILL_HOLD_MS") or 5000) + 500
+                except Exception:
+                    hold = 5500
+                self._flash_leds(255, 0, 0, ms=hold)       # one red write, held
+                self._wake()
+                if self._sound and self._buzzer and self._siren_task is None:
+                    try:
+                        self._siren_task = TaskManager.create_task(self._siren())
+                    except Exception:
+                        pass
+            if not ua and self._under_attack_was:
+                self._siren_task = None                    # the task self-exits
+                try:
+                    self._flash_leds(0, 0, 0, ms=1)        # one dark write at end
+                except Exception:
+                    pass
+            # Banner priority: under-attack > attacking > outcome/death text.
+            text = None
+            persistent = False
+            if ua:
+                text = "ONDER AANVAL -- RENNEN!"
+                persistent = True
+            elif at:
+                text = "AANVALLEN %s" % (gc.target_name or "?")
+                persistent = True
+            elif gc.is_dead():
+                text = "UITGESCHAKELD -- respawn %ds" % gc.respawn_left_s()
+                persistent = True
+            else:
+                # Victim outcome ("ONTSNAPT!") or hunter outcome ("GOTCHA!",
+                # refusals, and the §5.7 reveal messages) -- transient, auto-hides.
+                text = gc.duel_msg_text(now) or gc.reveal_msg_text(now)
+            if text is not None:
+                self._show_banner(text)
+                if persistent:
+                    self._banner_until = 0                  # hold until the state clears
+                self._duel_banner = True
+                self._wake()
+            elif self._duel_banner and not self._banner_is_arrival:
+                self._hide_banner()
+                self._duel_banner = False
+            self._under_attack_was = ua
+            self._attacking_was = at
+        except Exception as e:
+            self._gc_log("duel render err %r" % (e,))
+
+    async def _siren(self):
+        # The under-attack alarm (§5.3): a two-tone buzzer siren until the duel
+        # ends. Buzzer PWM only -- it does NOT disable IRQs (unlike lights.write),
+        # so it is safe alongside the GATT link the hold is riding. Self-exits when
+        # under_attack clears; cancelled cleanly on app exit.
+        gc = self._gc
+        if SILENT or not self._buzzer or gc is None:
+            return
+        try:
+            while gc.under_attack():
+                self._buzzer_until = time.ticks_add(time.ticks_ms(), 400)
+                self._buzzer.freq(880)
+                self._buzzer.duty_u16(20000)
+                await asyncio.sleep_ms(180)
+                self._buzzer.freq(1320)
+                await asyncio.sleep_ms(180)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
+        finally:
+            try:
+                self._buzzer.duty_u16(0)
+            except Exception:
+                pass
 
     def _set_gotcha_bars(self, segs, halted):
         if halted:
@@ -1910,6 +2009,7 @@ class Fri3dFriends(Activity):
         if self._gc is not None:
             try:
                 self._gc.cancel_reveal()
+                self._gc.cancel_attack()         # §5.5 F-4: also drop a live duel
             except Exception:
                 pass
 
@@ -1978,6 +2078,7 @@ class Fri3dFriends(Activity):
                 self._drain_arrivals()
                 self._refresh_nearby()
                 self._render_spotted(now)
+                self._render_duel(now)
                 # While a setup session runs, or a Gotcha GATT connection is live
                 # (§5.5), skip LED writes — the WS2812 write disables IRQs and
                 # would starve the GATT link (field bug 2 / plan §2.3).

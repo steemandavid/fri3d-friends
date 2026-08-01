@@ -765,3 +765,218 @@ def test_reveal_events_shape_and_droppable():
         assert q.add({"type": "kill", "victim_pid": i, "soul": "s%d" % i,
                       "as": "target", "rssi": -60})
     assert q.add(gotcha.reveal_event(1004)) is False          # full of kills -> refused
+
+
+# ---------------------------------------------------------------------------
+# THE DUEL (plan §5.3, §5.8) -- payloads, validate, DodgeLedger, DuelState
+# ---------------------------------------------------------------------------
+
+def test_attack_payload_roundtrip():
+    raw = gotcha.build_attack_payload(7, 1003, 1004, "target", "n1")
+    # compact, keys sorted (a, as, g, n, v)
+    assert raw == '{"a":1003,"as":"target","g":7,"n":"n1","v":1004}'
+    assert gotcha.parse_attack_payload(raw) == {
+        "g": 7, "a": 1003, "v": 1004, "as": "target", "n": "n1"}
+
+
+def test_attack_payload_parse_defensive():
+    assert gotcha.parse_attack_payload(b'{"a":1,"v":2,"as":"bounty","g":3,"n":"x"}') == {
+        "g": 3, "a": 1, "v": 2, "as": "bounty", "n": "x"}     # bytes accepted
+    assert gotcha.parse_attack_payload("not json") is None
+    assert gotcha.parse_attack_payload("[1,2]") is None       # not an object
+    p = gotcha.parse_attack_payload('{"v": 1004}')            # missing fields ok
+    assert p["v"] == 1004 and p["a"] is None
+
+
+def test_duel_payload_states():
+    eng = gotcha.build_duel_payload(gotcha.DUEL_ENGAGED, hold_ms=5000, dodges_left=1)
+    assert gotcha.parse_duel_payload(eng) == {"s": "engaged", "h": 5000, "d": 1, "r": None}
+    killed = gotcha.build_duel_payload(gotcha.DUEL_KILLED)
+    assert gotcha.parse_duel_payload(killed)["s"] == "killed"
+    ref = gotcha.build_duel_payload(gotcha.DUEL_REFUSED, reason="protected")
+    assert gotcha.parse_duel_payload(ref) == {"s": "refused", "h": None, "d": None,
+                                              "r": "protected"}
+    assert gotcha.parse_duel_payload("garbage") is None
+
+
+def test_spoils_payload_carries_soul_and_inherited_target():
+    tgt = {"pid": 2001, "name": "Otter 42", "commitment": "ab" * 32, "extra": "drop"}
+    raw = gotcha.build_spoils_payload("ff" * 16, tgt)
+    p = gotcha.parse_spoils_payload(raw)
+    assert p["soul"] == "ff" * 16
+    assert p["tgt"] == {"pid": 2001, "name": "Otter 42", "commitment": "ab" * 32}
+    # a victim with no target still produces a valid SPOILS (tgt None)
+    p2 = gotcha.parse_spoils_payload(gotcha.build_spoils_payload("00" * 16, None))
+    assert p2["soul"] == "00" * 16 and p2["tgt"] is None
+    assert gotcha.parse_spoils_payload("nope") is None
+
+
+def test_spoils_soul_verifies_against_commitment():
+    # end-to-end: the soul disclosed in SPOILS proves the kill (§3.4).
+    soul = bytes(range(16))
+    comm = gotcha.commitment(soul)
+    raw = gotcha.build_spoils_payload(soul, {"pid": 1, "name": "x", "commitment": "c"})
+    disclosed = gotcha.parse_spoils_payload(raw)["soul"]
+    assert gotcha.verify_soul(bytes.fromhex(disclosed), comm) is True
+    assert gotcha.verify_soul(bytes.fromhex(disclosed), "00" * 32) is False
+
+
+def test_validate_attack_branches():
+    cfg = gotcha.GameConfig()                                # BOUNTY_STREAK = 3
+    p = {"g": 7, "a": 1003, "v": 1004, "as": "target", "n": "x"}
+    ok = gotcha.validate_attack(p, 1004, 0, True, "none", True, cfg)
+    assert ok == "ok"
+    # precedence: busy first (radio slot / mid-duel)
+    assert gotcha.validate_attack(p, 1004, 0, True, "none", True, cfg,
+                                  radio_busy=True) == "busy"
+    assert gotcha.validate_attack(p, 1004, 0, True, "none", True, cfg,
+                                  in_duel=True) == "busy"
+    assert gotcha.validate_attack(p, 1004, 0, True, "none", False, cfg) == "no_game"
+    assert gotcha.validate_attack(p, 1004, 0, True, "camp", True, cfg) == "truce"
+    assert gotcha.validate_attack(p, 1004, 0, True, "both", True, cfg) == "truce"
+    assert gotcha.validate_attack(p, 1004, 0, False, "none", True, cfg) == "dead"
+    assert gotcha.validate_attack(p, 9999, 0, True, "none", True, cfg) == "wrong_target"
+    assert gotcha.validate_attack(None, 1004, 0, True, "none", True, cfg) == "wrong_target"
+    assert gotcha.validate_attack(p, 1004, 0, True, "none", True, cfg,
+                                  protected=True) == "protected"
+    assert gotcha.validate_attack(p, 1004, 0, True, "none", True, cfg,
+                                  on_cooldown=True) == "on_cooldown"
+
+
+def test_validate_attack_bounty_lie_caught_locally():
+    cfg = gotcha.GameConfig()                                # BOUNTY_STREAK = 3
+    b = {"g": 7, "a": 1003, "v": 1004, "as": "bounty", "n": "x"}
+    # attacker claims bounty but victim's streak < BOUNTY_STREAK -> caught
+    assert gotcha.validate_attack(b, 1004, 2, True, "none", True, cfg) == "bounty"
+    # victim IS a bounty (streak >= 3) -> a bounty attack is legal
+    assert gotcha.validate_attack(b, 1004, 3, True, "none", True, cfg) == "ok"
+    # a plain 'target' attack never triggers the bounty check
+    t = dict(b); t["as"] = "target"
+    assert gotcha.validate_attack(t, 1004, 0, True, "none", True, cfg) == "ok"
+
+
+def test_validate_attack_protection_not_paused_by_being_alive():
+    # §5.8: protection refuses the attack even though everything else is legal.
+    cfg = gotcha.GameConfig()
+    p = {"g": 7, "a": 1003, "v": 1004, "as": "target", "n": "x"}
+    assert gotcha.validate_attack(p, 1004, 0, True, "none", True, cfg,
+                                  protected=True) == "protected"
+
+
+def test_protection_active_and_left():
+    assert gotcha.protection_active(None, 1000) is False
+    assert gotcha.protection_active(0, 1000) is False
+    assert gotcha.protection_active(1090, 1000) is True       # 90 s to go
+    assert gotcha.protection_active(1000, 1000) is False      # at deadline
+    assert gotcha.protection_left_s(1090, 1000) == 90
+    assert gotcha.protection_left_s(1000, 1050) == 0          # already expired
+    assert gotcha.protection_left_s(None, 1000) == 0
+
+
+def test_cooldown_ready_boundary():
+    ms = gotcha.DEFAULTS["ATTACK_COOLDOWN_MS"]                # 60000
+    assert gotcha.cooldown_ready(0, 100000, ms) is True       # never attacked
+    assert gotcha.cooldown_ready(None, 100000, ms) is True
+    assert gotcha.cooldown_ready(100000, 100000 + 59999, ms) is False
+    assert gotcha.cooldown_ready(100000, 100000 + 60000, ms) is True
+
+
+def test_dodge_ledger_from_server_left_ints():
+    # apply_sync stores {str(pid): dodges_LEFT}; the ledger reads that directly.
+    led = gotcha.DodgeLedger({"1003": 1, "1005": 0}, limit=1)
+    assert led.dodges_left(1003, now_s=1000, decay_s=3600) == 1
+    assert led.dodges_left(1005, now_s=1000, decay_s=3600) == 0
+    assert led.dodges_left(9999, now_s=1000, decay_s=3600) == 1   # never dodged -> full
+    assert led.last_attack_s(1003) is None                        # server int -> no local time
+
+
+def test_dodge_ledger_local_record_and_decay():
+    led = gotcha.DodgeLedger({}, limit=1)
+    assert led.dodges_left(1003, now_s=1000, decay_s=3600) == 1
+    led.note_dodge(1003, now_s=1000)                              # used one dodge
+    assert led.dodges_left(1003, now_s=1000, decay_s=3600) == 0
+    assert led.last_attack_s(1003) == 1000
+    # within DODGE_DECAY_MS window -> still spent
+    assert led.dodges_left(1003, now_s=1000 + 3600, decay_s=3600) == 0
+    # after the decay window -> resets to the full limit (§5.4)
+    assert led.dodges_left(1003, now_s=1000 + 3601, decay_s=3600) == 1
+
+
+def test_dodge_ledger_note_attack_stamps_time_without_spending():
+    led = gotcha.DodgeLedger({}, limit=1)
+    led.note_attack(1003, now_s=500)
+    assert led.last_attack_s(1003) == 500
+    assert led.dodges_left(1003, now_s=500, decay_s=3600) == 1     # attack != dodge
+    # note_attack on a server-left int converts it, preserving used
+    led2 = gotcha.DodgeLedger({"1003": 0}, limit=1)                # 0 left = 1 used
+    led2.note_attack(1003, now_s=500)
+    assert led2.dodges_left(1003, now_s=500, decay_s=3600) == 0    # still spent
+
+
+def test_duel_state_hold_completes_to_kill():
+    log = []
+    d = gotcha.DuelState(on_engaged=lambda s: log.append("engaged"),
+                         on_kill=lambda s: log.append("kill"),
+                         on_dodge=lambda s: log.append("dodge"))
+    assert d.begin_attack(1003, hold_ms=5000, dodges_left=1, now_ms=0) is True
+    assert d.active() is True
+    assert d.tick(2000, link_up=True) == "hold"
+    assert 0.3 < d.hold_fraction(2000) < 0.5
+    assert d.tick(4999, link_up=True) == "hold"
+    assert d.tick(5000, link_up=True) == "killed"              # deadline reached
+    assert d.tick(5100, link_up=True) == "killed"              # terminal, stays
+    assert log == ["engaged", "kill"]
+
+
+def test_duel_state_link_drop_is_a_dodge():
+    log = []
+    d = gotcha.DuelState(on_dodge=lambda s: log.append("dodge"))
+    d.begin_attack(1003, hold_ms=5000, dodges_left=1, now_ms=0)
+    assert d.tick(2000, link_up=False) == "dodged"             # ran out of range
+    assert d.tick(2100, link_up=True) == "dodged"              # terminal
+    assert log == ["dodge"]
+
+
+def test_duel_state_single_slot_second_attack_ignored():
+    d = gotcha.DuelState()
+    assert d.begin_attack(1003, 5000, 1, now_ms=0) is True
+    assert d.begin_attack(1007, 5000, 1, now_ms=100) is False  # already holding
+    assert d.attacker_pid == 1003                              # first attacker kept
+
+
+def test_duel_state_instant_kill_short_hold():
+    # dodges_left == 0 -> the caller passes INSTANT_KILL_MS; the machine just runs
+    # the short timer (link-drop still ends it, per the LINK-DROP note).
+    d = gotcha.DuelState()
+    d.begin_attack(1003, hold_ms=1000, dodges_left=0, now_ms=0)
+    assert d.tick(999, link_up=True) == "hold"
+    assert d.tick(1000, link_up=True) == "killed"
+
+
+def test_duel_state_reset_returns_to_idle():
+    d = gotcha.DuelState()
+    d.begin_attack(1003, 5000, 1, now_ms=0)
+    d.tick(5000, link_up=True)
+    d.reset()
+    assert d.phase == "idle" and d.active() is False
+    assert d.tick(9999, link_up=True) == "idle"
+
+
+def test_duel_event_builders_shapes_and_keep_types():
+    assert gotcha.attack_started_event(1004, at=10) == {
+        "type": "attack_started", "victim_pid": 1004, "at": 10}
+    assert gotcha.kill_event(1004, "ab" * 16, rssi=-60, at=5) == {
+        "type": "kill", "victim_pid": 1004, "soul": "ab" * 16, "rssi": -60, "at": 5}
+    assert gotcha.kill_event(1004, bytes(range(16)))["soul"] == \
+        "".join("%02x" % b for b in range(16))                # bytes -> hex
+    assert gotcha.killed_by_event(1003, "cd" * 32, at=7) == {
+        "type": "killed_by", "attacker_pid": 1003, "new_commitment": "cd" * 32, "at": 7}
+    assert gotcha.dodge_event(attacker_pid=1003) == {
+        "type": "dodge", "attacker_pid": 1003}                # victim half
+    assert gotcha.dodge_event(victim_pid=1004) == {
+        "type": "dodge", "victim_pid": 1004}                  # assassin half
+    # kill/killed_by survive an overflow full of kills; dodge/attack_started do not
+    assert "kill" in gotcha.EventQueue.KEEP_TYPES
+    assert "killed_by" in gotcha.EventQueue.KEEP_TYPES
+    assert "dodge" not in gotcha.EventQueue.KEEP_TYPES
+    assert "attack_started" not in gotcha.EventQueue.KEEP_TYPES

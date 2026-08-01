@@ -130,6 +130,16 @@ class GotchaController(object):
         self._reveal_msg = ""           # transient status ("onthullen...", Dutch)
         self._reveal_msg_until = 0
         self._reveal_task = None        # in-flight _do_reveal task (cancellable)
+        # Duel (plan §5.3): hunter-side attack state + victim-side DuelState.
+        self._attacking = False         # an attack connect is in flight (hunter side)
+        self._attack_task = None        # in-flight _do_attack task (cancellable)
+        self._attack_cd = {}            # victim_pid -> ticks_ms of our last attack (§5.4)
+        self._duel_conn = None          # the attacker's conn_handle while we are attacked
+        self._duel_attacker = None      # attacker pid while we are the victim
+        self._duel = gotcha.DuelState(on_dodge=self._on_duel_dodge,
+                                      on_kill=self._on_duel_kill)
+        self._duel_msg = ""             # transient victim-side status (Dutch)
+        self._duel_msg_until = 0
         self.state.load()
         self.enrolled = self.state.is_enrolled()
 
@@ -168,6 +178,8 @@ class GotchaController(object):
     def tick(self, now_ms, wifi_up, sound_on):
         self.sound_on = sound_on
         self._drain_reveals()
+        self._drain_attacks()
+        self._tick_duel(now_ms)
         if not self._running:
             self._refresh_view()
             return
@@ -337,8 +349,11 @@ class GotchaController(object):
         gf = 0
         if status != "dead":
             gf |= bp.GFLAG_ALIVE
-        if status == "protected":
+        if status == "protected" or gotcha.protection_active(
+                s.get("protected_until"), self.state.effective_now(int(time.time()))):
             gf |= bp.GFLAG_PROTECTED
+        if self._duel.active():
+            gf |= bp.GFLAG_UNDER_ATTACK        # §4: a hunter sees the scrum
         if int(s.get("streak") or 0) >= int(self.cfg.get("BOUNTY_STREAK")):
             gf |= bp.GFLAG_BOUNTY
         now = self.state.effective_now(int(time.time()))
@@ -437,7 +452,7 @@ class GotchaController(object):
         """The radio's single connection slot is taken: we are mid-reveal (hunter)
         or a central is connected to us (being revealed). The loop skips
         _update_leds in this window (lights.write starves the GATT link, §5.5)."""
-        if self._revealing:
+        if self._revealing or self._attacking or self._duel.active():
             return True
         if self._svc is not None:
             return self._svc.is_busy()
@@ -450,7 +465,8 @@ class GotchaController(object):
         last = self.state.d.get("last_reveal_at") or 0
         return gotcha.decide_strip_action(
             self.target_prox, last, now_s, self.cfg,
-            attack_in_progress=self._revealing, halted=self.radar_halted())
+            attack_in_progress=(self._revealing or self._attacking),
+            kill_enabled=True, halted=self.radar_halted())
 
     def strip_action(self):
         """The current escalating A-action on the hunt strip (§5.7 D29)."""
@@ -580,6 +596,305 @@ class GotchaController(object):
         self._revealed_by = hunter
         self.state.queue.add(gotcha.revealed_event(hunter, at=now_s))
         self.state.save()
+
+    # -- THE DUEL (plan §5.3, §5.8) --------------------------------------------
+    # Hunter side: press A in kill range -> _do_attack drives the duel_session
+    # central handshake. Victim side: an inbound ATTACK write starts a DuelState
+    # that runs the hold timer and, on completion, discloses the soul + inherited
+    # target (D10) and marks us dead.
+
+    def attacking(self):
+        """An attack connect is in flight -> the loop keeps off the radio (§5.5)."""
+        return self._attacking
+
+    def under_attack(self):
+        """We are the victim of a live duel (hold running) -> the UI screams."""
+        return self._duel.active()
+
+    def duel_hold_fraction(self, now_ms):
+        """0..1 progress of the current duel's hold (both attacker + victim UI)."""
+        return self._duel.hold_fraction(now_ms)
+
+    def duel_msg_text(self, now_ms):
+        """Transient victim-side status ('YOU GOT AWAY!' / death), or None."""
+        if self._duel_msg and time.ticks_diff(self._duel_msg_until, now_ms) > 0:
+            return self._duel_msg
+        return None
+
+    def is_dead(self):
+        s = self.state.d.get("state") or {}
+        return not bool(s.get("alive", True))
+
+    def respawn_left_s(self):
+        """Whole seconds until respawn (optimistic; the server confirms on sync)."""
+        s = self.state.d.get("state") or {}
+        ra = s.get("respawn_at")
+        if not ra:
+            return 0
+        d = int(ra) - self.state.effective_now(int(time.time()))
+        return d if d > 0 else 0
+
+    def protection_left_s(self):
+        """Whole seconds of spawn/join protection left (§5.8), or 0."""
+        s = self.state.d.get("state") or {}
+        return gotcha.protection_left_s(s.get("protected_until"),
+                                        self.state.effective_now(int(time.time())))
+
+    def _set_duel_msg(self, msg, ms):
+        self._duel_msg = msg
+        self._duel_msg_until = time.ticks_add(time.ticks_ms(), ms)
+
+    # hunter side (we press A to attack our target) --------------------------
+    def request_attack(self):
+        """The hunter pressed A on the hunt strip in kill range. Kicks the duel if
+        the action is 'attack' and the per-victim cooldown is clear. Returns True
+        if an attack was started."""
+        if self._attacking or self._revealing or not self.enrolled or self._exch is None:
+            return False
+        if self._strip_action() != "attack":
+            return False
+        tp = self.state.target_pid()
+        last = self._attack_cd.get(tp)
+        if not gotcha.cooldown_ready(last, time.ticks_ms(),
+                                     int(self.cfg.get("ATTACK_COOLDOWN_MS"))):
+            self._set_reveal_msg("nog even wachten", 1500)     # our own cooldown
+            return False
+        try:
+            from mpos import TaskManager
+            self._attack_task = TaskManager.create_task(self._do_attack())
+        except Exception:
+            return False
+        return True
+
+    def cancel_attack(self):
+        """Cancel an in-flight attack (app pausing/stopping). _do_attack's finally
+        resumes BLEProximity and hands the radio back cleanly."""
+        t = self._attack_task
+        self._attack_task = None
+        if t is not None:
+            try:
+                t.cancel()
+            except Exception:
+                pass
+
+    async def _do_attack(self):
+        """Connect to the target and run the §5.3 duel handshake as the central,
+        via ContactExchange.duel_session, with BLEProximity suspended around it.
+        On a kill: verify the disclosed soul, adopt the inherited target offline
+        (D10), optimistically score, queue the 'kill'. Runs as a TaskManager task."""
+        tp = self.state.target_pid()
+        addr = self.ble.addr_for_pid(tp) if tp is not None else None
+        if addr is None:
+            self._set_reveal_msg("doel niet in bereik", 1500)
+            return
+        my_pid = self.state.d.get("pid")
+        group = self.groups[0] if self.groups else 0
+        try:
+            nonce = gotcha.new_nonce()
+        except Exception:
+            nonce = "n0"
+        payload = gotcha.build_attack_payload(group, my_pid, tp, gotcha.ATTACK_TARGET,
+                                              nonce).encode("utf-8")
+        now_s = self.state.effective_now(int(time.time()))
+        # §5.8: sending an ATTACK ends OUR OWN protection immediately. Clear it
+        # locally and queue attack_started so the server does the same on ingest.
+        st = self.state.d.setdefault("state", {})
+        if st.get("protected_until"):
+            st["protected_until"] = None
+        self.state.queue.add(gotcha.attack_started_event(tp, at=now_s))
+        self.state.save()
+        self._attacking = True
+        self._attack_cd[tp] = time.ticks_ms()
+        self._set_reveal_msg("AANVALLEN...", 12000)
+        result = {"outcome": "failed"}
+        try:
+            try:
+                self.ble.suspend()
+            except Exception:
+                pass
+            try:
+                result = await self._exch.duel_session(addr[0], addr[1], payload)
+            except Exception:
+                result = {"outcome": "failed"}
+        finally:
+            try:
+                self.ble.resume()
+            except Exception:
+                pass
+            self._attacking = False
+            self._attack_task = None
+        self._handle_duel_result(tp, result, now_s)
+
+    def _handle_duel_result(self, victim_pid, result, now_s):
+        outcome = result.get("outcome") if isinstance(result, dict) else None
+        if outcome == "killed":
+            spoils = result.get("spoils") or {}
+            soul = spoils.get("soul")
+            tgt = spoils.get("tgt")
+            t = self.state.d.get("target")
+            comm = t.get("commitment") if isinstance(t, dict) else None
+            ok = False
+            try:
+                ok = bool(soul) and gotcha.verify_soul(bytes.fromhex(soul), comm)
+            except Exception:
+                ok = False
+            if not ok:
+                # The soul did not match the target's commitment -- do NOT claim a
+                # kill (§3.4: no soul, no kill). The server would reject it anyway.
+                self._set_reveal_msg("bewijs ongeldig", 2500)
+                return
+            s = self.state.d.setdefault("state", {})
+            total, streak, best, pts = gotcha.score_preview(
+                int(s.get("total") or 0), int(s.get("streak") or 0),
+                int(s.get("best_streak") or 0), "target")
+            s["total"], s["streak"], s["best_streak"] = total, streak, best
+            s["score"] = int(s.get("score") or 0) + pts
+            # D10: adopt the inherited target offline; None means the ring tail --
+            # we keep hunting and the next sync assigns a fresh one.
+            if isinstance(tgt, dict) and tgt.get("pid") is not None:
+                self.state.d["target"] = {
+                    "pid": tgt.get("pid"), "name": str(tgt.get("name") or ""),
+                    "commitment": tgt.get("commitment"), "seen_ago_s": 0,
+                    "halted": False}
+            else:
+                self.state.d["target"] = None
+            self.state.queue.add(gotcha.kill_event(victim_pid, soul,
+                                                   rssi=self.target_prox, at=now_s))
+            self.state.save()
+            self._push_game_context()          # re-pin the inherited target
+            self._next_sync_ms = 0             # report the kill soon
+            self._set_reveal_msg("GOTCHA!", 3000)
+        elif outcome == "dodged":
+            self.state.queue.add(gotcha.dodge_event(victim_pid=victim_pid, at=now_s))
+            self.state.save()
+            self._set_reveal_msg("ontsnapt!", 2500)
+        elif outcome == "refused":
+            self._set_reveal_msg(self._refuse_msg_nl(result.get("reason")), 2500)
+        else:
+            self._set_reveal_msg("aanval mislukt", 2000)
+
+    def _refuse_msg_nl(self, reason):
+        return {
+            "protected": "doel beschermd",
+            "busy": "doel bezig",
+            "truce": "wapenstilstand",
+            "dead": "doel al uit",
+            "on_cooldown": "te snel achter elkaar",
+            "bounty": "geen premie",
+            "no_game": "geen spel",
+        }.get(reason, "aanval geweigerd")
+
+    # victim side (someone attacks us) --------------------------------------
+    def _drain_attacks(self):
+        if self._svc is not None:
+            try:
+                self._svc.drain_attacks()
+            except Exception:
+                pass
+
+    def _tick_duel(self, now_ms):
+        """Advance a live victim duel. link_up is 'the attacker's central is still
+        connected' -- a drop before the hold elapses is the §5.3 escape."""
+        if not self._duel.active():
+            return
+        link_up = self._svc is not None and self._svc.central_conn() is not None
+        self._duel.tick(now_ms, link_up)
+
+    def apply_attack(self, parsed, conn):
+        """on_attack callback: an inbound ATTACK write reached us. Validates
+        (§5.3/§5.8) and either starts the duel (notify ENGAGED) or refuses it
+        (notify REFUSED with the verdict). Runs on the loop thread."""
+        if not self.enrolled:
+            self._refuse_attack(conn, "no_game")
+            return
+        s = self.state.d.get("state") or {}
+        my_pid = self.state.d.get("pid")
+        my_streak = int(s.get("streak") or 0)
+        now_s = self.state.effective_now(int(time.time()))
+        truce = gotcha.truce_active(now_s, self.cfg, self.quiet)
+        attacker = parsed.get("a") if isinstance(parsed, dict) else None
+        protected = gotcha.protection_active(s.get("protected_until"), now_s)
+        limit = int(self.cfg.get("DODGE_LIMIT"))
+        ledger = gotcha.DodgeLedger(self.state.d.setdefault("dodges", {}), limit)
+        last = ledger.last_attack_s(attacker)
+        cd_s = int(self.cfg.get("ATTACK_COOLDOWN_MS")) // 1000
+        on_cd = last is not None and (now_s - int(last)) < cd_s
+        verdict = gotcha.validate_attack(
+            parsed, my_pid, my_streak, s.get("alive", True), truce,
+            bool(self.game_live), self.cfg, protected=protected, on_cooldown=on_cd,
+            in_duel=self._duel.active(), radio_busy=(self._revealing or self._attacking))
+        if verdict != "ok":
+            self._refuse_attack(conn, verdict)
+            return
+        decay_s = int(self.cfg.get("DODGE_DECAY_MS")) // 1000
+        dodges_left = ledger.dodges_left(attacker, now_s, decay_s)
+        hold_ms = (int(self.cfg.get("INSTANT_KILL_MS")) if dodges_left <= 0
+                   else int(self.cfg.get("KILL_HOLD_MS")))
+        ledger.note_attack(attacker, now_s)
+        self._duel_conn = conn
+        self._duel_attacker = attacker
+        self._duel.reset()
+        self._duel.begin_attack(attacker, hold_ms, dodges_left, time.ticks_ms())
+        self.state.save()                      # persist the ledger stamp
+        self._push_game_context()              # advertise UNDER_ATTACK (gflags)
+        if self._svc is not None:
+            self._svc.notify_duel(
+                gotcha.build_duel_payload(gotcha.DUEL_ENGAGED, hold_ms=hold_ms,
+                                          dodges_left=dodges_left), conn)
+
+    def _refuse_attack(self, conn, reason):
+        if self._svc is not None:
+            try:
+                self._svc.notify_duel(
+                    gotcha.build_duel_payload(gotcha.DUEL_REFUSED, reason=reason), conn)
+            except Exception:
+                pass
+
+    def _on_duel_dodge(self, duel):
+        """DuelState escape callback: the attacker's link dropped before the hold
+        elapsed (§5.3). Spend a dodge, tell the attacker (best-effort -- they
+        already saw the drop), queue the victim-half 'dodge'."""
+        now_s = self.state.effective_now(int(time.time()))
+        limit = int(self.cfg.get("DODGE_LIMIT"))
+        ledger = gotcha.DodgeLedger(self.state.d.setdefault("dodges", {}), limit)
+        ledger.note_dodge(self._duel_attacker, now_s)
+        if self._svc is not None:
+            self._svc.notify_duel(gotcha.build_duel_payload(gotcha.DUEL_DODGED),
+                                  self._duel_conn)
+        self.state.queue.add(gotcha.dodge_event(attacker_pid=self._duel_attacker,
+                                                at=now_s))
+        self.state.save()
+        self._push_game_context()              # clear UNDER_ATTACK
+        self._set_duel_msg("ONTSNAPT!", 2500)
+
+    def _on_duel_kill(self, duel):
+        """DuelState hold-complete callback: we are killed (§5.3). Disclose the
+        current soul + inherited target over SPOILS, notify KILLED, rotate to a
+        fresh soul, mark dead + respawn countdown, queue 'killed_by'."""
+        now_s = self.state.effective_now(int(time.time()))
+        soul_hex = self.state.d.get("soul")
+        target = self.state.d.get("target")
+        if self._svc is not None:
+            self._svc.set_spoils(gotcha.build_spoils_payload(soul_hex, target))
+            self._svc.notify_duel(gotcha.build_duel_payload(gotcha.DUEL_KILLED),
+                                  self._duel_conn)
+        # Rotate the soul + commitment for the next life (§3.4).
+        new_soul = gotcha.make_soul()
+        new_comm = gotcha.commitment(new_soul)
+        self.state.d["soul"] = "".join("%02x" % b for b in new_soul)
+        self.state.d["commitment"] = new_comm
+        s = self.state.d.setdefault("state", {})
+        s["alive"] = False
+        s["status"] = "dead"
+        s["deaths"] = int(s.get("deaths") or 0) + 1
+        s["streak"] = 0
+        s["respawn_at"] = now_s + int(self.cfg.get("RESPAWN_S"))
+        self.state.queue.add(gotcha.killed_by_event(self._duel_attacker, new_comm,
+                                                    at=now_s))
+        self.state.save()
+        self._push_game_context()              # advertise dead immediately (D29)
+        self._next_sync_ms = 0                 # report the death soon
+        self._set_duel_msg("UITGESCHAKELD", 4000)
 
     # -- opt-in / opt-out (§13) ------------------------------------------------
     def ever_enrolled(self):

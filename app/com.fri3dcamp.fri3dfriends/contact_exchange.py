@@ -317,6 +317,8 @@ class ContactExchange:
             "gattc_characteristic_result": g("_IRQ_GATTC_CHARACTERISTIC_RESULT", 11),
             "gattc_read_result": g("_IRQ_GATTC_READ_RESULT", 15),
             "gattc_write_done": g("_IRQ_GATTC_WRITE_DONE", 17),
+            "gattc_notify": g("_IRQ_GATTC_NOTIFY", 18),
+            "gattc_descriptor_result": g("_IRQ_GATTC_DESCRIPTOR_RESULT", 13),
             "central_connect": g("_IRQ_CENTRAL_CONNECT", 1),
             "central_disconnect": g("_IRQ_CENTRAL_DISCONNECT", 2),
             "gatts_write": g("_IRQ_GATTS_WRITE", 3),
@@ -770,6 +772,160 @@ class ContactExchange:
                     self._ble.gap_disconnect(conn[0])
                 except Exception:
                     pass
+
+    async def duel_session(self, addr_type, addr, attack_payload,
+                           overall_timeout_ms=12000):
+        """The hunter's central side of the §5.3 duel. A longer sibling of
+        gatt_write: connect -> discover ATTACK/DUEL/SPOILS -> subscribe DUEL
+        notify -> write ATTACK -> wait for DUEL{ENGAGED} then DUEL{KILLED|DODGED|
+        REFUSED} -> on KILLED read SPOILS -> disconnect.
+
+        Returns a result dict, never raising:
+          {"outcome": "killed"|"dodged"|"refused"|"failed",
+           "hold_ms": int|None, "dodges_left": int|None,
+           "reason": str|None, "spoils": {soul,tgt}|None}
+        'failed' covers connect/discover/timeout with no terminal DUEL state.
+
+        The caller owns radio arbitration (suspend BLEProximity first, resume in
+        a finally) and MUST run this as an asyncio task. Robust by design: it
+        listens for DUEL notifies AND poll-reads the DUEL value, because
+        gatts_notify delivery without a CCCD write varies by build (§5.5 risk).
+        Not host-tested (MicroPython BLE)."""
+        import time, asyncio, bluetooth, gotcha
+        from gotcha_gatt import ATTACK_CHR, DUEL_CHR, SPOILS_CHR
+        fail = {"outcome": "failed", "hold_ms": None, "dodges_left": None,
+                "reason": None, "spoils": None}
+        if self._ble is None:
+            return fail
+        self._seed_events(bluetooth)
+        E = self._E
+        deadline = time.ticks_add(time.ticks_ms(), int(overall_timeout_ms))
+        conn = [None]
+        h = {"attack": None, "duel": None, "spoils": None}
+        want = {bluetooth.UUID(ATTACK_CHR): "attack",
+                bluetooth.UUID(DUEL_CHR): "duel",
+                bluetooth.UUID(SPOILS_CHR): "spoils"}
+        last_duel = [None]            # most recent parsed DUEL payload
+        spoils_raw = [None]           # SPOILS read result bytes
+        write_acked = [False]
+
+        def _dirq(event, data):
+            try:
+                if event == E["peripheral_connect"]:
+                    conn[0] = data[0]
+                elif event == E["gattc_characteristic_result"] and data[0] == conn[0]:
+                    name = want.get(data[4])            # (conn, def_h, val_h, props, uuid)
+                    if name is not None:
+                        h[name] = data[2]
+                elif event == E["gattc_notify"] and data[0] == conn[0]:
+                    if data[1] == h["duel"]:            # (conn, value_h, notify_data)
+                        last_duel[0] = gotcha.parse_duel_payload(bytes(data[2]))
+                elif event == E["gattc_read_result"] and data[0] == conn[0]:
+                    if data[1] == h["spoils"]:          # (conn, value_h, char_data)
+                        spoils_raw[0] = bytes(data[2])
+                elif event == E["gattc_write_done"] and data[0] == conn[0]:
+                    write_acked[0] = True
+                elif event in (E["peripheral_disconnect"], E["central_disconnect"]):
+                    conn[0] = None
+            except Exception:
+                pass
+
+        self._ble.irq(_dirq)
+        try:
+            self._ble.gap_connect(addr_type, addr)
+        except Exception:
+            return fail
+        try:
+            while time.ticks_diff(deadline, time.ticks_ms()) > 0 and conn[0] is None:
+                await asyncio.sleep_ms(20)
+            if conn[0] is None:
+                return fail
+            try:
+                self._ble.gattc_exchange_mtu(conn[0])
+            except Exception:
+                pass
+            await asyncio.sleep_ms(60)
+            try:
+                self._ble.gattc_discover_characteristics(conn[0], 1, 0xFFFF)
+            except Exception:
+                return fail
+            # Wait until at least ATTACK + DUEL handles are known (SPOILS only
+            # needed on a kill, but it arrives in the same sweep).
+            while (time.ticks_diff(deadline, time.ticks_ms()) > 0 and conn[0] is not None
+                   and (h["attack"] is None or h["duel"] is None)):
+                await asyncio.sleep_ms(20)
+            if conn[0] is None or h["attack"] is None or h["duel"] is None:
+                return fail
+            # Best-effort notify subscribe: the CCCD sits at duel_value + 1 in the
+            # NimBLE layout. Harmless if wrong -- we also poll-read DUEL below.
+            try:
+                self._ble.gattc_write(conn[0], h["duel"] + 1, b"\x01\x00", 1)
+                await asyncio.sleep_ms(40)
+            except Exception:
+                pass
+            write_acked[0] = False
+            try:
+                self._ble.gattc_write(conn[0], h["attack"], attack_payload, 1)
+            except Exception:
+                return fail
+            # Wait for a terminal DUEL state, poll-reading as a notify fallback.
+            next_poll = time.ticks_add(time.ticks_ms(), 200)
+            engaged = None
+            while time.ticks_diff(deadline, time.ticks_ms()) > 0 and conn[0] is not None:
+                d = last_duel[0]
+                if isinstance(d, dict):
+                    s = d.get("s")
+                    if s == gotcha.DUEL_ENGAGED and engaged is None:
+                        engaged = d
+                    elif s in (gotcha.DUEL_KILLED, gotcha.DUEL_DODGED, gotcha.DUEL_REFUSED):
+                        return self._duel_result(d, engaged, conn, h, spoils_raw,
+                                                 gotcha, time, asyncio, deadline)
+                if time.ticks_diff(time.ticks_ms(), next_poll) >= 0:
+                    next_poll = time.ticks_add(time.ticks_ms(), 200)
+                    try:
+                        self._ble.gattc_read(conn[0], h["duel"])
+                    except Exception:
+                        pass
+                await asyncio.sleep_ms(30)
+            # No terminal state before the deadline / the link dropped.
+            if conn[0] is None and engaged is not None:
+                # Link dropped mid-hold after engaging -> the victim escaped (§5.3).
+                return {"outcome": "dodged", "hold_ms": engaged.get("h"),
+                        "dodges_left": engaged.get("d"), "reason": None,
+                        "spoils": None}
+            return fail
+        finally:
+            if conn[0] is not None:
+                try:
+                    self._ble.gap_disconnect(conn[0])
+                except Exception:
+                    pass
+
+    async def _duel_result(self, d, engaged, conn, h, spoils_raw, gotcha,
+                           time, asyncio, deadline):
+        """Shape a terminal DUEL payload into a duel_session result, reading
+        SPOILS on a kill."""
+        s = d.get("s")
+        hold_ms = engaged.get("h") if isinstance(engaged, dict) else d.get("h")
+        dodges_left = engaged.get("d") if isinstance(engaged, dict) else d.get("d")
+        if s == gotcha.DUEL_REFUSED:
+            return {"outcome": "refused", "hold_ms": hold_ms,
+                    "dodges_left": dodges_left, "reason": d.get("r"), "spoils": None}
+        if s == gotcha.DUEL_DODGED:
+            return {"outcome": "dodged", "hold_ms": hold_ms,
+                    "dodges_left": dodges_left, "reason": None, "spoils": None}
+        # KILLED: read SPOILS (soul + inherited target) before disconnecting.
+        spoils_raw[0] = None
+        try:
+            self._ble.gattc_read(conn[0], h["spoils"])
+        except Exception:
+            pass
+        while (time.ticks_diff(deadline, time.ticks_ms()) > 0
+               and spoils_raw[0] is None and conn[0] is not None):
+            await asyncio.sleep_ms(20)
+        spoils = gotcha.parse_spoils_payload(spoils_raw[0]) if spoils_raw[0] else None
+        return {"outcome": "killed", "hold_ms": hold_ms, "dodges_left": dodges_left,
+                "reason": None, "spoils": spoils}
 
     def _finalize(self):
         if not self._received:

@@ -38,14 +38,18 @@ class GotchaService(object):
     Phase 3a: only `reveal` has a handler. `attack`/`duel`/`spoils` are registered
     (handle layout fixed for the duel) but unanswered until Phase 3b."""
 
-    def __init__(self, on_reveal=None):
+    def __init__(self, on_reveal=None, on_attack=None):
         # on_reveal(parsed_payload) fires on the owner's tick (drain_reveals) for a
         # valid inbound REVEAL -- it triggers the gold flash / chirp / SPOTTED.
+        # on_attack(parsed_payload, conn_handle) fires (drain_attacks) for an
+        # inbound ATTACK -- it starts the §5.3 duel (Phase 3b).
         self.on_reveal = on_reveal
+        self.on_attack = on_attack
         self._ble = None
         self._h = {}                 # name -> value handle
         self._central = None         # conn_handle while a central is connected (§5.5)
         self._pending = []           # parsed REVEAL payloads queued from the IRQ
+        self._pending_attacks = []   # (parsed, conn) ATTACK writes queued from the IRQ
 
     # ---- registration hooks (mirror ble_setup.SetupService) ----------------
     def service_tuple(self, bluetooth):
@@ -71,8 +75,10 @@ class GotchaService(object):
         self._ble = ble
         for name, h in zip(GOTCHA_CHR_ORDER, handles):
             self._h[name] = h
-        # Write buffers so a REVEAL/ATTACK payload is not truncated.
-        for name in ("attack", "reveal"):
+        # Write buffers so a REVEAL/ATTACK payload is not truncated, and so the
+        # DUEL value we stage for the attacker's poll-read (notify fallback, §5.5)
+        # holds a full {s,h,d} state rather than the ~20-byte default.
+        for name in ("attack", "reveal", "duel"):
             h = self._h.get(name)
             if h is not None:
                 try:
@@ -95,6 +101,8 @@ class GotchaService(object):
         self._h = {}
         self._ble = None
         self._central = None
+        self._pending = []
+        self._pending_attacks = []
 
     # ---- the IRQ dispatch target (called by BLEProximity._irq) -------------
     def handle_irq(self, event, data):
@@ -106,6 +114,8 @@ class GotchaService(object):
             if event == getattr(bluetooth, "_IRQ_GATTS_WRITE", 3):
                 if data[1] == self._h.get("reveal"):
                     self._on_reveal_write(data[1])
+                elif data[1] == self._h.get("attack"):
+                    self._on_attack_write(data[1], data[0])
             elif event == getattr(bluetooth, "_IRQ_CENTRAL_CONNECT", 1):
                 self._central = data[0]            # a hunter/attacker connected (§5.5)
             elif event == getattr(bluetooth, "_IRQ_CENTRAL_DISCONNECT", 2):
@@ -142,6 +152,82 @@ class GotchaService(object):
             except Exception:
                 pass
         return parsed
+
+    # ---- the duel (Phase 3b, §5.3) -----------------------------------------
+    def _on_attack_write(self, value_handle, conn):
+        if self._ble is None:
+            return
+        try:
+            raw = self._ble.gatts_read(value_handle)
+        except Exception:
+            return
+        import gotcha
+        parsed = gotcha.parse_attack_payload(raw)
+        if parsed is None:
+            return                          # garbage write -> drop silently
+        # Keep at most one pending ATTACK -- a duel already begun is enough and a
+        # second ATTACK during a live duel is refused anyway (single slot, §5.5).
+        if not self._pending_attacks:
+            self._pending_attacks.append((parsed, conn))
+
+    def drain_attacks(self):
+        """Pop the pending inbound ATTACK (if any) for the owner's tick to action.
+        Fires on_attack(parsed, conn). Returns (parsed, conn), or None."""
+        if not self._pending_attacks:
+            return None
+        item = self._pending_attacks.pop(0)
+        if self.on_attack is not None:
+            try:
+                self.on_attack(item[0], item[1])
+            except Exception:
+                pass
+        return item
+
+    def notify_duel(self, data, conn=None):
+        """Push a DUEL notify to the attacker (victim -> attacker, §5.3). `data`
+        is a gotcha.build_duel_payload() byte/str. Uses the live central conn by
+        default. Returns True on success, never raises."""
+        if self._ble is None:
+            return False
+        c = self._central if conn is None else conn
+        h = self._h.get("duel")
+        if c is None or h is None:
+            return False
+        try:
+            if isinstance(data, str):
+                data = data.encode("utf-8")
+            # Stage the value first so an attacker poll-read (the notify fallback,
+            # duel_session §5.5) returns the current state, then push the notify.
+            try:
+                self._ble.gatts_write(h, data)
+            except Exception:
+                pass
+            self._ble.gatts_notify(c, h, data)
+            return True
+        except Exception:
+            return False
+
+    def set_spoils(self, data):
+        """Stage the SPOILS value so the attacker's gattc_read returns it (§5.3).
+        `data` is a gotcha.build_spoils_payload() byte/str. Never raises."""
+        if self._ble is None:
+            return False
+        h = self._h.get("spoils")
+        if h is None:
+            return False
+        try:
+            if isinstance(data, str):
+                data = data.encode("utf-8")
+            self._ble.gatts_write(h, data)
+            return True
+        except Exception:
+            return False
+
+    def central_conn(self):
+        """The connected central's conn_handle (the attacker mid-duel), or None.
+        The victim's DuelState reads `central_conn() is not None` as link_up: a
+        link drop before the hold elapses is the §5.3 escape (link-drop dodge)."""
+        return self._central
 
     def is_busy(self):
         """A central is connected -> the single connection slot is taken (§5.5):

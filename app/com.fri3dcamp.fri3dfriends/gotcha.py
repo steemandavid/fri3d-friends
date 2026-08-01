@@ -813,6 +813,369 @@ def revealed_event(hunter_pid, at=None):
 
 
 # ---------------------------------------------------------------------------
+# 1j. THE DUEL -- attack handshake, victim state machine, spawn protection
+#     (plan §5.3, §5.8). All pure and host-tested; the on-badge GATT/IRQ wiring
+#     lives in gotcha_gatt.py / gotcha_app.py. DuelState is the victim-only
+#     responder reused by beacon_service.py in Phase 4 (§5.6), so it carries NO
+#     lvgl / Activity / radio dependency -- effects ride injected callbacks.
+# ---------------------------------------------------------------------------
+#
+# ESCAPE MECHANIC (deviation from §5.3 -- see Phase 3b plan). `gap_conn_rssi` is
+# absent on this MicroPython build, so §5.3's "rssi < FLEE_RSSI for FLEE_MS"
+# escape is not implementable. Escape is LINK-DROP: the victim leaving BLE range
+# drops the GATT connection before the hold elapses -> DODGED. §5.3 already lists
+# "link drops before hold elapses" as an escape, so FLEE_RSSI/FLEE_MS go unused
+# and the BLE link supervision-timeout replaces them (same posture as the Phase-0
+# RSSI-trend retraction). Instant-kill (dodges_left == 0) uses a very short hold
+# (INSTANT_KILL_MS) rather than disabling escape in code: a link that drops always
+# ends a duel without a kill regardless, so the short window -- not a code flag --
+# is what makes the last attempt land in practice.
+
+# DUEL notify states (victim -> attacker over the DUEL characteristic, §5.2).
+DUEL_ENGAGED = "engaged"
+DUEL_DODGED = "dodged"
+DUEL_KILLED = "killed"
+DUEL_REFUSED = "refused"          # carries the validate_attack verdict as reason
+
+# ATTACK "as" modes (§5.2).
+ATTACK_TARGET = "target"
+ATTACK_BOUNTY = "bounty"
+
+
+def build_attack_payload(group_id, attacker_pid, victim_pid, mode, nonce):
+    """The ATTACK GATT write body (attacker -> victim, §5.2/§5.3): compact JSON
+    {a, as, g, n, v} = attacker pid, mode, group id, nonce, victim pid.
+    Unauthenticated like REVEAL (§3.4/§13 sniffing-accepted posture)."""
+    return canonical_json({"g": group_id, "a": attacker_pid, "v": victim_pid,
+                           "as": mode, "n": nonce})
+
+
+def parse_attack_payload(raw):
+    """Parse an ATTACK write body. Defensive, never raises -> dict or None
+    ('not JSON / not an object' -> None, a dropped write)."""
+    try:
+        if isinstance(raw, (bytes, bytearray)):
+            raw = raw.decode("utf-8")
+        obj = json.loads(raw)
+    except Exception:
+        return None
+    if not isinstance(obj, dict):
+        return None
+    return {"g": obj.get("g"), "a": obj.get("a"), "v": obj.get("v"),
+            "as": obj.get("as"), "n": obj.get("n")}
+
+
+def build_duel_payload(status, hold_ms=None, dodges_left=None, reason=None):
+    """A DUEL notify body (victim -> attacker): {s, h?, d?, r?}. ENGAGED carries
+    hold_ms (h) and dodges_left (d); REFUSED carries the verdict (r); DODGED/
+    KILLED carry only the state."""
+    d = {"s": status}
+    if hold_ms is not None:
+        d["h"] = int(hold_ms)
+    if dodges_left is not None:
+        d["d"] = int(dodges_left)
+    if reason is not None:
+        d["r"] = reason
+    return canonical_json(d)
+
+
+def parse_duel_payload(raw):
+    """Parse a DUEL notify body -> {s, h, d, r} or None."""
+    try:
+        if isinstance(raw, (bytes, bytearray)):
+            raw = raw.decode("utf-8")
+        obj = json.loads(raw)
+    except Exception:
+        return None
+    if not isinstance(obj, dict):
+        return None
+    return {"s": obj.get("s"), "h": obj.get("h"),
+            "d": obj.get("d"), "r": obj.get("r")}
+
+
+def build_spoils_payload(soul_hex, target):
+    """The SPOILS read value (victim -> attacker, §5.2 D10): {soul, tgt}. The
+    inherited target rides the kill so inheritance works fully offline. `target`
+    is the victim's own target dict (pid/name/commitment) or None (the victim had
+    no live target -- the assassin then keeps hunting and re-syncs for a new one)."""
+    tgt = None
+    if isinstance(target, dict):
+        tgt = {"pid": target.get("pid"),
+               "name": str(target.get("name") or ""),
+               "commitment": target.get("commitment")}
+    return canonical_json({"soul": _hex(soul_hex), "tgt": tgt})
+
+
+def parse_spoils_payload(raw):
+    """Parse a SPOILS read value -> {soul, tgt} or None."""
+    try:
+        if isinstance(raw, (bytes, bytearray)):
+            raw = raw.decode("utf-8")
+        obj = json.loads(raw)
+    except Exception:
+        return None
+    if not isinstance(obj, dict):
+        return None
+    tgt = obj.get("tgt")
+    if not isinstance(tgt, dict):
+        tgt = None
+    return {"soul": obj.get("soul"), "tgt": tgt}
+
+
+def validate_attack(parsed, my_pid, my_streak, alive, truce_now, game_running, cfg,
+                    *, protected=False, on_cooldown=False, in_duel=False,
+                    radio_busy=False):
+    """Responder-side verdict on an incoming ATTACK write (§5.3, §5.8).
+
+    Returns 'ok'|'busy'|'no_game'|'truce'|'dead'|'wrong_target'|'protected'|
+    'on_cooldown'|'bounty'. The victim validates only what it can know locally;
+    the server re-checks true kill legality (ring/inheritance) on ingest (§10.2):
+      busy         -> radio slot taken or we are mid-duel ("no attack while
+                      attacking / a link is up", §5.5).
+      protected    -> we are spawn/join protected (§5.8); the attacker pays no
+                      cooldown for a refused attempt.
+      on_cooldown  -> this attacker attacked us inside ATTACK_COOLDOWN_MS.
+      bounty       -> attacker declared 'bounty' but we are not a bounty (our
+                      streak < BOUNTY_STREAK): the one lie the victim CAN catch.
+    `truce_now` is a truce_active() result ('none'/'camp'/'personal'/'both')."""
+    if radio_busy or in_duel:
+        return "busy"
+    if not game_running:
+        return "no_game"
+    if truce_now != "none":
+        return "truce"
+    if not alive:
+        return "dead"
+    v = parsed.get("v") if isinstance(parsed, dict) else None
+    if v != my_pid:
+        return "wrong_target"
+    if protected:
+        return "protected"
+    if on_cooldown:
+        return "on_cooldown"
+    mode = parsed.get("as") if isinstance(parsed, dict) else None
+    if mode == ATTACK_BOUNTY:
+        if int(my_streak or 0) < int(cfg.get("BOUNTY_STREAK")):
+            return "bounty"
+    return "ok"
+
+
+def protection_active(protected_until_s, now_s):
+    """Is spawn/join protection (§5.8) still in force? `protected_until_s` is an
+    absolute server-seconds deadline (None/0 = not protected). Server-seconds,
+    not ticks_ms, so it survives reboots and is not paused by a truce."""
+    try:
+        return bool(protected_until_s) and int(now_s) < int(protected_until_s)
+    except Exception:
+        return False
+
+
+def protection_left_s(protected_until_s, now_s):
+    """Whole seconds of protection left (for the countdown chip, §5.8), or 0."""
+    try:
+        if not protected_until_s:
+            return 0
+        d = int(protected_until_s) - int(now_s)
+        return d if d > 0 else 0
+    except Exception:
+        return 0
+
+
+def cooldown_ready(last_at_ms, now_ms, cooldown_ms):
+    """Has `cooldown_ms` elapsed since `last_at_ms` (ATTACK_COOLDOWN_MS, §5.4)?
+    0/None = never -> ready. Used by the ATTACKER for its own per-victim cooldown
+    (ticks_ms); the cooldown is <=60 s, inside the wrap range (cf. spotted_active)."""
+    if not last_at_ms:
+        return True
+    try:
+        return (now_ms - int(last_at_ms)) >= int(cooldown_ms)
+    except Exception:
+        return True
+
+
+class DodgeLedger(object):
+    """Per-attacker dodge + cooldown bookkeeping for the victim's current life
+    (§5.4). Bridges the server-synced `me.dodges` map (str(pid) -> dodges_LEFT
+    int) with locally-tracked offline duels: a local record upgrades an entry to
+    a {used, last} dict carrying the last-attack time for the DODGE_DECAY_MS reset
+    and the ATTACK_COOLDOWN_MS gate. On the next sync apply_sync overwrites the
+    whole map with the server's authoritative ints, discarding the local dicts.
+    Operates in server-seconds (stable across reboots, unlike ticks_ms)."""
+
+    def __init__(self, data=None, limit=1):
+        self._d = data if isinstance(data, dict) else {}
+        self.limit = int(limit)
+
+    def _used_of(self, e):
+        if isinstance(e, dict):
+            return int(e.get("used", 0))
+        if isinstance(e, int) and not isinstance(e, bool):
+            return max(0, self.limit - e)             # server 'left' int -> used
+        return 0
+
+    def dodges_left(self, attacker_pid, now_s, decay_s):
+        """Dodges this attacker still has against us this life. A DODGE_DECAY_MS
+        gap since their last attack resets it to the full DODGE_LIMIT (§5.4)."""
+        e = self._d.get(str(attacker_pid))
+        if e is None:
+            return self.limit
+        if isinstance(e, dict):
+            last = e.get("last")
+            if last is not None and (int(now_s) - int(last)) > int(decay_s):
+                return self.limit                     # decayed -> full reprieve
+            return max(0, self.limit - int(e.get("used", 0)))
+        try:
+            return max(0, min(self.limit, int(e)))    # server 'left' int
+        except Exception:
+            return self.limit
+
+    def last_attack_s(self, attacker_pid):
+        """When this attacker last attacked us (server-seconds), or None."""
+        e = self._d.get(str(attacker_pid))
+        if isinstance(e, dict) and e.get("last") is not None:
+            return int(e["last"])
+        return None
+
+    def note_attack(self, attacker_pid, now_s):
+        """Stamp an attack attempt's time (feeds cooldown + decay); used unchanged."""
+        k = str(attacker_pid)
+        self._d[k] = {"used": self._used_of(self._d.get(k)), "last": int(now_s)}
+
+    def note_dodge(self, attacker_pid, now_s):
+        """Record a granted dodge: used += 1 (capped at the limit) + stamp time."""
+        k = str(attacker_pid)
+        used = min(self._used_of(self._d.get(k)) + 1, self.limit)
+        self._d[k] = {"used": used, "last": int(now_s)}
+
+    def to_dict(self):
+        return self._d
+
+
+class DuelState(object):
+    """The victim's lvgl-free duel state machine (§5.3, §5.6). Reused by both
+    fri3d_friends.py (foreground) and beacon_service.py (background, Phase 4);
+    effects (alarm, screens, LEDs) ride injected callbacks so this class touches
+    no lvgl / Activity / radio. Ticks on a monotonic ms clock (time.ticks_ms
+    on-device, plain ints in tests)."""
+
+    def __init__(self, on_engaged=None, on_dodge=None, on_kill=None):
+        self.on_engaged = on_engaged     # (duel) -> fired when a duel begins
+        self.on_dodge = on_dodge         # (duel) -> fired on escape (link drop)
+        self.on_kill = on_kill           # (duel) -> fired when the hold completes
+        self.phase = "idle"              # idle -> hold -> killed|dodged
+        self.attacker_pid = None
+        self.hold_ms = 0
+        self.dodges_left = 0
+        self._deadline = 0
+
+    def active(self):
+        """A duel is live (holding) -> the single connection slot is committed."""
+        return self.phase == "hold"
+
+    def begin_attack(self, attacker_pid, hold_ms, dodges_left, now_ms):
+        """Start the hold. Idempotent while already holding (single slot, §5.5):
+        a second ATTACK during a live duel is ignored. Returns True if started."""
+        if self.phase == "hold":
+            return False
+        self.attacker_pid = attacker_pid
+        self.hold_ms = int(hold_ms)
+        self.dodges_left = int(dodges_left)
+        self._deadline = now_ms + int(hold_ms)
+        self.phase = "hold"
+        self._fire(self.on_engaged)
+        return True
+
+    def tick(self, now_ms, link_up):
+        """Advance the machine -> 'idle'|'hold'|'killed'|'dodged'. link_up False
+        (the central dropped) is the escape (see the LINK-DROP note above) ->
+        'dodged'; otherwise the hold completing -> 'killed'. Raw ms compare: the
+        hold is <=5 s, well inside the ticks_ms wrap (cf. spotted_active)."""
+        if self.phase != "hold":
+            return self.phase
+        if not link_up:
+            self.phase = "dodged"
+            self._fire(self.on_dodge)
+            return "dodged"
+        if now_ms >= self._deadline:
+            self.phase = "killed"
+            self._fire(self.on_kill)
+            return "killed"
+        return "hold"
+
+    def hold_fraction(self, now_ms):
+        """0..1 progress of the hold bar (for the under-attack + attacker UI)."""
+        if self.hold_ms <= 0:
+            return 1.0
+        done = (now_ms - (self._deadline - self.hold_ms)) / float(self.hold_ms)
+        if done < 0.0:
+            return 0.0
+        return 1.0 if done > 1.0 else done
+
+    def reset(self):
+        self.phase = "idle"
+        self.attacker_pid = None
+        self.hold_ms = 0
+        self.dodges_left = 0
+        self._deadline = 0
+
+    def _fire(self, cb):
+        if cb is not None:
+            try:
+                cb(self)
+            except Exception:
+                pass
+
+
+# -- duel event builders (§5.3, §9.3) ---------------------------------------
+
+def attack_started_event(victim_pid, at=None):
+    """The attacker's 'attack_started' event (§5.3, §9.3): cooldown bookkeeping +
+    the §5.8 rule that sending an ATTACK ends the attacker's OWN protection.
+    Log/accounting-only -> droppable on overflow."""
+    e = {"type": "attack_started", "victim_pid": victim_pid}
+    if at is not None:
+        e["at"] = int(at)
+    return e
+
+
+def kill_event(victim_pid, soul_hex, rssi=None, at=None):
+    """The assassin's 'kill' report (§3.4, §5.3): victim_pid + the disclosed soul.
+    A KEEP_TYPE -- never dropped on overflow (a kid's kills survive a power-off)."""
+    e = {"type": "kill", "victim_pid": victim_pid, "soul": _hex(soul_hex)}
+    if rssi is not None:
+        e["rssi"] = int(rssi)
+    if at is not None:
+        e["at"] = int(at)
+    return e
+
+
+def killed_by_event(attacker_pid, new_commitment, at=None):
+    """The victim's 'killed_by' report (§5.3, §9.6): names the attacker and
+    publishes the NEW commitment for the freshly-rotated soul. A KEEP_TYPE."""
+    e = {"type": "killed_by", "attacker_pid": attacker_pid}
+    if new_commitment is not None:
+        e["new_commitment"] = new_commitment
+    if at is not None:
+        e["at"] = int(at)
+    return e
+
+
+def dodge_event(attacker_pid=None, victim_pid=None, counterpart_pid=None, at=None):
+    """A 'dodge' event (§5.4). The victim names `attacker_pid`; the assassin names
+    `victim_pid`; either half lands on the same server row. Droppable on overflow."""
+    e = {"type": "dodge"}
+    if attacker_pid is not None:
+        e["attacker_pid"] = attacker_pid
+    if victim_pid is not None:
+        e["victim_pid"] = victim_pid
+    if counterpart_pid is not None:
+        e["counterpart_pid"] = counterpart_pid
+    if at is not None:
+        e["at"] = int(at)
+    return e
+
+
+# ---------------------------------------------------------------------------
 # 2. EVENT QUEUE -- bounded, dedup-by-uuid offline store (§8.2, §9.3)
 # ---------------------------------------------------------------------------
 #

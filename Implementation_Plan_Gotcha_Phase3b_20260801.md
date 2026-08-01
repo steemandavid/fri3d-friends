@@ -1,8 +1,35 @@
 # Implementation Plan — Gotcha Phase 3b: the Duel (§5.3)
 
-**Date:** 2026-08-01 · **Status:** PLANNED, NOT STARTED (handoff — paused before implementation).
+**Date:** 2026-08-01 · **Status:** ✅ CODE-COMPLETE (0.11.6, 355 tests green). On-badge
+two-badge duel probe (step 6) still pending — needs clean-booted badges.
 **Predecessor:** Phase 3a (Reveal) committed `669db48` (0.11.5, 336 tests); connect path proven.
 **Spec:** `Implementation_Plan_Gotcha_20260726.md` §5.3 (flow), §5.2 (GATT), §3.4 (soul), §5.8 (spawn), §5.5 (radio).
+
+## Build status (what shipped)
+
+- **Step 0 — `gap_conn_rssi` probe: DONE, absent (verified on-badge 2026-08-01).**
+  `dir(bluetooth.BLE)` has only `gap_connect`/`gap_disconnect`, no connection-RSSI call.
+  `gattc_read`/`gatts_notify` present. Escape = LINK-DROP, as planned.
+- **Layer A (gotcha.py) — DONE.** `build/parse_attack_payload`, `build/parse_duel_payload`
+  (+`DUEL_REFUSED`), `build/parse_spoils_payload`, `validate_attack`, `DodgeLedger`,
+  `DuelState`, `protection_active/_left_s`, `cooldown_ready`, `attack_started/kill/
+  killed_by/dodge` event builders. +26 host tests (`tests/test_gotcha.py`).
+- **Layer B (gotcha_gatt.py) — DONE.** ATTACK write→`on_attack(parsed,conn)`, `drain_attacks`,
+  `notify_duel` (stages value + notifies), `set_spoils`, `central_conn`; DUEL write-buffer.
+- **Layer B (contact_exchange.py) — DONE.** `duel_session` central handshake (connect→
+  discover→CCCD subscribe best-effort→write ATTACK→await DUEL notify/poll-read→read SPOILS).
+- **Layer B (gotcha_app.py) — DONE.** `_do_attack`/`_handle_duel_result` (verify soul, adopt
+  inherited target offline, optimistic score, queue kill), victim `apply_attack`+`_tick_duel`
+  +`_on_duel_kill`/`_on_duel_dodge`, `kill_enabled=True`, cooldown-gated `request_attack`,
+  `cancel_attack`, UNDER_ATTACK gflag.
+- **Layer C (fri3d_friends.py) — DONE.** `_render_duel` + `_siren` (buzzer PWM, IRQ-safe),
+  one red-LED write at start / one dark at end, ONDER-AANVAL / AANVALLEN / death banners,
+  hunt-strip A → attack/abort, cancel-on-exit. Also wired the previously-unrendered hunter
+  message (`reveal_msg_text`) so GOTCHA!/refusals/reveal text now show.
+
+**Remaining:** the live two-badge duel run (step 6) — deploy 0.11.6 to two clean-booted
+badges (single app, no stale gotcha.b1), chase → KILLED → soul verify → score+inheritance,
+and a link-drop DODGE. Validates the CCCD-at-value+1 assumption + notify delivery.
 
 ## Context / outcome
 
