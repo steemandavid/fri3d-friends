@@ -802,9 +802,13 @@ class ContactExchange:
         deadline = time.ticks_add(time.ticks_ms(), int(overall_timeout_ms))
         conn = [None]
         h = {"attack": None, "duel": None, "spoils": None}
-        want = {bluetooth.UUID(ATTACK_CHR): "attack",
-                bluetooth.UUID(DUEL_CHR): "duel",
-                bluetooth.UUID(SPOILS_CHR): "spoils"}
+        # Compare UUIDs with == (as gatt_write does), NOT via a dict keyed by
+        # bluetooth.UUID -- UUID is not reliably hashable on this build, so dict
+        # lookups silently miss every characteristic (the Phase-3b duel timeout).
+        u_attack = bluetooth.UUID(ATTACK_CHR)
+        u_duel = bluetooth.UUID(DUEL_CHR)
+        u_spoils = bluetooth.UUID(SPOILS_CHR)
+        nchar = [0]                   # total characteristics discovered (diagnostic)
         last_duel = [None]            # most recent parsed DUEL payload
         spoils_raw = [None]           # SPOILS read result bytes
         write_acked = [False]
@@ -821,9 +825,14 @@ class ContactExchange:
                 if event == E["peripheral_connect"]:
                     conn[0] = data[0]
                 elif event == E["gattc_characteristic_result"] and data[0] == conn[0]:
-                    name = want.get(data[4])            # (conn, def_h, val_h, props, uuid)
-                    if name is not None:
-                        h[name] = data[2]
+                    nchar[0] += 1
+                    u = data[4]                          # (conn, def_h, val_h, props, uuid)
+                    if u == u_attack:
+                        h["attack"] = data[2]
+                    elif u == u_duel:
+                        h["duel"] = data[2]
+                    elif u == u_spoils:
+                        h["spoils"] = data[2]
                 elif event == E["gattc_notify"] and data[0] == conn[0]:
                     if data[1] == h["duel"]:            # (conn, value_h, notify_data)
                         last_duel[0] = gotcha.parse_duel_payload(bytes(data[2]))
@@ -865,8 +874,8 @@ class ContactExchange:
                    and (h["attack"] is None or h["duel"] is None)):
                 await asyncio.sleep_ms(20)
             if conn[0] is None or h["attack"] is None or h["duel"] is None:
-                _lg("discover incomplete a=%s d=%s s=%s" % (
-                    h["attack"], h["duel"], h["spoils"]))
+                _lg("discover incomplete n=%d a=%s d=%s s=%s" % (
+                    nchar[0], h["attack"], h["duel"], h["spoils"]))
                 return fail
             _lg("handles a=%s d=%s s=%s" % (h["attack"], h["duel"], h["spoils"]))
             # Best-effort notify subscribe: the CCCD sits at duel_value + 1 in the
