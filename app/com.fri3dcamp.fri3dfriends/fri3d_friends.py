@@ -1951,12 +1951,15 @@ class Fri3dFriends(Activity):
         if self._settings_pending:
             self._harvest_settings()
         if not self._unconfigured:
+            # Register the GATT services BEFORE advertising: gatts_register_services
+            # EBUSYs on a radio that is already advertising (else the badge serves
+            # no GATT at all -- the Phase-3b duel/reveal victim bug).
+            self._ensure_gatt_services()
             try:
                 self._ble.begin(self._config["groups"], self._config["name"],
                                 self._config["rssi_floor"])
             except Exception:
                 pass
-            self._ensure_gatt_services()
         # A group-less badge (Configure-me or skipped) brings the radio up on
         # demand: a contact swap or a "Telefoon-setup" window; _teardown_ble()
         # powers it back down. No standing proximity beacon (nothing to match on).
@@ -2091,12 +2094,12 @@ class Fri3dFriends(Activity):
                 # the same time). See _apply_reload's was_unconfigured branch.
                 if self._pending_begin and self._setup_task is None:
                     self._pending_begin = False
+                    self._ensure_gatt_services()      # register before advertising
                     try:
                         self._ble.begin(self._config["groups"], self._config["name"],
                                         self._config["rssi_floor"])
                     except Exception:
                         pass
-                    self._ensure_gatt_services()
                 self._ble.tick(now, dt)
                 self._gc_tick(now)
                 self._render_gotcha()

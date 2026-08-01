@@ -163,8 +163,12 @@ class GotchaController(object):
 
     def start(self):
         self._running = True
-        self._plog("---- start v%s pid=%s tgt=%s ----" % (
-            _app_version(), self.state.d.get("pid"), self.state.target_pid()))
+        try:
+            svc_h = dict(self._svc._h) if self._svc is not None else None
+        except Exception:
+            svc_h = "?"
+        self._plog("---- start v%s pid=%s tgt=%s gatt=%s ----" % (
+            _app_version(), self.state.d.get("pid"), self.state.target_pid(), svc_h))
         self._next_sync_ms = 0
         self._next_conn_ms = 0
         self._apply_prox_filter()

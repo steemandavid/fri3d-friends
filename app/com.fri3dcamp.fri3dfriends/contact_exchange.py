@@ -427,6 +427,21 @@ class ContactExchange:
                         self._gotcha.on_radio_off()
                     except Exception:
                         pass
+        # gatts_register_services fails with EBUSY (OSError 16) while the radio is
+        # mid-advertise -- e.g. the boot beacon service, or a begin() that ran
+        # first -- so a first registration on a busy radio silently registers
+        # NOTHING (no exchange/setup/gotcha services, the Phase-3b "victim serves
+        # no GATT" bug). A clean active(False)/active(True) cycle drops the advert
+        # so registration succeeds; verified on-device (register works right after
+        # active(True), EBUSYs while advertising). Only needed before we register
+        # -- once _svc_ready is set we never cycle again.
+        if not self._svc_ready:
+            try:
+                self._ble.active(False)
+                self._ble.active(True)
+                self._mtu_set = False
+            except Exception as e:
+                self.dbg.append("cycle-exc %r" % e)
         if not self._mtu_set:
             try:
                 self._ble.config(mtu=GATT_MTU)
