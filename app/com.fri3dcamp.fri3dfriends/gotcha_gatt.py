@@ -50,6 +50,11 @@ class GotchaService(object):
         self._central = None         # conn_handle while a central is connected (§5.5)
         self._pending = []           # parsed REVEAL payloads queued from the IRQ
         self._pending_attacks = []   # (parsed, conn) ATTACK writes queued from the IRQ
+        # Diagnostics (read by the controller's duel log): count IRQ events so a
+        # silent responder can be traced to "IRQ never fired" vs "parse dropped it".
+        self.dbg_central = 0
+        self.dbg_write = 0
+        self.dbg_write_h = 0         # last written value handle seen
 
     # ---- registration hooks (mirror ble_setup.SetupService) ----------------
     def service_tuple(self, bluetooth):
@@ -112,11 +117,14 @@ class GotchaService(object):
         import bluetooth
         try:
             if event == getattr(bluetooth, "_IRQ_GATTS_WRITE", 3):
+                self.dbg_write += 1
+                self.dbg_write_h = data[1]
                 if data[1] == self._h.get("reveal"):
                     self._on_reveal_write(data[1])
                 elif data[1] == self._h.get("attack"):
                     self._on_attack_write(data[1], data[0])
             elif event == getattr(bluetooth, "_IRQ_CENTRAL_CONNECT", 1):
+                self.dbg_central += 1
                 self._central = data[0]            # a hunter/attacker connected (§5.5)
             elif event == getattr(bluetooth, "_IRQ_CENTRAL_DISCONNECT", 2):
                 self._central = None

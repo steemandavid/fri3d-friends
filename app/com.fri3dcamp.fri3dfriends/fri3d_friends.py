@@ -289,6 +289,7 @@ class Fri3dFriends(Activity):
         self._duel_banner = False        # we currently own the banner (duel state)
         self._siren_task = None          # in-flight under-attack alarm task
         self._strip_shown_was = False    # hunt-strip focus-set edge (§8.4)
+        self._radio_yielded = False      # scan paused while a central is connected
         self._dimmed = False
         self._led_next_ms = 0
         self._led_override_until = 0
@@ -2100,7 +2101,26 @@ class Fri3dFriends(Activity):
                                         self._config["rssi_floor"])
                     except Exception:
                         pass
-                self._ble.tick(now, dt)
+                # Pause the proximity scan while a central is connected to us
+                # (being revealed/attacked): an active dense scan suppresses the
+                # inbound GATTS-write IRQ on this build, so the ATTACK/REVEAL would
+                # never reach the responder (§5.5/§5.6). suspend() stops scan+advert
+                # (already connected, nothing to advertise); resume() on release.
+                if self._gc is not None and self._gc.being_connected():
+                    if not self._radio_yielded:
+                        self._radio_yielded = True
+                        try:
+                            self._ble.suspend()
+                        except Exception:
+                            pass
+                else:
+                    if self._radio_yielded:
+                        self._radio_yielded = False
+                        try:
+                            self._ble.resume()
+                        except Exception:
+                            pass
+                    self._ble.tick(now, dt)
                 self._gc_tick(now)
                 self._render_gotcha()
                 self._hunt_ping(now)

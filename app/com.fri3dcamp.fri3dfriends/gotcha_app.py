@@ -148,6 +148,7 @@ class GotchaController(object):
                                       on_kill=self._on_duel_kill)
         self._duel_msg = ""             # transient victim-side status (Dutch)
         self._duel_msg_until = 0
+        self._dbg_irq_sig = None        # last logged (central,write,wh,pending) tuple
         self.state.load()
         self.enrolled = self.state.is_enrolled()
 
@@ -383,6 +384,13 @@ class GotchaController(object):
     def push_game_context(self):
         """Public hook for the Activity to call after begin() (re-advertise)."""
         self._push_game_context()
+
+    def being_connected(self):
+        """A central is connected to us (we are being REVEALED/ATTACKED) -> the
+        main loop must pause the proximity scan (§5.5/§5.6): an active dense scan
+        suppresses inbound peripheral GATTS-write IRQs on this build, so a hunter's
+        ATTACK/REVEAL write never reaches the responder while we keep scanning."""
+        return self._svc is not None and self._svc.is_busy()
 
     def _in_game(self):
         """Offline-capable 'this badge is a live game participant' -- the gate for
@@ -848,9 +856,18 @@ class GotchaController(object):
     def _drain_attacks(self):
         if self._svc is not None:
             try:
+                sig = (getattr(self._svc, "dbg_central", 0),
+                       getattr(self._svc, "dbg_write", 0),
+                       getattr(self._svc, "dbg_write_h", 0),
+                       len(self._svc._pending_attacks))
+                if sig != self._dbg_irq_sig:
+                    self._dbg_irq_sig = sig
+                    self._plog("VICTIM irq central=%d write=%d wh=%s pending=%d "
+                               "(attack_h=%s)" % (sig[0], sig[1], sig[2], sig[3],
+                                                  self._svc._h.get("attack")))
                 self._svc.drain_attacks()
-            except Exception:
-                pass
+            except Exception as e:
+                self._plog("VICTIM drain err %r" % (e,))
 
     def _tick_duel(self, now_ms):
         """Advance a live victim duel. link_up is 'the attacker's central is still
@@ -864,6 +881,9 @@ class GotchaController(object):
         """on_attack callback: an inbound ATTACK write reached us. Validates
         (§5.3/§5.8) and either starts the duel (notify ENGAGED) or refuses it
         (notify REFUSED with the verdict). Runs on the loop thread."""
+        self._plog("VICTIM apply_attack from=%s enrolled=%s game_live=%s" % (
+            parsed.get("a") if isinstance(parsed, dict) else None,
+            self.enrolled, self.game_live))
         if not self.enrolled:
             self._refuse_attack(conn, "no_game")
             return
