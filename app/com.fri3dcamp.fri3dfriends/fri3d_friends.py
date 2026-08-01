@@ -288,6 +288,7 @@ class Fri3dFriends(Activity):
         self._attacking_was = False
         self._duel_banner = False        # we currently own the banner (duel state)
         self._siren_task = None          # in-flight under-attack alarm task
+        self._strip_shown_was = False    # hunt-strip focus-set edge (§8.4)
         self._dimmed = False
         self._led_next_ms = 0
         self._led_override_until = 0
@@ -667,6 +668,21 @@ class Fri3dFriends(Activity):
         except Exception as e:
             self._gc_log("tick err %r" % (e,))
         self._maybe_show_consent()
+        self._maybe_refresh_strip_focus()
+
+    def _maybe_refresh_strip_focus(self):
+        # The hunt strip only becomes keypad-reachable once a target exists (§8.4).
+        # Re-derive the focus set on the show/hide edge, but only when the plain
+        # nametag owns focus (never yank focus out of an open overlay/menu).
+        gc = self._gc
+        strip = gc is not None and gc.show_strip() and self._g_target is not None
+        if strip == self._strip_shown_was:
+            return
+        self._strip_shown_was = strip
+        if (self._focus_held and not self._menu_open and not self._consent_open
+                and not self._adopt_open and not self._setup_open
+                and not self._show_setup_screen()):
+            self._establish_focus()
 
     def _on_hunt_activate(self, e):
         # A/ENTER on the hunt strip: do the strongest legal action (§5.7 D29).
@@ -852,6 +868,11 @@ class Fri3dFriends(Activity):
             halted = gc.radar_halted()
             if gc.show_strip():
                 line = gc.target_line_text()
+                # Name the A-action before it is pressed (§5.7/§5.3 D29):
+                # "Badge2024lijn  ·  A: AANVALLEN" / "A: onthullen" / "A: afbreken".
+                act = gc.reveal_action_label()
+                if act:
+                    line = line + "  -  " + act
                 if line != self._g_target_last:
                     self._g_target_last = line
                     self._g_target.set_text(line)
@@ -1002,6 +1023,11 @@ class Fri3dFriends(Activity):
             objs = [self._setup_close_btn]
         elif self._show_setup_screen():
             objs = list(self._cfg_rows)
+        elif (self._gc is not None and self._g_target is not None
+              and self._gc.show_strip()):
+            # Hunting: the hunt strip is the primary A-action (§5.7/§5.3 D29), so it
+            # is focused first; the Menu pill stays reachable one step down.
+            objs = [self._g_target, self._menu_btn]
         else:
             objs = [self._menu_btn]
         self._set_focus(objs)
