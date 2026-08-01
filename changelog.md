@@ -1,3 +1,25 @@
+# !Fri3d Friends — Gotcha Phase 3b plan + session handoff — 2026-08-01
+
+Paused development for handoff to another session/model. Phase 3a (Reveal) is **built +
+committed (`669db48`, 0.11.5, 336 tests)** with the connect path PROVEN on-badge. Drafted the
+**Phase 3b (the duel) plan** — saved to `Implementation_Plan_Gotcha_Phase3b_20260801.md`
+(planned, not started; the next session resumes there).
+
+Key handoff notes for the next session:
+- **Phase 3b escape mechanic pivots to link-drop**: `gap_conn_rssi` does NOT exist on this
+  MicroPython build (verified against the bluetooth API), so §5.3's RSSI-threshold escape is
+  unimplementable — escape = run out of range → link drops before `KILL_HOLD_MS` (the plan's own
+  fallback). Plan step 0 re-probes the badge firmware for it anyway.
+- **Reveal full end-to-end not captured** — blocked by test-harness issues only (WiFi-timing on
+  the continuously-syncing shipping app + probe/shipping-app advertising-set conflict + churned
+  badges), NOT a game blocker. Re-run as a clean badge-to-badge test (two badges running only the
+  probe). Findings in memory `gotcha-connect-path-findings` / `gotcha-reveal-probe-status`.
+- **Dev badges:** 9de4 (pid 1004) + bac8 (pid 1003) enrolled; BAdge2024lijn not enrolled (no
+  gotcha.api in config). gotcha.b1 probe app removed from 9de4/bac8. Backend running.
+- **Overall phase status** in memory `gotcha-phase-status` (START THERE next session).
+
+---
+
 # !Fri3d Friends — Gotcha Phase 3a on-badge probe: connect path PROVEN + Flags-AD fix shipped — 2026-08-01
 
 Ran the Phase 3a Reveal probe on the three dev badges (9de4 / bac8 / BAdge2024lijn).
