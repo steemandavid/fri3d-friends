@@ -282,6 +282,7 @@ class Fri3dFriends(Activity):
         self._buzzer_until = 0           # buzzer busy until this (ping priority)
         self._g_last_ping_ms = 0         # last hunt ping (drop-not-queue, §8.8.6)
         self._g_pings = 0                 # hunt pings fired (observable when SILENT)
+        self._spotted_was = False        # prior is_spotted (Reveal gold-flash edge, §5.7)
         self._dimmed = False
         self._led_next_ms = 0
         self._led_override_until = 0
@@ -438,8 +439,20 @@ class Fri3dFriends(Activity):
             import gotcha_app
             self._gc = gotcha_app.GotchaController(
                 self._ble, APP_DIR + "/gotcha.json", log=self._gc_log)
+            self._gc.set_exchange(self._exch)
             self._gc.configure(self._config.get("gotcha"),
                                self._config.get("name"), self._config.get("groups"))
+            # Phase 3a Reveal (§5.7): attach the Gotcha GATT responder to the same
+            # one-shot service registration as exchange+setup, route inbound REVEAL
+            # writes through BLEProximity's IRQ, and give the controller the responder.
+            try:
+                import gotcha_gatt
+                svc = gotcha_gatt.GotchaService(on_reveal=self._gc.apply_reveal)
+                self._exch.attach_gotcha(svc)
+                self._gc.set_service(svc)
+                self._ble.set_gatt_dispatch(svc.handle_irq)
+            except Exception as e:
+                self._gc_log("gotcha svc err %r" % (e,))
         except Exception as e:
             self._gc_log("setup err %r" % (e,))
             self._gc = None
@@ -453,6 +466,16 @@ class Fri3dFriends(Activity):
         try:
             self._g_target.set_long_mode(lv.label.LONG_MODE.WRAP)
             self._g_target.set_width(W - 40)
+        except Exception:
+            pass
+        # The hunt strip is the focusable A-action row (§5.7 D29): pressing A does
+        # the strongest legal thing (reveal now; attack/abort in Phase 3b). Made
+        # clickable + focusable so joystick nav can reach it; the Menu button stays
+        # the default focus. (Focus routing verified on-badge in the probe.)
+        try:
+            self._g_target.add_flag(lv.obj.FLAG.CLICKABLE)
+            self._make_focusable(self._g_target)
+            self._bind_event(self._g_target, self._on_hunt_activate, lv.EVENT.CLICKED)
         except Exception:
             pass
         bx = W - 30
@@ -638,6 +661,58 @@ class Fri3dFriends(Activity):
         except Exception as e:
             self._gc_log("tick err %r" % (e,))
         self._maybe_show_consent()
+
+    def _on_hunt_activate(self, e):
+        # A/ENTER on the hunt strip: do the strongest legal action (§5.7 D29).
+        gc = self._gc
+        if gc is None:
+            return
+        act = gc.strip_action()
+        if act == "reveal":
+            gc.request_reveal()
+        # 'attack'/'abort' arrive with Phase 3b; 'radar'/'none' -> no-op here (the
+        # menu is opened via the Menu button, not the hunt strip).
+
+    def _ensure_gatt_services(self):
+        # Register the Gotcha (+ exchange + setup) GATT services on the radio
+        # BLEProximity brought up, so a live-game badge is REVEAL/ATTACK-reachable
+        # (plan §5.1). Idempotent (the one-shot _svc_ready guard inside). Called
+        # after ble.begin; the exact register-vs-advertise order is probe-verified.
+        if self._exch is None:
+            return
+        try:
+            import bluetooth
+            self._exch.ensure_radio(bluetooth)
+        except Exception as e:
+            self._gc_log("gatt reg err %r" % (e,))
+
+    def _gatt_busy(self):
+        # The radio's single connection slot is taken (we are revealing, or a
+        # central is connected to us) -> skip _update_leds (§5.5).
+        gc = self._gc
+        return gc is not None and gc.gatt_busy()
+
+    def _render_spotted(self, now):
+        # Drive the target-side Reveal effect (§5.7): on the rising edge of
+        # is_spotted, fire the gold LED flash (REVEAL_FLASH_MS) + a chirp. The
+        # _led_override_until set by _flash_leds holds the gold steady and keeps
+        # _update_leds from redrawing the hunt bar during the flash.
+        gc = self._gc
+        if gc is None:
+            return
+        spotted = gc.is_spotted(now)
+        if spotted and not self._spotted_was:
+            try:
+                ms = int(gc.cfg.get("REVEAL_FLASH_MS") or 2500)
+                self._flash_leds(255, 200, 0, ms=ms)     # bright gold on every LED
+            except Exception:
+                pass
+            if self._sound:
+                try:
+                    TaskManager.create_task(self._sting(2200))   # chirp
+                except Exception:
+                    pass
+        self._spotted_was = spotted
 
     def _set_gotcha_bars(self, segs, halted):
         if halted:
@@ -1642,15 +1717,17 @@ class Fri3dFriends(Activity):
         self._wake()
         TaskManager.create_task(self._sting(freq))
 
-    def _flash_leds(self, r, g, b):
+    def _flash_leds(self, r, g, b, ms=None):
         # A brief bright flash on all LEDs; the per-friend breathing (below)
-        # resumes automatically once the override window elapses.
+        # resumes automatically once the override window elapses. `ms` overrides the
+        # default hold (the Reveal gold flash holds REVEAL_FLASH_MS, §5.7).
         try:
             n = self._led_count()
             for i in range(n):
                 lights.set_led(i, r, g, b)
             lights.write()
-            self._led_override_until = time.ticks_add(time.ticks_ms(), LED_FLASH_MS)
+            hold = ms if ms else LED_FLASH_MS
+            self._led_override_until = time.ticks_add(time.ticks_ms(), hold)
             self._led_last = None       # force a breathing redraw after the flash
         except Exception:
             pass
@@ -1754,6 +1831,7 @@ class Fri3dFriends(Activity):
                                 self._config["rssi_floor"])
             except Exception:
                 pass
+            self._ensure_gatt_services()
         # A group-less badge (Configure-me or skipped) brings the radio up on
         # demand: a contact swap or a "Telefoon-setup" window; _teardown_ble()
         # powers it back down. No standing proximity beacon (nothing to match on).
@@ -1826,6 +1904,14 @@ class Fri3dFriends(Activity):
             except Exception:
                 pass
             self._exch_task = None
+        # Cancel an in-flight Reveal connect too (§5.5/F-4: a leaving Activity must
+        # not leave a GATT task touching a torn-down radio). _do_reveal's finally
+        # resumes BLEProximity before the cancel propagates.
+        if self._gc is not None:
+            try:
+                self._gc.cancel_reveal()
+            except Exception:
+                pass
 
     def _teardown_ble(self):
         try:
@@ -1884,16 +1970,18 @@ class Fri3dFriends(Activity):
                                         self._config["rssi_floor"])
                     except Exception:
                         pass
+                    self._ensure_gatt_services()
                 self._ble.tick(now, dt)
                 self._gc_tick(now)
                 self._render_gotcha()
                 self._hunt_ping(now)
                 self._drain_arrivals()
                 self._refresh_nearby()
-                # While a setup session runs (Configure-me on an unconfigured
-                # badge), skip LED writes — the WS2812 write disables IRQs and
-                # would starve a phone's GATT connection (field bug 2 / plan §2.3).
-                if self._setup_task is None:
+                self._render_spotted(now)
+                # While a setup session runs, or a Gotcha GATT connection is live
+                # (§5.5), skip LED writes — the WS2812 write disables IRQs and
+                # would starve the GATT link (field bug 2 / plan §2.3).
+                if self._setup_task is None and not self._gatt_busy():
                     self._update_leds(now)
                 self._refresh_battery(now)
                 self._refresh_clock(now)

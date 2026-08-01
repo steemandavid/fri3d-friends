@@ -680,6 +680,139 @@ def score_preview(total_kills, streak, best_streak, kill_type):
 
 
 # ---------------------------------------------------------------------------
+# 1i. REVEAL -- the last ten metres (plan §5.7)
+# ---------------------------------------------------------------------------
+#
+# Reveal is the disambiguator: once rssi_prox has brought you to "within a few
+# metres" but cannot say WHICH badge in a crowd, a Reveal makes your target's
+# badge flash gold + chirp + show SPOTTED. It is the shortest GATT interaction
+# (hunter writes REVEAL -> target acks -> disconnect -> flash), so it is built
+# first (Phase 3a) to prove the connect path the duel (§5.3) will share.
+#
+# All of this is pure and host-tested: the GATT payload, the escalating A-action
+# ladder (§5.7 D29), the hunter cooldown, the responder validation, the spotted
+# window, and the log-only event shapes. The on-badge connect/IRQ wiring lives in
+# gotcha_gatt.py / gotcha_app.py.
+
+def build_reveal_payload(group_id, hunter_pid, target_pid, nonce):
+    """The REVEAL GATT write body (hunter -> target, plan §5.7): compact JSON.
+
+    {g, h, t, n} = group id, hunter pid, target pid, nonce. Unauthenticated --
+    consistent with the sniffing-accepted posture (§3.4/§13): anyone on the link
+    can read who revealed whom, which the public audit trail shows anyway. The
+    nonce lets the hunter match the write to its ack; it carries no security."""
+    return canonical_json({"g": group_id, "h": hunter_pid, "t": target_pid, "n": nonce})
+
+
+def parse_reveal_payload(raw):
+    """Parse a REVEAL write body. Defensive and never raising -> dict or None.
+
+    Returns {g, h, t, n} (any value may be None/missing). None means 'not JSON /
+    not an object'; the responder treats that as a dropped write."""
+    try:
+        if isinstance(raw, (bytes, bytearray)):
+            raw = raw.decode("utf-8")
+        obj = json.loads(raw)
+    except Exception:
+        return None
+    if not isinstance(obj, dict):
+        return None
+    return {"g": obj.get("g"), "h": obj.get("h"), "t": obj.get("t"), "n": obj.get("n")}
+
+
+def reveal_ready(last_reveal_at_s, now_s, cfg):
+    """Has the hunter's per-hunter REVEAL_COOLDOWN_S elapsed (§5.7)?
+
+    Cooldown is hunter-side ONLY -- the responder never checks it (a target must
+    always answer). `last_reveal_at_s`/`now_s` are effective server seconds
+    (stable across reboots, unlike ticks_ms); 0/None means 'never'."""
+    cd = int(cfg.get("REVEAL_COOLDOWN_S") or 0)
+    if cd <= 0 or not last_reveal_at_s:
+        return True
+    return (int(now_s) - int(last_reveal_at_s)) >= cd
+
+
+def decide_strip_action(target_prox, last_reveal_at_s, now_s, cfg, *,
+                        attack_in_progress=False, kill_enabled=False, halted=False):
+    """The escalating A-action on the hunt strip (plan §5.7 D29).
+
+    Returns one of 'attack'|'reveal'|'radar'|'abort'|'none'. The ladder is
+    monotonic in proximity, so a single press does the strongest legal thing:
+      own attack live        -> 'abort'  (a real tactical choice, §10.2)
+      truce / no target      -> 'none'   (radar detail / the Gotcha screen)
+      within KILL_RSSI       -> 'attack' (Phase 3b; gated off until kill_enabled)
+      within REVEAL_RSSI     -> 'reveal' if cooldown clear, else 'radar' (cooldown)
+      farther / not detected -> 'none'
+    With kill_enabled=False (Phase 3a) kill range falls through to 'reveal', so a
+    press right next to the target still does something useful."""
+    if attack_in_progress:
+        return "abort"
+    if halted or target_prox is None:
+        return "none"
+    in_kill = target_prox >= cfg.get("KILL_RSSI")
+    in_reveal = target_prox >= cfg.get("REVEAL_RSSI")
+    if in_kill and kill_enabled:
+        return "attack"
+    if in_reveal:
+        if cfg.get("reveal_enabled", True) and reveal_ready(last_reveal_at_s, now_s, cfg):
+            return "reveal"
+        return "radar"
+    return "none"
+
+
+def validate_reveal(parsed, my_pid, alive, truce_now, game_running, radio_busy=False):
+    """Responder-side verdict on an incoming REVEAL write (plan §5.7).
+
+    Returns 'ok'|'busy'|'no_game'|'truce'|'dead'|'wrong_target'. Deliberately NO
+    protection check (§5.8: reveal is allowed on protected players -- knowing
+    where someone is does them no harm) and NO cooldown check (cooldown is
+    hunter-side). 'busy' covers the §5.5 radio-arbitration states (a live GATT
+    connection / single slot taken) which the handler knows and passes in.
+    `truce_now` is a truce_active() result ('none'/'camp'/'personal'/'both')."""
+    if radio_busy:
+        return "busy"
+    if not game_running:
+        return "no_game"
+    if truce_now != "none":
+        return "truce"
+    if not alive:
+        return "dead"
+    t = parsed.get("t") if isinstance(parsed, dict) else None
+    if t != my_pid:
+        return "wrong_target"
+    return "ok"
+
+
+def spotted_active(spotted_until_ms, now_ms):
+    """Is the target's gold reveal flash still showing (§5.7 REVEAL_FLASH_MS)?
+
+    `spotted_until_ms` is an absolute ticks_ms deadline (0/None = not spotted).
+    Raw compare is fine: the window is ~2.5 s, far inside the ticks wrap range."""
+    return bool(spotted_until_ms) and now_ms < spotted_until_ms
+
+
+def reveal_event(target_pid, rssi=None, at=None):
+    """A hunter's 'reveal' event (plan §9.3): log-only, feeds the audit page.
+    Not in EventQueue.KEEP_TYPES -- droppable on overflow (a kill is never dropped,
+    a reveal is). rssi/at optional; the controller stamps `at` when it has a clock."""
+    e = {"type": "reveal", "target_pid": target_pid}
+    if rssi is not None:
+        e["rssi"] = int(rssi)
+    if at is not None:
+        e["at"] = int(at)
+    return e
+
+
+def revealed_event(hunter_pid, at=None):
+    """A target's 'revealed' event (plan §9.3): log-only + a liveness signal --
+    being revealed proves physical proximity, so the server refreshes last_seen."""
+    e = {"type": "revealed", "hunter_pid": hunter_pid}
+    if at is not None:
+        e["at"] = int(at)
+    return e
+
+
+# ---------------------------------------------------------------------------
 # 2. EVENT QUEUE -- bounded, dedup-by-uuid offline store (§8.2, §9.3)
 # ---------------------------------------------------------------------------
 #

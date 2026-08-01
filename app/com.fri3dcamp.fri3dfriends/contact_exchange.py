@@ -250,6 +250,7 @@ class ContactExchange:
         self._svc_ready = False
         self._mtu_set = False    # config(mtu=) is one-time-only; re-setting EINVALs
         self._setup = None       # optional SetupService, registered in the SAME call
+        self._gotcha = None      # optional GotchaService (gotcha_gatt), same registration
         self._h_myinfo = None
         self._h_theirs = None
         # event constants seeded in run_window()
@@ -329,6 +330,13 @@ class ContactExchange:
         features must register together or the second one EINVALs until reboot."""
         self._setup = setup
 
+    def attach_gotcha(self, gotcha):
+        """Attach a GotchaService (gotcha_gatt.GotchaService) so the Gotcha GATT
+        service registers in the same one-shot call. Same constraint + pattern as
+        attach_setup; the Gotcha characteristics need the radio live even outside a
+        contact swap (a live game must be REVEAL/ATTACK-reachable, plan §5.1)."""
+        self._gotcha = gotcha
+
     def radio_off(self):
         """Power the radio down if WE brought it up (idempotent, never raises).
 
@@ -360,6 +368,11 @@ class ContactExchange:
         if self._setup is not None:
             try:
                 self._setup.on_radio_off()
+            except Exception:
+                pass
+        if self._gotcha is not None:
+            try:
+                self._gotcha.on_radio_off()
             except Exception:
                 pass
         self._ble = None
@@ -407,6 +420,11 @@ class ContactExchange:
                         self._setup.on_radio_off()
                     except Exception:
                         pass
+                if self._gotcha is not None:
+                    try:
+                        self._gotcha.on_radio_off()
+                    except Exception:
+                        pass
         if not self._mtu_set:
             try:
                 self._ble.config(mtu=GATT_MTU)
@@ -439,6 +457,8 @@ class ContactExchange:
         services = [exch_svc]
         if self._setup is not None:
             services.append(self._setup.service_tuple(bluetooth))
+        if self._gotcha is not None:
+            services.append(self._gotcha.service_tuple(bluetooth))
         handles = self._ble.gatts_register_services(tuple(services))
         (self._h_myinfo, self._h_theirs) = handles[0]
         try:
@@ -446,11 +466,20 @@ class ContactExchange:
             self._ble.gatts_set_buffer(self._h_theirs, MAX_CONTACT_BYTES + 100, True)
         except Exception:
             pass
+        # Bind each attached service to its handle group, by position (robust to
+        # which of setup/gotcha is present -- the index tracks the append order).
+        idx = 1
         if self._setup is not None:
             try:
-                self._setup.bind_handles(self._ble, handles[1])
+                self._setup.bind_handles(self._ble, handles[idx])
             except Exception as e:
                 self.dbg.append("setup-bind-exc %r" % e)
+            idx += 1
+        if self._gotcha is not None:
+            try:
+                self._gotcha.bind_handles(self._ble, handles[idx])
+            except Exception as e:
+                self.dbg.append("gotcha-bind-exc %r" % e)
         self._svc_ready = True
 
     async def run_window(self, proximity, my_name, my_contact):
@@ -662,6 +691,85 @@ class ContactExchange:
             await asyncio.sleep_ms(20)
         self._ble.irq(self._irq)   # restore
         return self._h_read_remote is not None and self._h_write_remote is not None
+
+    async def gatt_write(self, addr_type, addr, chr_uuid, payload, timeout_ms=4000):
+        """A short central session: connect to `addr`, write `payload` to the
+        characteristic `chr_uuid` (write-with-response), wait for the ACK,
+        disconnect. The reusable connect path the contact swap proved (plan §5.1,
+        §5.7) -- the Gotcha REVEAL hunter (and later ATTACK) drives this.
+
+        The caller owns radio arbitration: suspend BLEProximity first and resume()
+        afterwards (the single adv set + IRQ can't be shared with a scan), and
+        this MUST run as an asyncio task. Returns True iff the write was ACKed.
+        Not host-tested (MicroPython BLE)."""
+        import time, asyncio, bluetooth
+        if self._ble is None:
+            return False
+        self._seed_events(bluetooth)
+        try:
+            self._ble.irq(self._irq)
+        except Exception:
+            pass
+        E = self._E
+        deadline = time.ticks_add(time.ticks_ms(), int(timeout_ms))
+        conn = [None]                 # conn_handle (mutable for the closure)
+        h_value = [None]              # discovered value handle for chr_uuid
+        acked = [False]
+        want = bluetooth.UUID(chr_uuid)
+
+        def _wirq(event, data):
+            try:
+                if event == E["peripheral_connect"]:
+                    conn[0] = data[0]
+                elif event == E["gattc_characteristic_result"] and data[0] == conn[0]:
+                    if data[4] == want:        # (conn, def_h, value_h, props, uuid)
+                        h_value[0] = data[2]
+                elif event == E["gattc_write_done"] and data[0] == conn[0]:
+                    acked[0] = True
+                elif event in (E["peripheral_disconnect"], E["central_disconnect"]):
+                    conn[0] = None
+            except Exception:
+                pass
+
+        self._ble.irq(_wirq)
+        try:
+            self._ble.gap_connect(addr_type, addr)
+        except Exception:
+            return False
+        try:
+            while time.ticks_diff(deadline, time.ticks_ms()) > 0 and conn[0] is None:
+                await asyncio.sleep_ms(20)
+            if conn[0] is None:
+                return False
+            try:
+                self._ble.gattc_exchange_mtu(conn[0])
+            except Exception:
+                pass
+            await asyncio.sleep_ms(60)
+            try:
+                self._ble.gattc_discover_characteristics(conn[0], 1, 0xFFFF)
+            except Exception:
+                pass
+            while (time.ticks_diff(deadline, time.ticks_ms()) > 0 and
+                   h_value[0] is None and conn[0] is not None):
+                await asyncio.sleep_ms(20)
+            if h_value[0] is None or conn[0] is None:
+                return False
+            try:
+                self._ble.gattc_write(conn[0], h_value[0], payload, 1)   # 1 = with response
+            except Exception:
+                return False
+            while (time.ticks_diff(deadline, time.ticks_ms()) > 0 and
+                   not acked[0] and conn[0] is not None):
+                await asyncio.sleep_ms(20)
+            await asyncio.sleep_ms(30)      # grace for the server's gatts_write IRQ
+            return acked[0]
+        finally:
+            if conn[0] is not None:
+                try:
+                    self._ble.gap_disconnect(conn[0])
+                except Exception:
+                    pass
 
     def _finalize(self):
         if not self._received:

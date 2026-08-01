@@ -123,13 +123,20 @@ def hash_groups(groups, max_groups=MAX_GROUPS):
     return ids, dropped
 
 
-def name_budget(num_groups, total=ADV_TOTAL, overhead=OVERHEAD, game=False):
+FLAG_AD_LEN = 3  # a connectable advert carries a Flags AD (len+type+flags)
+
+
+def name_budget(num_groups, total=ADV_TOTAL, overhead=OVERHEAD, game=False, connectable=False):
     """Bytes available for the name field given `num_groups` advertised ids.
 
     `game` True reserves the 5-byte game block too (the v2 `blocks` byte is
-    already counted in OVERHEAD)."""
+    already counted in OVERHEAD). `connectable` True reserves the 3-byte Flags AD
+    a connectable advert must carry -- without it central stacks (BlueZ/hcitool,
+    verified on the 2026 badge) do not treat the advert as connectable and the
+    connection hangs indefinitely (plan §5.7 probe finding, 2026-08-01)."""
     extra = GAME_BLOCK_LEN if game else 0
-    nb = total - overhead - extra - 2 * num_groups
+    flag = FLAG_AD_LEN if connectable else 0
+    nb = total - overhead - extra - flag - 2 * num_groups
     return nb if nb > 0 else 0
 
 
@@ -163,17 +170,20 @@ def truncate_utf8(s, max_bytes):
     return enc[:cut].decode("utf-8", "ignore")
 
 
-def build_payload(group_ids, name, game=None):
+def build_payload(group_ids, name, game=None, connectable=False):
     """Build the v2 advertising payload (one manufacturer AD structure).
 
     `group_ids` must already be deduped/sorted/capped (use hash_groups()).
     `name` is truncated to the available budget on a UTF-8 boundary. `game`, if
     a dict with a `pid`, appends the 5-byte game block (plan §4) and sets the
-    blocks bit so the name is budgeted for it. Returns bytes of length <= ADV_TOTAL.
+    blocks bit so the name is budgeted for it. `connectable` prepends a Flags AD
+    (LE General Discoverable + BR/EDR Not Supported) so central stacks honour the
+    advert as connectable (plan §5.7 probe finding); parse_payload skips it.
+    Returns bytes of length <= ADV_TOTAL.
     """
     gids = sorted(set(int(g) & 0xFFFF for g in group_ids))[:MAX_GROUPS]
     has_game = isinstance(game, dict) and game.get("pid") is not None
-    nb = name_budget(len(gids), game=has_game)
+    nb = name_budget(len(gids), game=has_game, connectable=connectable)
     disp = truncate_utf8(name or "", nb)
     name_b = disp.encode("utf-8")
 
@@ -189,7 +199,11 @@ def build_payload(group_ids, name, game=None):
         body += build_game_block(game.get("pid"), game.get("gflags", 0),
                                  game.get("streak", 0))
     # AD structure: [length-of-following, type, body...]
-    return bytes([len(body) + 1, AD_TYPE_MFG]) + body
+    mfg = bytes([len(body) + 1, AD_TYPE_MFG]) + body
+    if connectable:
+        # Flags AD first: type 0x01, value 0x06 (LE gen discoverable, no BR/EDR).
+        return bytes([0x02, 0x01, 0x06]) + mfg
+    return mfg
 
 
 def parse_payload(adv):
@@ -482,6 +496,8 @@ class BLEProximity:
         self._admit_pids = set()      # extra pids to admit during a live game
         self._pin_pids = set()        # pids never evicted by the LRU (target/bounty)
         self._game = None             # current v2 game block on air (plan §4)
+        self._connectable = False     # non-connectable beacon until a Gotcha game is live (§5.1)
+        self._gatt_dispatch = None    # optional IRQ forwarder for the Gotcha GATT server (§5.6)
 
     # ---- lifecycle ----
     def begin(self, groups, name, rssi_floor=RSSI_FLOOR_DEFAULT, game=None):
@@ -496,7 +512,8 @@ class BLEProximity:
         self._irq_scan_result = getattr(bluetooth, "_IRQ_SCAN_RESULT", 5)
         self._game = game
 
-        self._adv = build_payload(self._own_ids, self._name, game=self._game)
+        self._adv = build_payload(self._own_ids, self._name, game=self._game,
+                                  connectable=self._connectable)
 
         self._ble = BLE()
         self._ble.active(True)
@@ -505,7 +522,8 @@ class BLEProximity:
         self._ble.irq(self._irq)
         adv_ok = True
         try:
-            self._ble.gap_advertise(ADV_MS * 1000, adv_data=self._adv, connectable=False)
+            self._ble.gap_advertise(ADV_MS * 1000, adv_data=self._adv,
+                                    connectable=self._connectable)
         except Exception:
             adv_ok = False        # scanning-but-invisible; report it to the caller
         self._next_rearm_ms = 0       # start the continuous scan on the first tick()
@@ -517,11 +535,31 @@ class BLEProximity:
         sync). Rebuilds the adv payload and re-advertises; a None game drops the
         block (idle beacon). Safe to call before begin() (just stores it)."""
         self._game = game
-        self._adv = build_payload(self._own_ids, self._name, game=self._game)
+        self._adv = build_payload(self._own_ids, self._name, game=self._game,
+                                  connectable=self._connectable)
         if self._ble and self._active and not self._suspended:
             try:
                 self._ble.gap_advertise(ADV_MS * 1000, adv_data=self._adv,
-                                        connectable=False)
+                                        connectable=self._connectable)
+            except Exception:
+                pass
+
+    def set_connectable(self, on):
+        """Switch the beacon between non-connectable (friends-only) and connectable
+        (a live Gotcha game: the target must be reachable for a REVEAL/ATTACK,
+        plan §5.1). Re-advertises immediately on a real flip; no-op before begin()."""
+        on = bool(on)
+        if on == self._connectable:
+            return
+        self._connectable = on
+        # Rebuild the payload: a connectable advert must carry the Flags AD, so the
+        # name budget + AD set change when the flag flips.
+        self._adv = build_payload(self._own_ids, self._name, game=self._game,
+                                  connectable=self._connectable)
+        if self._ble and self._active and not self._suspended and self._adv is not None:
+            try:
+                self._ble.gap_advertise(ADV_MS * 1000, adv_data=self._adv,
+                                        connectable=self._connectable)
             except Exception:
                 pass
 
@@ -573,7 +611,8 @@ class BLEProximity:
             pass
         if self._adv is not None:
             try:
-                self._ble.gap_advertise(ADV_MS * 1000, adv_data=self._adv, connectable=False)
+                self._ble.gap_advertise(ADV_MS * 1000, adv_data=self._adv,
+                                        connectable=self._connectable)
             except Exception:
                 pass
         self._next_rearm_ms = 0        # re-arm the continuous scan on the next tick()
@@ -600,19 +639,29 @@ class BLEProximity:
 
     # ---- IRQ: capture only (no parsing / no _seen mutation here) ----
     def _irq(self, event, data):
-        if event != self._irq_scan_result:
+        if event == self._irq_scan_result:
+            try:
+                # On MicroPython NimBLE, _IRQ_SCAN_RESULT data layout:
+                #   (addr_type, addr, adv_type, rssi, adv_data)
+                addr_type, addr, adv_type, rssi, adv_data = data
+                # Copy the transient buffers (only valid during this callback) and
+                # queue for processing in tick(). Bound the queue so a stalled loop
+                # can't grow it without limit.
+                if len(self._pending) < 256:
+                    self._pending.append((addr_type, bytes(addr), bytes(adv_data), rssi))
+            except Exception:
+                pass              # never let an IRQ raise
             return
-        try:
-            # On MicroPython NimBLE, _IRQ_SCAN_RESULT data layout:
-            #   (addr_type, addr, adv_type, rssi, adv_data)
-            addr_type, addr, adv_type, rssi, adv_data = data
-            # Copy the transient buffers (only valid during this callback) and
-            # queue for processing in tick(). Bound the queue so a stalled loop
-            # can't grow it without limit.
-            if len(self._pending) < 256:
-                self._pending.append((addr_type, bytes(addr), bytes(adv_data), rssi))
-        except Exception:
-            pass              # never let an IRQ raise
+        # Any other event is GATT-server activity while we own the radio (a central
+        # connected/disconnected, or a write to a Gotcha characteristic). Forward
+        # it to the Gotcha responder (plan §5.6) so an inbound REVEAL is answered
+        # without this scanner knowing anything about GATT. No-op if none attached.
+        dispatch = self._gatt_dispatch
+        if dispatch is not None:
+            try:
+                dispatch(event, data)
+            except Exception:
+                pass              # an IRQ must never crash the scan path
 
     # ---- deferred processing (runs in tick(), on the loop thread) ----
     def _process_pending(self, now):
@@ -644,6 +693,7 @@ class BLEProximity:
                 "shared_id": shared_id,
                 "shared_name": shared_name,
                 "addr_type": addr_type,
+                "addr": addr,
                 "pid": pid,
                 "gflags": game.get("gflags", 0) if isinstance(game, dict) else 0,
                 "rssi": rssi,
@@ -713,6 +763,23 @@ class BLEProximity:
             if e.get("pid") == pid:
                 return e
         return None
+
+    def addr_for_pid(self, pid):
+        """(addr_type, addr_bytes) for the peer advertising this pid, or None.
+
+        The hunter needs the address to gap_connect() to its target (plan §5.1).
+        The address is kept in the entry (not just the _seen key) precisely so it
+        is reachable from a pid lookup."""
+        e = self.peer_by_pid(pid)
+        if e is None:
+            return None
+        return (e.get("addr_type"), e.get("addr"))
+
+    def set_gatt_dispatch(self, fn):
+        """Install the Gotcha GATT-server IRQ forwarder (plan §5.6). While we own
+        the radio, _irq() routes non-scan events (central connect/disconnect,
+        GATT writes) to `fn(event, data)`. Pass None to detach."""
+        self._gatt_dispatch = fn
 
     # ---- eviction ----
     def _evict(self, now_ms):

@@ -542,3 +542,76 @@ def test_current_peers_and_has_peers_exclude_game_admitted(monkeypatch):
     del b._seen[(0, b"\x01")]
     assert b.current_peers() == []
     assert b.has_peers() is False
+
+
+# ---------------------------------------------------------------------------
+# Gotcha hooks: addr accessor, connectable beacon, IRQ forwarder (§5.1/§5.6)
+# ---------------------------------------------------------------------------
+
+def test_addr_for_pid_returns_entry_address():
+    b = bp.BLEProximity()
+    b._seen[(0, b"\xaa\xbb\xcc")] = {
+        "pid": 1004, "addr_type": 0, "addr": b"\xaa\xbb\xcc", "rssi_prox": -70}
+    assert b.addr_for_pid(1004) == (0, b"\xaa\xbb\xcc")
+    assert b.addr_for_pid(9999) is None
+    # the entry itself now carries addr, so a pid lookup reaches the address
+    assert b.peer_by_pid(1004)["addr"] == b"\xaa\xbb\xcc"
+
+
+def test_set_connectable_flips_flag_without_ble():
+    b = bp.BLEProximity()
+    assert b._connectable is False
+    b.set_connectable(True)            # no _ble -> just flips the flag, no crash
+    assert b._connectable is True
+    b.set_connectable(True)            # idempotent
+    assert b._connectable is True
+    b.set_connectable(False)
+    assert b._connectable is False
+
+
+def test_irq_forwards_non_scan_events_to_dispatch():
+    b = bp.BLEProximity()
+    seen = []
+    b.set_gatt_dispatch(lambda ev, data: seen.append((ev, data)))
+    # a scan result (event 5) is captured, NOT forwarded
+    b._irq(5, (0, b"\x01", 0, -70, b"xyz"))
+    assert seen == []
+    # a non-scan event (e.g. _IRQ_GATTS_WRITE = 3) is forwarded as-is
+    b._irq(3, (0, 42))
+    assert seen == [(3, (0, 42))]
+    # detaching stops the forwarding
+    b.set_gatt_dispatch(None)
+    b._irq(3, (0, 42))
+    assert len(seen) == 1
+
+
+# ---------------------------------------------------------------------------
+# Connectable advert carries a Flags AD (plan §5.7 probe finding, 2026-08-01)
+# ---------------------------------------------------------------------------
+def test_name_budget_connectable_reserves_flags():
+    # connectable costs 3 bytes (the Flags AD a connectable advert must carry)
+    assert bp.name_budget(1, game=True) - bp.name_budget(1, game=True, connectable=True) == 3
+    assert bp.name_budget(2, game=False, connectable=True) == bp.name_budget(2, game=False) - 3
+
+
+def test_build_payload_connectable_prepends_flags_and_still_parses():
+    from ble_proximity import build_payload, parse_payload, hash_groups
+    ids, _ = hash_groups(["g1"])
+    adv = build_payload(ids, "Otter", game={"pid": 1004, "gflags": 1, "streak": 0},
+                        connectable=True)
+    # Flags AD (02 01 06) first, then the manufacturer AD
+    assert adv[:3] == b"\x02\x01\x06"
+    assert adv[3] == len(adv) - 4          # mfg AD length byte
+    # parse_payload skips the Flags AD (it iterates AD structures) -> still decodes
+    info = parse_payload(adv)
+    assert info is not None
+    assert info["name"] == "Otter"
+    assert info["game"]["pid"] == 1004
+
+
+def test_build_payload_non_connectable_has_no_flags():
+    from ble_proximity import build_payload, parse_payload, hash_groups
+    ids, _ = hash_groups(["g1"])
+    adv = build_payload(ids, "Otter")       # default connectable=False
+    assert adv[:3] != b"\x02\x01\x06"       # no Flags AD prepended
+    assert parse_payload(adv) is not None

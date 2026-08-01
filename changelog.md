@@ -1,3 +1,69 @@
+# !Fri3d Friends — Gotcha Phase 3a on-badge probe: connect path PROVEN + Flags-AD fix shipped — 2026-08-01
+
+Ran the Phase 3a Reveal probe on the three dev badges (9de4 / bac8 / BAdge2024lijn).
+**The core question is answered YES: a badge accepts a Gotcha GATT connection** — a host
+bleak client connected to the badge running the shipping `GotchaController`+`GotchaService`,
+and the Gotcha service (all 4 chars) was discoverable on a clean launch. Suite **333 → 336**
+(+3 Flags-AD tests). MANIFEST **0.11.4 → 0.11.5**.
+
+Four hard findings from the probe (all in memory `gotcha-connect-path-findings`); one needed
+a shipping-code fix, the rest are operational/test-harness:
+
+- **Connectable advert MUST carry a Flags AD** — `gap_advertise(connectable=True)` with only
+  the HSNT manufacturer AD is advertised but NOT accepted as connectable (BlueZ/hcitool hang
+  forever). **Fixed** in `ble_proximity.build_payload`/`name_budget`: `connectable=True`
+  prepends `02 01 06` and reserves 3 name bytes. `parse_payload` already skips non-MFG ADs.
+- **WiFi transfers block BLE connections** (a sync in flight → connect hangs). The game's
+  `HUNT_SYNC_DEFER` already covers this; the probe syncs once then stops. This is why the
+  continuously-syncing shipping app is hard to connect to, while the probe (sync-once) worked.
+- **`gatts_register_services` is once-per-power-on** — relaunching the Gotcha task in a
+  session leaves handles unbound. Operational rule: one launch per boot (a clean boot is the
+  only reliable reset; the dev badges resist software reset).
+- **BlueZ can't scan + connect at once** ("Operation already in progress"). Fixed in the host
+  hunter (stop the scanner before connecting).
+
+**Full write-REVEAL→SPOTTED end-to-end not yet captured:** blocked by churned badge state
+(repeated cancel/relaunch flooded TaskManager; the stale `gotcha.b1` probe app kept
+auto-starting on 9de4/bac8 and wedging USB-CDC) + the WiFi-timing flakiness on the
+always-syncing shipping app. Needs a clean-boot, single-launch run (replug, no churn) — the
+probe with WiFi-stop + the fixed hunter should then pass in one shot. Findings saved to
+memory for the next session.
+
+---
+
+# !Fri3d Friends — Gotcha Phase 3a: the Reveal (§5.7) — 2026-07-31
+
+First half of Phase 3: the **Reveal** — the disambiguator that makes a hunter's target
+flash gold + chirp + show SPOTTED when the hunter presses A within `REVEAL_RSSI`. Built
+first because it is the shortest GATT interaction (write → ack → disconnect → flash) and
+proves the connect path the duel (Phase 3b) shares. **Suite: 321 → 333 passed** (+12 host
+tests). MANIFEST **0.11.3 → 0.11.4**. Not yet deployed/probed on a badge.
+
+Until now the game was radar/beacon-only (`connectable=False`, no Gotcha GATT service). 3a
+stands up the whole connect substrate:
+
+- **Layer A (pure, `gotcha.py`)**: `build/parse_reveal_payload`, `decide_strip_action`
+  (§5.7 D29 ladder; attack branch gated off until 3b), `reveal_ready`, `validate_reveal`
+  (no protection/cooldown check — §5.7/§5.8), `spotted_active`, `reveal/revealed_event`.
+- **`gotcha_gatt.py` (new)**: `GotchaService` registers `GOTCHA_SVC` with all 4 chars now
+  (ATTACK/DUEL/SPOILS stubbed for 3b, REVEAL live) so the handle layout is locked; lvgl-free,
+  injected `on_reveal`, IRQ-safe queue.
+- **`ble_proximity.py`**: `addr` in the peer entry + `addr_for_pid()`; connectable beacon
+  mode; `_irq` forwards non-scan events to the Gotcha responder (§5.6).
+- **`contact_exchange.py`**: `attach_gotcha` + position-based bind; reusable `gatt_write`
+  central-write coroutine (clones the proven `_run_client`).
+- **`gotcha_app.py` / `fri3d_friends.py`**: hunter `_do_reveal` (suspend→connect→write→
+  resume), target `apply_reveal` (gold flash + chirp + SPOTTED), the `_gatt_busy` LED-skipping
+  guard (§5.5), connectable-on-game-live, and the focusable hunt-strip A-action.
+
+**Probe (Layer-B exit gate) NOT yet run** — hardware is available (3 Espressif badges;
+backend `running`), but deploying + driving a 2-badge reveal is iterative and hard-to-reverse,
+so it is staged for a focused session. Risks to verify on hardware: the connectable HSNT
+beacon (Flags-AD/name budget), register-services-after-begin order, the lvgl A-on-strip focus
+routing, and the IRQ handoff around suspend/resume.
+
+---
+
 # !Fri3d Friends — Gotcha Phase 0–2 code-review fixes (5 CRITICALs + 12 MAJORs, +8 regression tests) — 2026-07-31
 
 Acted on **`Code_Review_Phase0-2_20260731_1803.md`** (the review from the previous

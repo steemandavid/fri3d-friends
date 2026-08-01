@@ -85,12 +85,13 @@ class GotchaController(object):
     then reads the getters to render. All network I/O runs on TaskManager tasks
     kicked from tick(), never on the main loop."""
 
-    def __init__(self, ble, state_path, log=None):
+    def __init__(self, ble, state_path, log=None, exchange=None):
         self.ble = ble
         self.state = gotcha.GotchaState(state_path)
         self.sync = gotcha.GotchaSync(self.state)
         self.cfg = gotcha.GameConfig()
         self.log = log or (lambda m: None)
+        self._exch = exchange         # ContactExchange: owns the central connect path
         # endpoints / prefs (set by configure)
         self.api_url = ""
         self.enroll_url = ""
@@ -121,6 +122,14 @@ class GotchaController(object):
         self._api_host = None
         self._game_block = None
         self._target_pid = None
+        # Reveal (plan §5.7): hunter-side connect state + target-side spotted state.
+        self._svc = None                # GotchaService (responder), set via set_service
+        self._revealing = False         # a reveal connect is in flight (hunter side)
+        self._spotted_until_ms = 0      # gold-flash deadline when WE are revealed
+        self._revealed_by = None        # pid of the last hunter to reveal us
+        self._reveal_msg = ""           # transient status ("onthullen...", Dutch)
+        self._reveal_msg_until = 0
+        self._reveal_task = None        # in-flight _do_reveal task (cancellable)
         self.state.load()
         self.enrolled = self.state.is_enrolled()
 
@@ -158,6 +167,7 @@ class GotchaController(object):
     # -- main drive (every Activity tick) ------------------------------------
     def tick(self, now_ms, wifi_up, sound_on):
         self.sound_on = sound_on
+        self._drain_reveals()
         if not self._running:
             self._refresh_view()
             return
@@ -311,6 +321,9 @@ class GotchaController(object):
             self._target_pid = tp
             ids = {tp} if tp is not None else set()
             self.ble.set_game_context(admit_pids=ids, pin_pids=ids)
+        # A live-game badge must be connectable so it can be REVEAL/ATTACK-reached
+        # (plan §5.1). Off/idle stays non-connectable (no cost when no game runs).
+        self.ble.set_connectable(bool(self.enrolled and self.game_live))
 
     def _make_game_block(self):
         if not self.state.is_enrolled():
@@ -395,6 +408,178 @@ class GotchaController(object):
 
     def no_network(self):
         return self.online is False
+
+    # -- REVEAL (plan §5.7) -----------------------------------------------------
+    def _drain_reveals(self):
+        # The GotchaService queues inbound REVEAL writes from the BLE IRQ; dispatch
+        # them here (on the loop thread), so the IRQ never does lvgl/event work.
+        if self._svc is not None:
+            try:
+                self._svc.drain_reveals()
+            except Exception:
+                pass
+
+    def set_service(self, svc):
+        """Stash the GotchaService (responder). Its inbound writes are drained +
+        dispatched from tick(); its is_busy() feeds the radio guard."""
+        self._svc = svc
+
+    def set_exchange(self, exch):
+        """The ContactExchange that owns the central connect path (gatt_write)."""
+        self._exch = exch
+
+    # hunter-side (we press A to reveal someone) ----------------------------
+    def revealing(self):
+        """A reveal connect is in flight -> the loop must keep off the radio (§5.5)."""
+        return self._revealing
+
+    def gatt_busy(self):
+        """The radio's single connection slot is taken: we are mid-reveal (hunter)
+        or a central is connected to us (being revealed). The loop skips
+        _update_leds in this window (lights.write starves the GATT link, §5.5)."""
+        if self._revealing:
+            return True
+        if self._svc is not None:
+            return self._svc.is_busy()
+        return False
+
+    def _strip_action(self):
+        if not self.enrolled or self.target_prox is None:
+            return "none"
+        now_s = self.state.effective_now(int(time.time()))
+        last = self.state.d.get("last_reveal_at") or 0
+        return gotcha.decide_strip_action(
+            self.target_prox, last, now_s, self.cfg,
+            attack_in_progress=self._revealing, halted=self.radar_halted())
+
+    def strip_action(self):
+        """The current escalating A-action on the hunt strip (§5.7 D29)."""
+        return self._strip_action()
+
+    def reveal_action_label(self):
+        """The hunt strip's A-key label, naming the action BEFORE it is pressed
+        (§5.7). Dutch, ASCII-only. None when no action is available."""
+        act = self._strip_action()
+        if act == "reveal":
+            return "A: onthullen"
+        if act == "attack":
+            return "A: AANVALLEN"
+        if act == "abort":
+            return "A: afbreken"
+        return None
+
+    def reveal_msg_text(self, now_ms):
+        """Transient hunter-side status ('onthullen...', 'onthuld', failure)."""
+        if self._reveal_msg and time.ticks_diff(self._reveal_msg_until, now_ms) > 0:
+            return self._reveal_msg
+        return None
+
+    def request_reveal(self):
+        """The hunter pressed A on the hunt strip. If the action is 'reveal', kick
+        the connect. Returns True if a reveal was started."""
+        if self._revealing or not self.enrolled or self._exch is None:
+            return False
+        if self._strip_action() != "reveal":
+            return False
+        try:
+            from mpos import TaskManager
+            self._reveal_task = TaskManager.create_task(self._do_reveal())
+        except Exception:
+            pass
+        return True
+
+    def cancel_reveal(self):
+        """Cancel an in-flight reveal (app pausing/stopping). _do_reveal's finally
+        still runs, so BLEProximity is resumed and the radio handed back cleanly."""
+        t = self._reveal_task
+        self._reveal_task = None
+        if t is not None:
+            try:
+                t.cancel()
+            except Exception:
+                pass
+
+    async def _do_reveal(self):
+        """Connect to the target, write REVEAL, disconnect (§5.7). Clones the proven
+        contact-swap connect path via ContactExchange.gatt_write, with BLEProximity
+        suspended around it (single adv set + IRQ). Runs as a TaskManager task."""
+        from gotcha_gatt import REVEAL_CHR
+        tp = self.state.target_pid()
+        addr = self.ble.addr_for_pid(tp) if tp is not None else None
+        if addr is None:
+            self._set_reveal_msg("doel niet in bereik", 1500)
+            return
+        my_pid = self.state.d.get("pid")
+        group = self.groups[0] if self.groups else 0
+        try:
+            nonce = gotcha.new_nonce()
+        except Exception:
+            nonce = "n0"
+        payload = gotcha.build_reveal_payload(group, my_pid, tp, nonce).encode("utf-8")
+        self._revealing = True
+        self._set_reveal_msg("onthullen...", 4000)
+        ok = False
+        try:
+            try:
+                self.ble.suspend()
+            except Exception:
+                pass
+            try:
+                ok = await self._exch.gatt_write(addr[0], addr[1], REVEAL_CHR,
+                                                 payload, timeout_ms=4000)
+            except Exception:
+                ok = False
+        finally:
+            try:
+                self.ble.resume()
+            except Exception:
+                pass
+            self._revealing = False
+            self._reveal_task = None
+        now_s = self.state.effective_now(int(time.time()))
+        if ok:
+            self.state.d["last_reveal_at"] = now_s
+            self.state.queue.add(gotcha.reveal_event(tp, rssi=self.target_prox, at=now_s))
+            self.state.save()
+            self._set_reveal_msg("onthuld -- zoek het gouden badge", 2500)
+        else:
+            self._set_reveal_msg("onthullen mislukt", 2000)
+
+    def _set_reveal_msg(self, msg, ms):
+        self._reveal_msg = msg
+        self._reveal_msg_until = time.ticks_add(time.ticks_ms(), ms)
+
+    # target-side (someone reveals us) ---------------------------------------
+    def is_spotted(self, now_ms):
+        """Our badge is mid gold-flash from an inbound Reveal (target side)."""
+        return gotcha.spotted_active(self._spotted_until_ms, now_ms)
+
+    def spotted_text(self):
+        """The SPOTTED screen text (Dutch, ASCII). None when not spotted."""
+        if self._spotted_until_ms == 0:
+            return None
+        return "GESIGNALEERD -- iemand heeft je gevonden"
+
+    def apply_reveal(self, parsed):
+        """on_reveal callback: an inbound REVEAL write reached us. Validates (§5.7)
+        and, if ok, arms the gold flash + queues a 'revealed' event. Runs on the
+        loop thread (drained from the GotchaService queue in tick)."""
+        if not self.enrolled:
+            return
+        my_pid = self.state.d.get("pid")
+        s = self.state.d.get("state") or {}
+        now_s = self.state.effective_now(int(time.time()))
+        truce = gotcha.truce_active(now_s, self.cfg, self.quiet)
+        verdict = gotcha.validate_reveal(parsed, my_pid, s.get("alive", True),
+                                         truce, bool(self.game_live))
+        if verdict != "ok":
+            return                   # busy/truce/dead/wrong_target/no_game -> drop
+        hunter = parsed.get("h") if isinstance(parsed, dict) else None
+        flash_ms = int(self.cfg.get("REVEAL_FLASH_MS") or 2500)
+        self._spotted_until_ms = time.ticks_add(time.ticks_ms(), flash_ms)
+        self._revealed_by = hunter
+        self.state.queue.add(gotcha.revealed_event(hunter, at=now_s))
+        self.state.save()
 
     # -- opt-in / opt-out (§13) ------------------------------------------------
     def ever_enrolled(self):

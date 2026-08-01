@@ -665,3 +665,103 @@ def test_gotcha_state_load_valid_json_wrong_types_degrades_safely():
     gs.apply_sync({"server_time": 1000,
                    "me": {"pid": 1001, "alive": True, "status": "active"}}, 900)
     assert gs.d["state"]["alive"] is True
+
+
+# ---------------------------------------------------------------------------
+# REVEAL (plan §5.7) -- payload, A-action ladder, cooldown, validation, spotted
+# ---------------------------------------------------------------------------
+
+def test_reveal_payload_roundtrip():
+    raw = gotcha.build_reveal_payload(7, 1003, 1004, "abc123")
+    assert raw == '{"g":7,"h":1003,"n":"abc123","t":1004}'   # compact, sorted
+    assert gotcha.parse_reveal_payload(raw) == {"g": 7, "h": 1003, "t": 1004, "n": "abc123"}
+
+
+def test_reveal_payload_parse_defensive():
+    assert gotcha.parse_reveal_payload(b'{"g":1,"h":2,"t":3,"n":"x"}') == \
+        {"g": 1, "h": 2, "t": 3, "n": "x"}                  # bytes accepted
+    assert gotcha.parse_reveal_payload("not json") is None
+    assert gotcha.parse_reveal_payload(b"\x00\x01") is None
+    assert gotcha.parse_reveal_payload("[1,2,3]") is None    # not an object
+    p = gotcha.parse_reveal_payload('{"t": 1004}')           # missing fields ok
+    assert p["t"] == 1004 and p["h"] is None
+
+
+def test_reveal_ready_cooldown_boundary():
+    cfg = gotcha.GameConfig()                                # REVEAL_COOLDOWN_S = 120
+    assert gotcha.reveal_ready(0, 1000, cfg) is True         # never revealed
+    assert gotcha.reveal_ready(None, 1000, cfg) is True
+    assert gotcha.reveal_ready(1000, 1119, cfg) is False     # 119 s < 120 -> cooling
+    assert gotcha.reveal_ready(1000, 1120, cfg) is True      # exactly 120 -> ready
+    assert gotcha.reveal_ready(1000, 1100, cfg) is False     # still cooling
+
+
+def test_decide_strip_action_ladder():
+    cfg = gotcha.GameConfig()                                # KILL -65, REVEAL -80
+    now = 100000
+    assert gotcha.decide_strip_action(None, 0, now, cfg) == "none"           # not detected
+    assert gotcha.decide_strip_action(-100, 0, now, cfg, halted=True) == "none"
+    assert gotcha.decide_strip_action(-80, 0, now, cfg) == "reveal"         # reveal range
+    assert gotcha.decide_strip_action(-70, 0, now, cfg) == "reveal"
+    assert gotcha.decide_strip_action(-70, now - 10, now, cfg) == "radar"   # cooling
+    assert gotcha.decide_strip_action(-60, 0, now, cfg) == "reveal"         # kill range, 3a fallthrough
+    assert gotcha.decide_strip_action(-60, 0, now, cfg, kill_enabled=True) == "attack"
+    assert gotcha.decide_strip_action(-60, 0, now, cfg,
+                                      attack_in_progress=True) == "abort"
+    assert gotcha.decide_strip_action(-85, 0, now, cfg) == "none"           # below reveal
+
+
+def test_decide_strip_action_respects_kill_switch():
+    cfg = gotcha.GameConfig()
+    cfg.d["reveal_enabled"] = False
+    # reveal disabled -> within reveal range shows radar detail, not reveal
+    assert gotcha.decide_strip_action(-70, 0, 100000, cfg) == "radar"
+
+
+def test_validate_reveal_branches():
+    p = {"g": 7, "h": 1003, "t": 1004, "n": "x"}
+    assert gotcha.validate_reveal(p, 1004, True, "none", True) == "ok"
+    assert gotcha.validate_reveal(p, 1004, True, "none", True,
+                                  radio_busy=True) == "busy"                 # precedence
+    assert gotcha.validate_reveal(p, 1004, True, "none", False) == "no_game"
+    assert gotcha.validate_reveal(p, 1004, True, "camp", True) == "truce"    # §5.7 both sides
+    assert gotcha.validate_reveal(p, 1004, True, "both", True) == "truce"
+    assert gotcha.validate_reveal(p, 1004, False, "none", True) == "dead"
+    assert gotcha.validate_reveal(p, 9999, True, "none", True) == "wrong_target"
+    assert gotcha.validate_reveal(None, 1004, True, "none", True) == "wrong_target"
+
+
+def test_validate_reveal_has_no_protection_or_cooldown_check():
+    # §5.8/§5.7 design invariant: the responder never refuses on protection or
+    # cooldown. There is no such parameter, and an alive, in-game target is 'ok'
+    # regardless of any protected/cooldown state the caller might hold.
+    import inspect
+    params = inspect.signature(gotcha.validate_reveal).parameters
+    assert "protected" not in params
+    assert "cooldown" not in params
+    p = {"g": 7, "h": 1003, "t": 1004, "n": "x"}
+    assert gotcha.validate_reveal(p, 1004, True, "none", True) == "ok"
+
+
+def test_spotted_active_window():
+    assert gotcha.spotted_active(0, 1000) is False
+    assert gotcha.spotted_active(None, 1000) is False
+    assert gotcha.spotted_active(3500, 1000) is True          # before deadline
+    assert gotcha.spotted_active(3500, 3500) is False         # at deadline
+    assert gotcha.spotted_active(3500, 4000) is False         # after deadline
+
+
+def test_reveal_events_shape_and_droppable():
+    assert gotcha.reveal_event(1004, rssi=-75) == \
+        {"type": "reveal", "target_pid": 1004, "rssi": -75}
+    assert gotcha.revealed_event(1003) == {"type": "revealed", "hunter_pid": 1003}
+    assert gotcha.reveal_event(1004, at=123) == \
+        {"type": "reveal", "target_pid": 1004, "at": 123}     # at stamped when given
+    # NOT keep-types: a reveal/revealed is droppable on overflow (a kill never is)
+    assert "reveal" not in gotcha.EventQueue.KEEP_TYPES
+    assert "revealed" not in gotcha.EventQueue.KEEP_TYPES
+    q = gotcha.EventQueue()
+    for i in range(gotcha.MAX_QUEUE):                         # fill with kills
+        assert q.add({"type": "kill", "victim_pid": i, "soul": "s%d" % i,
+                      "as": "target", "rssi": -60})
+    assert q.add(gotcha.reveal_event(1004)) is False          # full of kills -> refused
