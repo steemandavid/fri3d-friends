@@ -516,7 +516,16 @@ class BLEProximity:
                                   connectable=self._connectable)
 
         self._ble = BLE()
-        self._ble.active(True)
+        # Only activate if not already active: active(True) on an ALREADY-active
+        # radio re-inits NimBLE and WIPES the gatts registration on this build
+        # (verified: a registered handle EINVALs right after a redundant
+        # active(True)). Since services are registered before begin() advertises
+        # (fri3d_friends onResume), a blind active(True) here would silently
+        # destroy the whole GATT server -- the Phase-3b "victim serves no service"
+        # bug. gap_advertise itself preserves the registration; only active(True)
+        # on an active radio does not.
+        if not self._ble.active():
+            self._ble.active(True)
         # Stable public address is the default on this build (verified
         # ble.config("mac") -> (0, ...)); no addr_mode change needed.
         self._ble.irq(self._irq)
