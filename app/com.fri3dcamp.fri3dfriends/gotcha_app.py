@@ -347,9 +347,13 @@ class GotchaController(object):
             self._target_pid = tp
             ids = {tp} if tp is not None else set()
             self.ble.set_game_context(admit_pids=ids, pin_pids=ids)
-        # A live-game badge must be connectable so it can be REVEAL/ATTACK-reached
-        # (plan §5.1). Off/idle stays non-connectable (no cost when no game runs).
-        self.ble.set_connectable(bool(self.enrolled and self.game_live))
+        # An enrolled badge must be connectable so it can be REVEAL/ATTACK-reached
+        # (plan §5.1) -- OFFLINE too. Gating this on game_live (server reachable)
+        # was a bug: §8.7 has WiFi up only ~1.7% of the time, so a hunter could
+        # almost never connect to its target. Enrollment IS joining the running
+        # game (§9.2); stay connectable until opt-out. Only a never-enrolled / opted
+        # -out badge is non-connectable (nothing to duel).
+        self.ble.set_connectable(bool(self._in_game()))
 
     def _make_game_block(self):
         if not self.state.is_enrolled():
@@ -379,6 +383,14 @@ class GotchaController(object):
     def push_game_context(self):
         """Public hook for the Activity to call after begin() (re-advertise)."""
         self._push_game_context()
+
+    def _in_game(self):
+        """Offline-capable 'this badge is a live game participant' -- the gate for
+        being connectable and for accepting REVEAL/ATTACK. Deliberately does NOT
+        require game_live (live server reachability): the duel and reveal work
+        fully offline (plan §5.1/§5.7), and enrollment is joining the running game.
+        The server stays authoritative for kill legality on ingest (§10.2)."""
+        return self.enrolled
 
     # -- derived view state (read by the renderer) ---------------------------
     def _refresh_view(self):
@@ -601,7 +613,7 @@ class GotchaController(object):
         now_s = self.state.effective_now(int(time.time()))
         truce = gotcha.truce_active(now_s, self.cfg, self.quiet)
         verdict = gotcha.validate_reveal(parsed, my_pid, s.get("alive", True),
-                                         truce, bool(self.game_live))
+                                         truce, self._in_game())
         if verdict != "ok":
             return                   # busy/truce/dead/wrong_target/no_game -> drop
         hunter = parsed.get("h") if isinstance(parsed, dict) else None
@@ -869,7 +881,7 @@ class GotchaController(object):
         on_cd = last is not None and (now_s - int(last)) < cd_s
         verdict = gotcha.validate_attack(
             parsed, my_pid, my_streak, s.get("alive", True), truce,
-            bool(self.game_live), self.cfg, protected=protected, on_cooldown=on_cd,
+            self._in_game(), self.cfg, protected=protected, on_cooldown=on_cd,
             in_duel=self._duel.active(), radio_busy=(self._revealing or self._attacking))
         if verdict != "ok":
             self._plog("VICTIM attack from=%s REFUSED verdict=%s" % (attacker, verdict))
