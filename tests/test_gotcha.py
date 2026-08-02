@@ -204,7 +204,9 @@ def test_gameconfig_defaults_when_no_sync():
     assert cfg.get("KILL_RSSI") == -65
     assert cfg.get("PING_ENABLED") is True
     assert cfg.get("PROX_ALPHA_UP") == 0.60
-    assert cfg.get("truce_from") == "22:00"
+    # Default truce window is whatever DEFAULTS ships (camp: 22:00-08:00; a dev
+    # build may temporarily neutralise it -- assert against DEFAULTS, not a literal).
+    assert cfg.get("truce_from") == gotcha.DEFAULTS["truce_from"]
 
 
 def test_gameconfig_from_sync_coerces_and_keeps_known_only():
@@ -223,7 +225,7 @@ def test_gameconfig_from_sync_coerces_and_keeps_known_only():
 def test_gameconfig_from_sync_garbage_falls_back():
     cfg = gotcha.GameConfig.from_sync("not a dict", {"truce_schedule": None})
     assert cfg.get("KILL_RSSI") == -65           # untouched -> default
-    assert cfg.get("truce_from") == "22:00"
+    assert cfg.get("truce_from") == gotcha.DEFAULTS["truce_from"]
     cfg2 = gotcha.GameConfig.from_sync({"KILL_RSSI": object()})
     assert cfg2.get("KILL_RSSI") == -65          # uncoercible -> default
 
@@ -249,7 +251,8 @@ def test_camp_minutes_is_cest():
 
 
 def test_truce_active_camp_window_wraps_midnight():
-    cfg = gotcha.GameConfig()                    # truce 22:00-08:00
+    cfg = gotcha.GameConfig()
+    cfg.d["truce_from"], cfg.d["truce_to"] = "22:00", "08:00"   # explicit camp window
     assert gotcha.truce_active(72000, cfg, None) == "camp"    # 22:00 start (inclusive)
     assert gotcha.truce_active(21540, cfg, None) == "camp"    # 07:59 still in
     assert gotcha.truce_active(21600, cfg, None) == "none"    # 08:00 boundary out
@@ -258,6 +261,7 @@ def test_truce_active_camp_window_wraps_midnight():
 
 def test_truce_active_personal_and_both():
     cfg = gotcha.GameConfig()
+    cfg.d["truce_from"], cfg.d["truce_to"] = "22:00", "08:00"   # explicit camp window
     quiet = {"from": "20:30", "to": "08:00"}     # earlier than camp truce
     assert gotcha.truce_active(66600, cfg, quiet) == "personal"  # 20:30 camp, before camp truce
     assert gotcha.truce_active(72000, cfg, quiet) == "both"      # 22:00: both windows
@@ -636,10 +640,15 @@ def test_from_sync_malformed_truce_schedule_fails_closed():
     (fail closed), the §10.4 "screaming badge in a tent of sleeping kids" case."""
     cfg = gotcha.GameConfig.from_sync(
         None, {"truce_schedule": {"from": "22.00", "to": "08:00"}})
-    assert cfg.get("truce_from") == "22:00"       # default kept, not "22.00"
-    assert cfg.get("truce_to") == "08:00"
-    # 23:00 camp-local (21:00 UTC) is inside the default night truce.
-    assert gotcha.truce_active(75600, cfg, None) == "camp"
+    # A malformed value is dropped -> the shipped DEFAULTS window is kept (not the
+    # bad "22.00"). Assert against DEFAULTS so a dev-neutralised truce still passes.
+    assert cfg.get("truce_from") == gotcha.DEFAULTS["truce_from"]
+    assert cfg.get("truce_to") == gotcha.DEFAULTS["truce_to"]
+    # The fail-closed window still enforces a truce (checked with an explicit
+    # camp window, decoupled from whatever DEFAULTS a dev build ships):
+    camp = gotcha.GameConfig()
+    camp.d["truce_from"], camp.d["truce_to"] = "22:00", "08:00"
+    assert gotcha.truce_active(75600, camp, None) == "camp"   # 23:00 camp-local
     # A well-formed schedule is still adopted.
     ok = gotcha.GameConfig.from_sync(
         None, {"truce_schedule": {"from": "23:00", "to": "07:00"}})
