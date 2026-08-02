@@ -1,9 +1,36 @@
 # Implementation Plan — Gotcha Phase 3b: the Duel (§5.3)
 
-**Date:** 2026-08-01 · **Status:** ✅ CODE-COMPLETE (0.11.6, 355 tests green). On-badge
-two-badge duel probe (step 6) still pending — needs clean-booted badges.
+**Date:** 2026-08-01 · **Status:** ✅✅ **VERIFIED END-TO-END ON HARDWARE (2026-08-02, 0.11.13).**
+Full kill proven host-BLE → badge: connect → discover GOTCHA_SVC → ATTACK → ENGAGED
+(hold 5000, dodges_left 1) → 5 s hold → KILLED → SPOILS soul disclosed; "UITGESCHAKELD
+… respawn" confirmed on-badge. Only the link-drop DODGE sub-case not yet shown live.
 **Predecessor:** Phase 3a (Reveal) committed `669db48` (0.11.5, 336 tests); connect path proven.
 **Spec:** `Implementation_Plan_Gotcha_20260726.md` §5.3 (flow), §5.2 (GATT), §3.4 (soul), §5.8 (spawn), §5.5 (radio).
+
+## On-badge bring-up (0.11.6 → 0.11.14) — six real bugs found + fixed
+
+1. **Hunt strip unreachable by the keypad** — `_establish_focus` only added `_menu_btn`;
+   now adds `_g_target` when a target shows + renders the `A: AANVALLEN` label.
+2. **`duel_session` UUID dict-key miss** — `bluetooth.UUID` isn't reliably hashable, so
+   `want.get(data[4])` matched nothing; compare with `==` like `gatt_write`.
+3. **`gatts_register_services` EBUSY while advertising** — `ensure_radio` cycles
+   `active(False)/active(True)` before its first register; app registers before `begin()`.
+4. **`active(True)` on an already-active radio WIPES the whole GATT registration** (a
+   registered handle EINVALs right after — verified). `begin()` now guards `if not active()`.
+   This was the "victim serves no service / n=5, no ATTACK/DUEL" root cause.
+5. **Duel required WiFi** — connectable + reveal/attack `game_running` gated on `game_live`;
+   now `_in_game()` (== enrolled, offline-capable). §8.7: WiFi up ~1.7% of the time.
+6. **Victim's dense scan suppresses the inbound GATTS-write IRQ** — main loop now pauses
+   the scan (`suspend()`) while a central is connected (`being_connected()`), per §5.5/§5.6.
+
+Test harness: `probes/host_duel_hunter.py` (host BLE central drives an ATTACK; connect via
+`find_device_by_address` to dodge BlueZ cache misses). Note: this dev box's BT reads the
+badges at −95 dBm (marginal); badge-to-badge is the reliable link.
+
+**DEV truce override (0.11.14, revert before camp):** `gotcha.py` DEFAULTS truce → 00:00/00:01
+and server game truce set 00:00-00:01, so the night truce doesn't block development. **Pre-camp
+checklist:** truce → 22:00/08:00 (badge DEFAULTS + server), `SILENT=True`→`False`, remove the
+`duel_log.txt`/`gotcha_dbg.txt` dev writers + the IRQ-counter debug logging.
 
 ## Build status (what shipped)
 

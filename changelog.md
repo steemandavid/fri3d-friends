@@ -1,3 +1,69 @@
+# !Fri3d Friends — Gotcha Phase 3b: the duel, built + VERIFIED end-to-end on hardware — 2026-08-02
+
+Implemented Phase 3b (the duel, §5.3) from the plan, then brought it up on real badges and
+**proved a full kill end-to-end**. Started 0.11.6, ended **0.11.14, 355 host tests green**.
+
+## Build (host-tested pure logic + on-badge wiring)
+- **`gotcha.py` (Layer A, +26 tests):** `DuelState` (lvgl-free victim state machine, reused by
+  the Phase-4 background responder), `DodgeLedger` (bridges server-synced `me.dodges` ints with
+  local offline decay + cooldown), `validate_attack` (ok/busy/no_game/truce/dead/wrong_target/
+  protected/on_cooldown/bounty), ATTACK/DUEL/SPOILS/`build_duel_payload` (+REFUSED) payloads,
+  `protection_active/_left_s`, `cooldown_ready`, and `kill/killed_by/dodge/attack_started`
+  event builders (shapes matched to the server's ingest).
+- **`gotcha_gatt.py`:** ATTACK write → `on_attack(parsed, conn)`, `drain_attacks`, `notify_duel`
+  (stages value + notifies for a poll-read fallback), `set_spoils`, `central_conn`, IRQ counters.
+- **`contact_exchange.py`:** `duel_session` central handshake (connect → discover → best-effort
+  CCCD subscribe → write ATTACK → await ENGAGED then KILLED/DODGED → read SPOILS).
+- **`gotcha_app.py`:** hunter `_do_attack`/`_handle_duel_result` (verify soul, adopt inherited
+  target offline per D10, optimistic score, queue kill), victim `apply_attack`/`_tick_duel`/
+  `_on_duel_kill`/`_on_duel_dodge`, `kill_enabled=True`, cooldown-gated `request_attack`,
+  `cancel_attack`, `being_connected`, `_in_game`, persistent `duel_log.txt`.
+- **`fri3d_friends.py`:** `_render_duel` + `_siren` (buzzer PWM), one red-LED write at duel
+  start / one dark at end, ONDER-AANVAL / AANVALLEN / death banners, hunt-strip A→attack/abort,
+  scan-pause while connected, cancel-on-exit.
+
+## SIX real on-badge bugs found + fixed (the hard part — each blocked the duel silently)
+| # | Bug | Fix |
+|---|-----|-----|
+| 1 | Hunt strip unreachable by keypad (`_establish_focus` only had `_menu_btn`) | add `_g_target` to focus set + render `A: AANVALLEN` |
+| 2 | `duel_session` keyed a dict by `bluetooth.UUID` (not hashable) → discovery matched nothing | compare with `==` like `gatt_write` |
+| 3 | `gatts_register_services` **EBUSY while advertising** → nothing registered | `ensure_radio` cycles `active(False/True)` first; register before `begin()` |
+| 4 | **`active(True)` on an already-active radio re-inits NimBLE and WIPES the GATT registration** (handle EINVALs after) — the "victim serves no service / n=5" root cause | `begin()` guards `if not self._ble.active()` |
+| 5 | Duel required WiFi (connectable + `game_running` gated on `game_live`) | gate on offline-capable `_in_game()` (== enrolled); §8.7 WiFi ~1.7% |
+| 6 | Victim's dense scan **suppresses the inbound GATTS-write IRQ** | main loop `suspend()`s scan while a central is connected (§5.5/§5.6) |
+
+## Verification (host-BLE → badge)
+`probes/host_duel_hunter.py` (host BLE central; connect via `find_device_by_address` to beat
+BlueZ cache misses) drove a full kill against Badge2024lijn:
+`connect → GOTCHA_SVC + ATTACK/DUEL/SPOILS → write ATTACK → DUEL{engaged,h=5000,d=1} → 5s hold
+→ DUEL{killed} → SPOILS soul=b504603d…`. On-badge screen showed **"UITGESCHAKELD… respawn 1732s"**.
+Refusals along the way (`truce`, `protected`) were correct validation firing. **Only the
+link-drop DODGE sub-case not yet demoed live** (victim was killed → 30-min respawn).
+
+## Environment / gotchas (see memory `gotcha-phase-status`)
+- **This dev box's BT reads the badges at −95 dBm** (marginal; scans see them, connects flaky) —
+  badge-to-badge is the reliable link. `hciconfig hci0 reset` between runs.
+- **Deploy:** cp wedges USB-CDC while the app is foregrounded (scanning); `mpremote reset` to the
+  launcher first (beacon service is advertise-only = quiet enough), then cp fast, ideally all files
+  in ONE chained `mpremote` invocation. Repeated USBDEVFS resets can knock a badge **off the USB
+  bus** (needs a physical replug — hit 9de4 + bac8).
+- **Server/admin (from john-ai):** SSH `192.168.1.57`, sudo; admin pw in `/etc/gotcha/gotcha.env`
+  (`mWCtbOZoo9W5VEl`); DB `/var/lib/gotcha/gotcha.sqlite3` (no sqlite3 CLI — use `sudo python3`);
+  admin login `POST /admin/login host=&password=` → cookie; `POST /v1/admin/player/{pid}`
+  (reassign/protect/…), `POST /v1/admin/truce_schedule`. `sync` does NOT bump last_seen/app_version
+  (only heartbeats do) — don't infer "offline" from a stale version.
+- **DEV truce override (0.11.14):** badge DEFAULTS truce → **00:00/00:01** + server game truce
+  00:00-00:01 so the night truce doesn't block dev. **Revert before camp** (with `SILENT→False`,
+  remove dev log writers). 5 truce tests made robust to the default value.
+
+## State at session end
+- **9de4** (1004) + **Badge2024lijn** (1007) both on 0.11.13/0.11.14; bac8 half-deployed (its own
+  extra deploy wedged — inconsistent, needs finish/rollback). All Phase-3b code committed
+  (`cf449c9`…`7d9cef3`). **9de4 fell off the USB bus** at session end — needs a physical replug
+  before the new `gotcha.py` (00:00-00:01 truce) can be pushed to it.
+
+---
+
 # !Fri3d Friends — Gotcha Phase 3b plan + session handoff — 2026-08-01
 
 Paused development for handoff to another session/model. Phase 3a (Reveal) is **built +
