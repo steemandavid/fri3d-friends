@@ -62,6 +62,43 @@ def test_load_beacon_config_missing_or_corrupt_file(tmp_path):
     assert bs.load_beacon_config(str(tmp_path)) is None
 
 
+# ---- Phase 4: load_service_config (the background responder's full config) ----
+
+def test_load_service_config_configured(tmp_path):
+    d = _write_cfg(tmp_path, {"name": "Sam", "groups": ["G"],
+                              "rssi_floor": -90, "sound": False,
+                              "gotcha": {"api": "https://x"}, "quiet": {"from": "22:00", "to": "08:00"}})
+    cfg = bs.load_service_config(d, uid=UID)
+    assert cfg is not None
+    assert cfg["name"] == "Sam"
+    assert cfg["groups"] == ["G"]
+    assert cfg["rssi_floor"] == -90
+    assert cfg["sound"] is False
+    assert cfg["gotcha"] == {"api": "https://x"}
+    assert cfg["quiet"] == {"from": "22:00", "to": "08:00"}
+
+
+def test_load_service_config_defaults(tmp_path):
+    # Minimal valid config -> defaults for the optional fields, nickname fallback.
+    d = _write_cfg(tmp_path, {"groups": ["G"]})
+    cfg = bs.load_service_config(d, uid=UID)
+    assert cfg is not None
+    assert cfg["name"] == auto_nickname(UID)
+    assert cfg["sound"] is True
+    assert cfg["gotcha"] == {}
+    assert cfg["quiet"] is None
+    # rssi_floor defaults to the proximity default (disabled) when absent/invalid.
+    from ble_proximity import RSSI_FLOOR_DEFAULT
+    assert cfg["rssi_floor"] == RSSI_FLOOR_DEFAULT
+
+
+def test_load_service_config_silent_when_unconfigured(tmp_path):
+    # No valid group -> None: a badge not on the air is not a reachable target.
+    for c in ({"name": "Sam"}, {"name": "Sam", "groups": []},
+              {"name": "Sam", "groups": "nope"}):
+        assert bs.load_service_config(_write_cfg(tmp_path, c), uid=UID) is None
+
+
 class _FakeActivity:
     def __init__(self, fullname):
         self.appFullName = fullname
