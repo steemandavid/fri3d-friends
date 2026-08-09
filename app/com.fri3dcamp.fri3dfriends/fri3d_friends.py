@@ -172,11 +172,10 @@ MAX_PILLS = 4
 # directly: the keypad drives the LVGL focus group, so no pin maps remain.
 BUZZER_PIN_2024 = 46
 BUZZER_PIN_2026 = 38
-# DEV: suppress the physical buzzer entirely (people are sleeping during the
-# night test). With this True the PWM is never initialised, so _sting/_ping_chirp
-# no-op physically; the hunt ping still runs its logic and bumps self._g_pings so
-# it is observable in gotcha_dbg.txt. Flip to False to re-enable sound.
-SILENT = True
+# DEV: when True the physical buzzer PWM is never initialised, so _sting /
+# _ping_chirp no-op physically (the hunt ping still runs its logic). Leave False
+# for camp so the kill siren + hunt pings sound.
+SILENT = False
 
 COL_BG = 0x0B0E14
 COL_NAME = 0xFFFFFF
@@ -249,7 +248,6 @@ class Fri3dFriends(Activity):
         self._g_bars = []
         self._g_chip_last = None
         self._g_target_last = None
-        self._g_dbg_last = None
         self._g_log = []
         # First-run Gotcha consent overlay (§13).
         self._consent = None
@@ -888,26 +886,8 @@ class Fri3dFriends(Activity):
             else:
                 self._g_target.add_flag(lv.obj.FLAG.HIDDEN)
                 self._set_gotcha_bars(0, True)
-            self._g_dbg(gc, halted)
         except Exception as e:
             self._gc_log("render err %r" % (e,))
-
-    def _g_dbg(self, gc, halted):
-        # Dev-only: a change-gated one-line status file so the host can read what
-        # the chip/strip/radar are showing (BLE wedges exec; cp still works).
-        # Writes only on a state change -> negligible flash wear. Remove for camp.
-        try:
-            line = "enr=%s online=%s halt=%s segs=%d prox=%s pings=%d chip=%s tgt=%s" % (
-                gc.enrolled, gc.online, halted, gc.radar_segs,
-                gc.target_prox, self._g_pings, gc.status_chip_text(), gc.target_line_text())
-            if line != self._g_dbg_last:
-                self._g_dbg_last = line
-                f = open(APP_DIR + "/gotcha_dbg.txt", "w")
-                f.write(line + "\n")
-                f.flush()
-                f.close()
-        except Exception:
-            pass
 
     # ------------------------------------------------------- focus group (drawer fix)
     # The badge keypad drives the shared DEFAULT LVGL focus group. While our app

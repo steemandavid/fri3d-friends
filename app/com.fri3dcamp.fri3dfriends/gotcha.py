@@ -286,9 +286,7 @@ DEFAULTS = {
     "training_enabled": False, "alarm_enabled": True,
     # Camp truce schedule (camp-local HH:MM), cached from the sync `game` block.
     # Default is the camp-wide 22:00-08:00 night truce (D7).
-    # ⚠️ DEV OVERRIDE (temporary — REVERT BEFORE CAMP to "22:00"/"08:00"): a
-    # near-empty 00:00-00:01 window so the night truce doesn't block development.
-    "truce_from": "00:00", "truce_to": "00:01",
+    "truce_from": "22:00", "truce_to": "08:00",
 }
 
 
