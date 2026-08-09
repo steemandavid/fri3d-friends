@@ -85,12 +85,23 @@ class GotchaController(object):
     then reads the getters to render. All network I/O runs on TaskManager tasks
     kicked from tick(), never on the main loop."""
 
-    def __init__(self, ble, state_path, log=None, exchange=None, on_save=None):
+    def __init__(self, ble, state_path, log=None, exchange=None, on_save=None,
+                 on_engaged=None, on_killed=None, on_dodged=None, on_spotted=None):
         self.ble = ble
         # §8.10.4: gotcha.json is mirrored to the update-survival backup on every
         # save (the controller's caller -- the Activity -- passes a hook bound to
         # its StateBackup; None in tests). The hook itself is best-effort.
         self.state = gotcha.GotchaState(state_path, on_save=on_save)
+        # Phase 4 (§5.6): optional victim-side effect callbacks fired from
+        # apply_reveal / apply_attack / _on_duel_dodge / _on_duel_kill so a
+        # headless beacon_service (no Activity UI) can still buzz/flash on a
+        # background reveal or duel. The Activity leaves these None -- its own
+        # renderer drives the foreground effects -- so the proven foreground
+        # path is untouched. Each is best-effort (never raises into the caller).
+        self._on_engaged = on_engaged
+        self._on_killed = on_killed
+        self._on_dodged = on_dodged
+        self._on_spotted = on_spotted
         self.sync = gotcha.GotchaSync(self.state)
         self.cfg = gotcha.GameConfig()
         self.log = log or (lambda m: None)
@@ -633,6 +644,7 @@ class GotchaController(object):
         self._revealed_by = hunter
         self.state.queue.add(gotcha.revealed_event(hunter, at=now_s))
         self.state.save()
+        self._fire(self._on_spotted, hunter)   # Phase 4: background gold-flash/buzz
 
     # -- THE DUEL (plan §5.3, §5.8) --------------------------------------------
     # Hunter side: press A in kill range -> _do_attack drives the duel_session
@@ -680,6 +692,17 @@ class GotchaController(object):
     def _set_duel_msg(self, msg, ms):
         self._duel_msg = msg
         self._duel_msg_until = time.ticks_add(time.ticks_ms(), ms)
+
+    def _fire(self, cb, *args):
+        """Best-effort invocation of an optional Phase-4 victim callback (None =
+        no-op). Never raises into the caller -- these run on the loop thread that
+        drains the GATT queue, and a buzzer/LED error must not abort a duel."""
+        if cb is None:
+            return
+        try:
+            cb(*args)
+        except Exception as e:
+            self._plog("cb err %r" % (e,))
 
     def _plog(self, msg):
         """Append a timestamped line to the persistent duel log (see __init__).
@@ -927,6 +950,7 @@ class GotchaController(object):
             self._svc.notify_duel(
                 gotcha.build_duel_payload(gotcha.DUEL_ENGAGED, hold_ms=hold_ms,
                                           dodges_left=dodges_left), conn)
+        self._fire(self._on_engaged, attacker, hold_ms)  # Phase 4: background siren
 
     def _refuse_attack(self, conn, reason):
         if self._svc is not None:
@@ -953,6 +977,7 @@ class GotchaController(object):
         self._push_game_context()              # clear UNDER_ATTACK
         self._plog("VICTIM DODGED (link drop) attacker=%s" % (self._duel_attacker,))
         self._set_duel_msg("ONTSNAPT!", 2500)
+        self._fire(self._on_dodged, self._duel_attacker)  # Phase 4: background dodge cue
 
     def _on_duel_kill(self, duel):
         """DuelState hold-complete callback: we are killed (§5.3). Disclose the
@@ -983,6 +1008,7 @@ class GotchaController(object):
         self._next_sync_ms = 0                 # report the death soon
         self._plog("VICTIM KILLED by=%s new_comm=%s" % (self._duel_attacker, new_comm[:12]))
         self._set_duel_msg("UITGESCHAKELD", 4000)
+        self._fire(self._on_killed, self._duel_attacker)  # Phase 4: background death cue
 
     # -- opt-in / opt-out (§13) ------------------------------------------------
     def ever_enrolled(self):
