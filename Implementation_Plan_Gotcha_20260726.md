@@ -875,6 +875,18 @@ that the service implements with buzzer/LED only.
 > write-probe self-heal already covers stale handles. **This is the single most
 > fragile area of the feature — budget real hardware time.**
 
+> **BUILD STATUS (2026-08-09, 0.11.18):** BUILT + BENCH-VALIDATED on badges
+> 9de4/fac0/bac8. beacon_service builds a headless GotchaController, registers the
+> GOTCHA GATT service (real handles reveal/duel/attack/spoils), advertises
+> connectable with the game block, and ticks every ~250 ms to drain ATTACK/REVEAL.
+> Effects ride four additive callbacks (on_engaged/on_killed/on_dodged/on_spotted
+> -> siren + LEDs). Radio handoff proven both directions: app-open soft-releases
+> (never active(False)); app-close retakes + re-registers via ensure_radio's
+> write-probe self-heal. An injected ATTACK drained through the real path to
+> VICTIM ENGAGED (siren+LED) then DODGED. Bench gotcha: the game modules MUST be
+> imported at top level (the boot-service context drops the app dir from sys.path
+> before the watchdog ticks -> lazy imports "no module named").
+
 ### 5.7 Reveal — the last ten metres (D22)
 
 **The problem Reveal exists to solve.** RSSI is a scalar. It gets you from "somewhere
@@ -2847,6 +2859,7 @@ exercises the same connect path, and having it working makes every subsequent du
 easier to set up.
 
 **Phase 4 — background participation** (D3). The fragile one; see §5.6.
+**✅ DONE (2026-08-09, 0.11.18) — bench-validated.**
 
 **Phase 5 — web pages, and the update path.** Player card, four leaderboards, hit
 list, QR flow — **served by the backend** (D31), over Let's Encrypt HTTPS
