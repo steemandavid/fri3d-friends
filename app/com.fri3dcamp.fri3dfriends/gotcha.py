@@ -954,7 +954,11 @@ def validate_attack(parsed, my_pid, my_streak, alive, truce_now, game_running, c
     if on_cooldown:
         return "on_cooldown"
     mode = parsed.get("as") if isinstance(parsed, dict) else None
-    if mode == ATTACK_BOUNTY:
+    if mode == ATTACK_BOUNTY and cfg.get("bounty_enabled", True):
+        # The one lie the victim CAN catch (§5.3): a 'bounty' attack on a player
+        # whose streak is below BOUNTY_STREAK. Honours the bounty_enabled kill
+        # switch (§8.10.1): when bounties are off the badge never sends this mode
+        # and a stray bounty write just validates as a plain target attack.
         if int(my_streak or 0) < int(cfg.get("BOUNTY_STREAK")):
             return "bounty"
     return "ok"

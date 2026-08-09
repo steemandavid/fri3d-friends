@@ -807,7 +807,8 @@ class Fri3dFriends(Activity):
                     hold = 5500
                 self._flash_leds(255, 0, 0, ms=hold)       # one red write, held
                 self._wake()
-                if self._sound and self._buzzer and self._siren_task is None:
+                if (gc.cfg.get("alarm_enabled", True) and self._sound
+                        and self._buzzer and self._siren_task is None):
                     try:
                         self._siren_task = TaskManager.create_task(self._siren())
                     except Exception:

@@ -8,7 +8,16 @@ Covers the host-testable half (no BLE / mpos needed):
 """
 import json
 
+import time as _stdtime
+
+# beacon_service's effect layer calls MicroPython time.ticks_* helpers, which
+# CPython's stdlib lacks; it resolves them as attributes on the `time` module at
+# call time, so shim them on.
+_stdtime.ticks_ms = lambda: 0
+_stdtime.ticks_add = lambda a, b: a + b
+
 import beacon_service as bs
+import gotcha
 from ble_proximity import hash_groups
 from identity import auto_nickname
 
@@ -113,3 +122,35 @@ def test_app_in_stack():
     assert not bs.app_in_stack([], FULLNAME)
     # Entries with a None/odd activity don't blow up the check.
     assert not bs.app_in_stack([(None, "scr", None, None), ("weird",)], FULLNAME)
+
+
+# ---- §8.10.1: the alarm_enabled kill switch mutes the background siren --------
+
+class _FakeGC:
+    """Just enough of GotchaController for _on_engaged's cfg read."""
+    def __init__(self, alarm_enabled):
+        self.cfg = gotcha.GameConfig()
+        self.cfg.d["alarm_enabled"] = alarm_enabled
+
+
+def test_on_engaged_siren_respects_alarm_kill_switch():
+    # _start_siren sets _siren_until_ms before its (host-absent) TaskManager call,
+    # so the gate is observable: armed when enabled, skipped when disabled.
+    s_on = bs.Fri3dBeaconService()
+    s_on._gc = _FakeGC(True)
+    s_on._on_engaged("ATK", 5000)
+    assert s_on._siren_until_ms != 0          # siren armed
+
+    s_off = bs.Fri3dBeaconService()
+    s_off._gc = _FakeGC(False)
+    s_off._on_engaged("ATK", 5000)
+    assert s_off._siren_until_ms == 0         # alarm muted; LED still fired (no raise)
+
+
+def test_on_engaged_alarm_absent_means_enabled():
+    # §8.10.1: an absent switch must NOT mute the alarm (older backend safety).
+    s = bs.Fri3dBeaconService()
+    s._gc = _FakeGC(True)
+    s._gc.cfg.d.pop("alarm_enabled")
+    s._on_engaged("ATK", 5000)
+    assert s._siren_until_ms != 0

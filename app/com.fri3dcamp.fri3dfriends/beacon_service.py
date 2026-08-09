@@ -337,7 +337,11 @@ class Fri3dBeaconService(Service):
 
     def _on_engaged(self, attacker, hold_ms):
         # §5.3 under-attack: ONE red LED write (held, no animation) + the siren.
+        # The alarm kill switch (§8.10.1) mutes only the siren -- the red LED
+        # still shows, so a muted badge is still visibly under attack.
         self._leds(255, 0, 0)
+        if self._gc is not None and not self._gc.cfg.get("alarm_enabled", True):
+            return
         self._start_siren(hold_ms)
 
     def _on_dodged(self, attacker):

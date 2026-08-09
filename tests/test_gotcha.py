@@ -864,6 +864,21 @@ def test_validate_attack_bounty_lie_caught_locally():
     assert gotcha.validate_attack(t, 1004, 0, True, "none", True, cfg) == "ok"
 
 
+def test_validate_attack_bounty_kill_switch():
+    # §8.10.1: when bounty_enabled is off, the bounty lie-detector is skipped --
+    # a bounty attack on a sub-streak victim downgrades to a legal target attack
+    # (the badge never sends bounty mode with bounties off; this just stays
+    # killable if one arrives). Streak 2 < BOUNTY_STREAK 3 would normally 'bounty'.
+    cfg = gotcha.GameConfig()
+    b = {"g": 7, "a": 1003, "v": 1004, "as": "bounty", "n": "x"}
+    assert gotcha.validate_attack(b, 1004, 2, True, "none", True, cfg) == "bounty"
+    cfg.d["bounty_enabled"] = False
+    assert gotcha.validate_attack(b, 1004, 2, True, "none", True, cfg) == "ok"
+    # absent key -> True (an older backend does not disable bounties by omission)
+    cfg.d.pop("bounty_enabled")
+    assert gotcha.validate_attack(b, 1004, 2, True, "none", True, cfg) == "bounty"
+
+
 def test_validate_attack_protection_not_paused_by_being_alive():
     # §5.8: protection refuses the attack even though everything else is legal.
     cfg = gotcha.GameConfig()
