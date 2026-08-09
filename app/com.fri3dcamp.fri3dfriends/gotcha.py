@@ -1179,6 +1179,33 @@ def dodge_event(attacker_pid=None, victim_pid=None, counterpart_pid=None, at=Non
     return e
 
 
+def heartbeat_event(battery=None, peers_seen=None, target_seen_ago_s=None,
+                    groups=None, background=False, app_version="", at=None):
+    """A 'heartbeat' event (§9.3, §8.10.3): one per SYNC_S, queued immediately
+    before the flush. It proves the badge is awake, refreshes the server's
+    app_version (so the admin version-histogram + update nudge stay honest), and
+    carries the liveness signals the dormancy/stale logic needs (battery,
+    peers_seen, target_seen_ago_s). Droppable on overflow -- it is retried whole
+    on the next flush and a heartbeat is only ever the latest truth.
+
+    `background` is True when emitted by the headless beacon_service (app closed);
+    the foreground app passes False. Matches BadgeSim.heartbeat's shape exactly."""
+    e = {"type": "heartbeat", "alive": True, "background": bool(background)}
+    if battery is not None:
+        e["battery"] = int(battery)
+    if peers_seen is not None:
+        e["peers_seen"] = int(peers_seen)
+    if target_seen_ago_s is not None:
+        e["target_seen_ago_s"] = int(target_seen_ago_s)
+    if isinstance(groups, list):
+        e["groups"] = list(groups)
+    if isinstance(app_version, str) and app_version:
+        e["app_version"] = app_version[:16]      # server caps at 16 (C1)
+    if at is not None:
+        e["at"] = int(at)
+    return e
+
+
 # ---------------------------------------------------------------------------
 # 2. EVENT QUEUE -- bounded, dedup-by-uuid offline store (§8.2, §9.3)
 # ---------------------------------------------------------------------------

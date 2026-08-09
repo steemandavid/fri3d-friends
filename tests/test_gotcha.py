@@ -776,6 +776,26 @@ def test_reveal_events_shape_and_droppable():
     assert q.add(gotcha.reveal_event(1004)) is False          # full of kills -> refused
 
 
+def test_heartbeat_event_shape_and_droppable():
+    # §9.3 / §8.10.3: the heartbeat carries app_version + liveness signals; it
+    # matches BadgeSim.heartbeat's shape and is droppable (only latest truth
+    # matters -- the badge de-dups unsent ones before each flush).
+    assert gotcha.heartbeat_event(battery=82, peers_seen=4, target_seen_ago_s=12,
+                                  groups=["G"], background=False,
+                                  app_version="0.11.20", at=123) == \
+        {"type": "heartbeat", "alive": True, "background": False, "battery": 82,
+         "peers_seen": 4, "target_seen_ago_s": 12, "groups": ["G"],
+         "app_version": "0.11.20", "at": 123}
+    # Optional fields are omitted, not null; background always present.
+    assert gotcha.heartbeat_event() == {"type": "heartbeat", "alive": True,
+                                        "background": False}
+    # app_version is capped at 16 (the server's C1 bound) so a runaway string
+    # can't blow up the admin dashboard's innerHTML interpolation.
+    assert gotcha.heartbeat_event(app_version="x" * 500)["app_version"] == "x" * 16
+    assert "app_version" not in gotcha.heartbeat_event(app_version="")
+    assert "heartbeat" not in gotcha.EventQueue.KEEP_TYPES
+
+
 # ---------------------------------------------------------------------------
 # THE DUEL (plan §5.3, §5.8) -- payloads, validate, DodgeLedger, DuelState
 # ---------------------------------------------------------------------------

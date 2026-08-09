@@ -708,8 +708,22 @@ class Fri3dFriends(Activity):
     def _gc_tick(self, now):
         if self._gc is None:
             return
+        # §9.3 heartbeat signals: battery % (None on USB / unreadable) and the
+        # count of friends currently in range (a "populated place" sighting proxy
+        # the server's dormancy logic reads off the heartbeat).
+        battery = None
         try:
-            self._gc.tick(now, self._wifi_connected(), self._sound)
+            battery = BatteryManager.get_battery_percentage()
+        except Exception:
+            pass
+        peers = 0
+        try:
+            peers = len(self._gc.ble.current_peers())
+        except Exception:
+            pass
+        try:
+            self._gc.tick(now, self._wifi_connected(), self._sound,
+                          battery=battery, peers_seen=peers)
         except Exception as e:
             self._gc_log("tick err %r" % (e,))
         self._maybe_show_consent()

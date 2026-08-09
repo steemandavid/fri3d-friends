@@ -165,3 +165,88 @@ def test_callback_exception_is_swallowed():
     gc._duel_conn = 0
     gc._on_duel_dodge(gc._duel)
     gc._on_duel_kill(gc._duel)
+
+
+# ---------------------------------------------------------------------------
+# §9.3 / §8.10.3: _do_sync queues a heartbeat then flushes before the GET sync.
+# The badge historically queued kills/reveals/dodges but never flushed them, and
+# never sent a heartbeat -- so kills never reached the server. These prove the
+# wiring (heartbeat queued in the §9.3 order, flush called, sync still called)
+# without touching the network: a fake sync client records every call.
+# ---------------------------------------------------------------------------
+
+class _FakeSync(object):
+    def __init__(self):
+        self.flushed = 0
+        self.synced = 0
+        self.order = []
+
+    async def flush_events(self, base, limit=200):
+        self.flushed += 1
+        self.order.append("flush")
+        return {"accepted": []}
+
+    async def sync(self, base):
+        self.synced += 1
+        self.order.append("sync")
+        return None                 # a failed/empty sync still leaves hb queued+flushed
+
+
+def _enrolled_controller():
+    gc = _make_controller()
+    gc.api_url = "http://x"
+    gc.state.d["enrolled"] = True
+    gc.state.d["player_key"] = "k" * 64
+    gc.sync = _FakeSync()
+    return gc
+
+
+def test_do_sync_queues_heartbeat_then_flushes_then_syncs():
+    import asyncio
+    gc = _enrolled_controller()
+    asyncio.run(gc._do_sync())
+    # Exactly one heartbeat queued, flush called once, sync called once.
+    hbs = [e for e in gc.state.queue.peek_batch(200)
+           if e.get("type") == "heartbeat"]
+    assert len(hbs) == 1
+    assert gc.sync.flushed == 1
+    assert gc.sync.synced == 1
+    assert gc.sync.order == ["flush", "sync"]          # §9.3 order preserved
+
+
+def test_do_sync_dedups_prior_unsent_heartbeat():
+    # Two back-to-back syncs must not leave two heartbeats in the queue -- only
+    # the latest truth matters, and a stale one would upload twice.
+    import asyncio
+    gc = _enrolled_controller()
+    asyncio.run(gc._do_sync())
+    asyncio.run(gc._do_sync())
+    hbs = [e for e in gc.state.queue.peek_batch(200)
+           if e.get("type") == "heartbeat"]
+    assert len(hbs) == 1
+
+
+def test_do_sync_no_heartbeat_when_not_enrolled():
+    import asyncio
+    gc = _enrolled_controller()
+    gc.state.d["enrolled"] = False              # never-enrolled / opted-out
+    asyncio.run(gc._do_sync())
+    hbs = [e for e in gc.state.queue.peek_batch(200)
+           if e.get("type") == "heartbeat"]
+    assert hbs == []
+    assert gc.sync.flushed == 0                  # nothing to flush pre-enrollment
+
+
+def test_do_sync_flush_failure_does_not_block_sync():
+    # WiFi is down ~98% of the time; a flush error must never swallow the sync.
+    import asyncio
+    gc = _enrolled_controller()
+
+    async def boom(base, limit=200):
+        raise OSError("down")
+    gc.sync.flush_events = boom
+    asyncio.run(gc._do_sync())                   # must not raise
+    assert gc.sync.synced == 1
+    hbs = [e for e in gc.state.queue.peek_batch(200)
+           if e.get("type") == "heartbeat"]
+    assert len(hbs) == 1                          # heartbeat still queued for next time

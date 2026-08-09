@@ -476,7 +476,25 @@ class Fri3dBeaconService(Service):
                 if self._gc is not None:
                     try:
                         now = time.ticks_ms()
-                        self._gc.tick(now, self._wifi_up(), self._sound)
+                        # background=True so the §9.3 heartbeat this drives reports
+                        # itself as the headless responder (app closed), and the
+                        # admin dashboard can tell an open-app badge from one that
+                        # is alive only via the boot service. Battery/peers are best
+                        # effort; a None battery (USB) is fine.
+                        battery = None
+                        peers = 0
+                        try:
+                            from mpos import BatteryManager
+                            battery = BatteryManager.get_battery_percentage()
+                        except Exception:
+                            pass
+                        try:
+                            peers = len(self._gc.ble.current_peers())
+                        except Exception:
+                            pass
+                        self._gc.tick(now, self._wifi_up(), self._sound,
+                                      battery=battery, peers_seen=peers,
+                                      background=True)
                     except Exception as e:
                         self._dbg("tick err %r" % (e,))
                     # Re-assert the beacon occasionally (another app may have

@@ -144,6 +144,11 @@ class GotchaController(object):
         self._api_host = None
         self._game_block = None
         self._target_pid = None
+        # §9.3 heartbeat signals (refreshed each tick by the Activity; the
+        # background service passes its own). Sent once per SYNC_S inside _do_sync.
+        self._hb_battery = None
+        self._hb_peers = 0
+        self._hb_background = False
         # Reveal (plan §5.7): hunter-side connect state + target-side spotted state.
         self._svc = None                # GotchaService (responder), set via set_service
         self._revealing = False         # a reveal connect is in flight (hunter side)
@@ -204,8 +209,12 @@ class GotchaController(object):
                                  self.cfg.get("PROX_ALPHA_DOWN"))
 
     # -- main drive (every Activity tick) ------------------------------------
-    def tick(self, now_ms, wifi_up, sound_on):
+    def tick(self, now_ms, wifi_up, sound_on, battery=None, peers_seen=0,
+             background=False):
         self.sound_on = sound_on
+        self._hb_battery = battery
+        self._hb_peers = peers_seen
+        self._hb_background = background
         self._drain_reveals()
         self._drain_attacks()
         self._tick_duel(now_ms)
@@ -325,6 +334,18 @@ class GotchaController(object):
     async def _do_sync(self):
         self._syncing = True
         try:
+            # §9.3 / §8.10.3: once per SYNC_S, in the order heartbeat -> flush ->
+            # sync. The heartbeat refreshes app_version + liveness on the server
+            # (and gives the admin version-histogram a current reading); the flush
+            # drains the offline queue so kills/reveals/dodges actually land. Both
+            # are best-effort and must never block the sync GET that follows --
+            # WiFi is down ~98% of the time (§8.7) so each is wrapped separately.
+            if self.state.is_enrolled():
+                self._queue_heartbeat()
+                try:
+                    await self.sync.flush_events(self.api_url)
+                except Exception as e:
+                    self.log("gotcha flush err %r" % (e,))
             payload = await self.sync.sync(self.api_url)
             if payload:
                 self.cfg = gotcha.GameConfig.from_sync(payload.get("config"),
@@ -350,6 +371,29 @@ class GotchaController(object):
             self._next_sync_ms = time.ticks_add(time.ticks_ms(), RETRY_MS)
         finally:
             self._syncing = False
+
+    def _queue_heartbeat(self):
+        # §9.3: queue exactly one heartbeat per sync, immediately before the
+        # flush. Only the most recent heartbeat matters, so drop any prior unsent
+        # one first (a back-to-back sync would otherwise leave two in the queue,
+        # and the older is stale truth the moment the newer is queued).
+        q = self.state.queue
+        hb = [e for e in q.peek_batch(200) if e.get("type") == "heartbeat"]
+        for e in hb:
+            q.remove([e.get("uuid")])
+        target_ago = None
+        tp = self.state.target_pid()
+        # target_seen_ago_s: how long since the proximity layer last had the
+        # target in range. None if no target / never seen (the server only uses
+        # it to freshness-mark the *target*, §10.1).
+        peer = self.ble.peer_by_pid(tp) if tp is not None else None
+        if peer is not None and peer.get("last_seen_ms") is not None:
+            target_ago = max(0, int((int(time.time()) * 1000 -
+                                     int(peer["last_seen_ms"])) // 1000))
+        q.add(gotcha.heartbeat_event(
+            battery=self._hb_battery, peers_seen=self._hb_peers,
+            target_seen_ago_s=target_ago, groups=self.groups,
+            background=self._hb_background, app_version=_app_version()))
 
     # -- radio: advertise the game block + admit/pin the target --------------
     def _push_game_context(self):
