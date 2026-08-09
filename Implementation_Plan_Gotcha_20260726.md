@@ -2230,6 +2230,20 @@ interpreted as anything but text.
 
 #### 8.10.4 ⚠️ Data survival across an update — this is broken *today*
 
+> **BUILD STATUS (2026-08-09, 0.11.17):** Step 1 (the data-loss fix) is **BUILT +
+> fully host-tested AND bench-validated** (`state_backup.py` + 16
+> `test_state_backup.py`; full suite 371 green; verified end-to-end on badge 9de4
+> via a real `install_mpk` wipe). The three persistent files are mirrored to
+> `/prefs/fri3dfriends_state` on every save and restored on boot. Bench corrected
+> the spec's guesses: `/storage/` does not exist on this build (backup lives in
+> `/prefs/`, which survives `install_mpk`); `os.makedirs` is absent (use
+> `os.mkdir`); and a `.mpk` that bundles `config.json` clobbers the player's
+> config, so the build excludes it (README) **and** `restore_config_over_template`
+> reclaims it if a template lands. Steps 2–3 are **deferred with rationale**
+> below: restoring `gotcha.json` removes the *cause* of the re-enroll race (step
+> 3), and step 2's flush-before-update screen has no UI to attach to yet (the
+> backup-on-save already protects the unsent event queue).
+
 **Every persistent file lives inside the app directory**, which is what an AppStore
 update replaces:
 

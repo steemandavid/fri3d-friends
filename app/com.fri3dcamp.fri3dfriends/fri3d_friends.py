@@ -92,6 +92,40 @@ def _unique_id():
         return b""
 
 
+# Lazy, best-effort §8.10.4 backup handle. config.json + contacts.json are the
+# two protected files that flow through _atomic_write_json; gotcha.json is
+# mirrored via the GotchaState on_save callback instead (it does not use this
+# helper). Built once on first use; False marks "unavailable" so we stop retrying.
+_BACKUP = None
+
+
+def _backup():
+    global _BACKUP
+    if _BACKUP is None:
+        try:
+            import state_backup
+            _BACKUP = state_backup.make_real_fs(APP_DIR)
+        except Exception:
+            _BACKUP = False
+    return _BACKUP if _BACKUP is not False else None
+
+
+def _mirror_if_protected(path):
+    """After an atomic write of config.json/contacts.json, mirror it to the
+    §8.10.4 backup so an AppStore update at any moment preserves the latest
+    copy. Never raises -- a backup failure degrades to 'no backup' (plan §8.6)."""
+    b = _backup()
+    if b is None:
+        return
+    for name in ("config.json", "contacts.json"):
+        if path == APP_DIR + "/" + name or path.endswith("/" + name):
+            try:
+                b.mirror(name)
+            except Exception:
+                pass
+            return
+
+
 def _atomic_write_json(path, obj):
     """Write JSON to `path` via a temp file + rename (atomic on LittleFS/FAT).
     A power-off mid-write then can't corrupt the file into an unloadable state
@@ -100,6 +134,7 @@ def _atomic_write_json(path, obj):
     with open(tmp, "w") as f:
         json.dump(obj, f)
     os.rename(tmp, path)
+    _mirror_if_protected(path)
 
 
 def _now_str():
@@ -437,13 +472,24 @@ class Fri3dFriends(Activity):
     # never "no nametag" (plan §8.6). self._gc is created in _setup_gotcha()
     # (needs the live screen + config); the controller owns state/sync/connectivity
     # and the renderer here reads its getters.
+    def _gc_backup_hook(self):
+        # §8.10.4: mirror gotcha.json to the update-survival backup after every
+        # state save. Passed as GotchaState's on_save. Best-effort, never raises.
+        b = _backup()
+        if b is not None:
+            try:
+                b.mirror("gotcha.json")
+            except Exception:
+                pass
+
     def _setup_gotcha(self):
         if self._gc is not None:
             return
         try:
             import gotcha_app
             self._gc = gotcha_app.GotchaController(
-                self._ble, APP_DIR + "/gotcha.json", log=self._gc_log)
+                self._ble, APP_DIR + "/gotcha.json", log=self._gc_log,
+                on_save=self._gc_backup_hook)
             self._gc.set_exchange(self._exch)
             self._gc.configure(self._config.get("gotcha"),
                                self._config.get("name"), self._config.get("groups"))
@@ -1899,6 +1945,15 @@ class Fri3dFriends(Activity):
 
     # ------------------------------------------------------------------ lifecycle
     def onCreate(self):
+        # §8.10.4: an AppStore update wipes the whole app folder, destroying
+        # config.json/contacts.json/gotcha.json. Restore anything the installer
+        # took (from the /storage backup) BEFORE we load any of them. No-op on a
+        # normal boot; best-effort, never raises (plan §8.6).
+        try:
+            import state_backup
+            state_backup.restore_on_boot(APP_DIR)
+        except Exception:
+            pass
         self._load_config()
         self._resolve_focus_highlight()
         self._setup_buzzer()

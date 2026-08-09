@@ -372,7 +372,12 @@ cd app
 FN=com.fri3dcamp.fri3dfriends
 rm -rf $FN/__pycache__ $FN/.pytest_cache
 find $FN -exec touch -t 202501010000.00 {} \;
-(find $FN -type d; find $FN -type f) | sort | TZ=CET zip -X -r -0 ../dist/${FN}_$(python3 -c "import json;print(json.load(open('$FN/MANIFEST.JSON'))['version'])").mpk -@
+# NEVER bundle config.json (or any runtime state) in the .mpk: install_mpk
+# extracts it over the player's real config on every AppStore update, and the
+# bare template it ships reads as "the update wiped my badge" (§8.10.4). The app
+# bootstraps a missing config from defaults; gotcha.json/contacts.json are
+# runtime-only and never in the repo.
+(find $FN -type d; find $FN -type f ! -name config.json) | sort | TZ=CET zip -X -r -0 ../dist/${FN}_$(python3 -c "import json;print(json.load(open('$FN/MANIFEST.JSON'))['version'])").mpk -@
 ```
 
 To publish, log in at **[badgehub.eu](https://badgehub.eu)** → **Create Project**

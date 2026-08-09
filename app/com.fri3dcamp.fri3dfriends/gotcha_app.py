@@ -85,9 +85,12 @@ class GotchaController(object):
     then reads the getters to render. All network I/O runs on TaskManager tasks
     kicked from tick(), never on the main loop."""
 
-    def __init__(self, ble, state_path, log=None, exchange=None):
+    def __init__(self, ble, state_path, log=None, exchange=None, on_save=None):
         self.ble = ble
-        self.state = gotcha.GotchaState(state_path)
+        # §8.10.4: gotcha.json is mirrored to the update-survival backup on every
+        # save (the controller's caller -- the Activity -- passes a hook bound to
+        # its StateBackup; None in tests). The hook itself is best-effort.
+        self.state = gotcha.GotchaState(state_path, on_save=on_save)
         self.sync = gotcha.GotchaSync(self.state)
         self.cfg = gotcha.GameConfig()
         self.log = log or (lambda m: None)

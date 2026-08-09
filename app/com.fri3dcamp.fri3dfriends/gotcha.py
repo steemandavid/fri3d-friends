@@ -1325,11 +1325,13 @@ def _parse_target(t):
 class GotchaState(object):
     """In-memory + atomically-persisted badge game state."""
 
-    def __init__(self, path="gotcha.json", reader=None, writer=None, renamer=None):
+    def __init__(self, path="gotcha.json", reader=None, writer=None, renamer=None,
+                 on_save=None):
         self.path = path
         self._reader = reader          # () -> file str, or None
         self._writer = writer          # (tmp_path, data_str) -> None
         self._renamer = renamer        # (tmp_path, path) -> None
+        self._on_save = on_save        # () -> None, §8.10.4 mirror hook
         self.reset()
 
     def reset(self):
@@ -1420,6 +1422,14 @@ class GotchaState(object):
                 f.close()
                 import os
                 os.rename(tmp, self.path)
+            # §8.10.4: mirror gotcha.json to the update-survival backup so a
+            # wipe can never lose enrollment/queue. Best-effort; the on-device
+            # hook swallows its own errors, and tests pass None.
+            if self._on_save is not None:
+                try:
+                    self._on_save()
+                except Exception:
+                    pass
             return True
         except Exception:
             return False
