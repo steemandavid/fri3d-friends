@@ -44,6 +44,31 @@ def _hex(b):
     return "".join("%02x" % x for x in b)
 
 
+def version_tuple(s):
+    """Parse a dotted numeric version ('0.11.20') into a tuple of ints for
+    comparison (§8.10.3 version nudge). A missing/garbage version parses to ()
+    so `version_tuple(me) < version_tuple(min)` is False when either side is
+    unknown -- the badge never nags from a version it cannot read. Non-numeric
+    segments (a '-rc' suffix) parse to their leading int, then 0."""
+    if not isinstance(s, str) or not s:
+        return ()
+    out = []
+    any_digit = False
+    for part in s.split("."):
+        n = ""
+        for ch in part:
+            if ch.isdigit():
+                n += ch
+            else:
+                break
+        if n:
+            any_digit = True
+        out.append(int(n) if n else 0)
+    # A string with no digits anywhere ('?', 'garbage') is not a real version ->
+    # () so the nudge's `if mn/me:` guards treat it as "unknown, never nag".
+    return tuple(out) if any_digit else ()
+
+
 def hmac_sha256(key, msg):
     """RFC-2104 HMAC-SHA256. `key` and `msg` are bytes; returns 32 bytes.
 

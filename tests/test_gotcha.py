@@ -796,6 +796,25 @@ def test_heartbeat_event_shape_and_droppable():
     assert "heartbeat" not in gotcha.EventQueue.KEEP_TYPES
 
 
+def test_version_tuple_parse_and_compare():
+    # §8.10.3: the version nudge compares dotted versions.
+    assert gotcha.version_tuple("0.11.20") == (0, 11, 20)
+    assert gotcha.version_tuple("0.11.3") < gotcha.version_tuple("0.11.20")
+    assert gotcha.version_tuple("1.0") > gotcha.version_tuple("0.11.99")
+    # A '-rc1' suffix parses to its leading int then drops.
+    assert gotcha.version_tuple("0.11.20-rc1") == (0, 11, 20)
+    # No digits anywhere -> () (not a real version; the nudge must never fire).
+    assert gotcha.version_tuple("?") == ()
+    assert gotcha.version_tuple("garbage") == ()
+    assert gotcha.version_tuple(None) == ()
+    assert gotcha.version_tuple("") == ()
+    # So an unreadable own version is falsy -> _compute_nudge's `if not me` guard
+    # catches it before any comparison (an unknown own version never nags).
+    assert not gotcha.version_tuple("?")
+    # A literal "0" still parses (it has a digit).
+    assert gotcha.version_tuple("0") == (0,)
+
+
 # ---------------------------------------------------------------------------
 # THE DUEL (plan §5.3, §5.8) -- payloads, validate, DodgeLedger, DuelState
 # ---------------------------------------------------------------------------

@@ -149,6 +149,13 @@ class GotchaController(object):
         self._hb_battery = None
         self._hb_peers = 0
         self._hb_background = False
+        # §8.10.3 fleet nudge: the host's broadcast banner + the version nudge.
+        # take_fleet_banner() is a one-shot edge detector the Activity polls when
+        # no higher-priority banner (duel/arrival) owns the strip.
+        self.broadcast = None
+        self._shown_broadcast = None
+        self.nudge_text = None
+        self._shown_nudge_key = None
         # Reveal (plan §5.7): hunter-side connect state + target-side spotted state.
         self._svc = None                # GotchaService (responder), set via set_service
         self._revealing = False         # a reveal connect is in flight (hunter side)
@@ -353,6 +360,10 @@ class GotchaController(object):
                 self._apply_prox_filter()
                 self.quiet = (payload.get("me") or {}).get("quiet") or self.quiet
                 self._push_game_context()
+                # §8.10.3: capture the host broadcast + derive the version nudge.
+                # Both are surfaced to the renderer via take_fleet_banner().
+                self.broadcast = payload.get("broadcast")
+                self.nudge_text = self._compute_nudge(payload)
                 secs = int(self.cfg.get("SYNC_S") or SYNC_S)
                 # ±20% jitter (§10.3) so 700 badges don't sync on the same tick.
                 try:
@@ -394,6 +405,38 @@ class GotchaController(object):
             battery=self._hb_battery, peers_seen=self._hb_peers,
             target_seen_ago_s=target_ago, groups=self.groups,
             background=self._hb_background, app_version=_app_version()))
+
+    def _compute_nudge(self, payload):
+        # §8.10.3 update nudge. < min_app_version -> prominent "UPDATE NODIG";
+        # >= min but < latest -> a soft "new version available" line. >= latest or
+        # any unreadable version -> None (never nag from a version we can't parse;
+        # an absent server floor means "no constraint").
+        app = payload.get("app") if isinstance(payload, dict) else None
+        app = app if isinstance(app, dict) else {}
+        me = gotcha.version_tuple(_app_version())
+        if not me:
+            return None
+        mn = gotcha.version_tuple(app.get("min_version"))
+        latest = gotcha.version_tuple(app.get("latest_version"))
+        if mn and me < mn:
+            return "UPDATE NODIG -- update in de AppStore"
+        if latest and me < latest:
+            return "Nieuwe versie beschikbaar -- update in de AppStore"
+        return None
+
+    def take_fleet_banner(self):
+        # §8.10.3: a one-shot banner for a NEW host broadcast or version nudge.
+        # Returns the text once per change, then None until it changes again, so a
+        # standing announcement does not re-spam every sync. The caller shows this
+        # only when no duel/arrival banner is active (it is the lowest priority).
+        b = self.broadcast
+        if isinstance(b, str) and b and b != self._shown_broadcast:
+            self._shown_broadcast = b
+            return b[:120]                       # server caps at 120; defend in depth
+        if self.nudge_text and self.nudge_text != self._shown_nudge_key:
+            self._shown_nudge_key = self.nudge_text
+            return self.nudge_text
+        return None
 
     # -- radio: advertise the game block + admit/pin the target --------------
     def _push_game_context(self):

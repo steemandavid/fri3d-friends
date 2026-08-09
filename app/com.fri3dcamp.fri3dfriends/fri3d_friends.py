@@ -863,6 +863,22 @@ class Fri3dFriends(Activity):
         except Exception as e:
             self._gc_log("duel render err %r" % (e,))
 
+    def _render_fleet_banner(self):
+        # §8.10.3: surface a NEW host broadcast or version nudge. Lowest priority
+        # -- only when no duel/arrival banner owns the strip -- and one-shot per
+        # change, so a standing announcement does not re-spam every sync. Transient
+        # (auto-hides after _banner_ms via the banner-timeout check in _loop).
+        gc = self._gc
+        if gc is None or self._duel_banner or self._banner_is_arrival:
+            return
+        try:
+            text = gc.take_fleet_banner()
+        except Exception:
+            return
+        if text is not None:
+            self._show_banner(text)
+            self._wake()
+
     async def _siren(self):
         # The under-attack alarm (§5.3): a two-tone buzzer siren until the duel
         # ends. Buzzer PWM only -- it does NOT disable IRQs (unlike lights.write),
@@ -2189,6 +2205,7 @@ class Fri3dFriends(Activity):
                 self._resync_time(now)
                 if self._banner_until and time.ticks_diff(now, self._banner_until) >= 0:
                     self._hide_banner()
+                self._render_fleet_banner()
                 if (self._has_backlight and not self._dimmed and
                         time.ticks_diff(now, self._last_input_ms) > 30000 and
                         not self._ble.has_peers()):

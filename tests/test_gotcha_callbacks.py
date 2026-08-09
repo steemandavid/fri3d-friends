@@ -250,3 +250,86 @@ def test_do_sync_flush_failure_does_not_block_sync():
     hbs = [e for e in gc.state.queue.peek_batch(200)
            if e.get("type") == "heartbeat"]
     assert len(hbs) == 1                          # heartbeat still queued for next time
+
+
+# ---------------------------------------------------------------------------
+# §8.10.3: the fleet banner -- a NEW host broadcast or version nudge surfaced
+# once per change via take_fleet_banner() (the renderer polls it when no
+# duel/arrival banner owns the strip).
+# ---------------------------------------------------------------------------
+
+def _nudge_controller(my_version):
+    gc = _make_controller()
+    gc.state.d["enrolled"] = True
+    gc.sync = _FakeSync()
+    # _app_version() reads the on-device MANIFEST, which the host has no /apps
+    # copy of, so fix the version under test.
+    gotcha_app._app_version = lambda: my_version
+    return gc
+
+
+def test_compute_nudge_below_min_is_prominent():
+    gc = _nudge_controller("0.10.0")
+    assert gc._compute_nudge({"app": {"min_version": "0.11.0",
+                                      "latest_version": "0.11.5"}}) == \
+        "UPDATE NODIG -- update in de AppStore"
+
+
+def test_compute_nudge_below_latest_is_soft():
+    gc = _nudge_controller("0.11.3")
+    assert gc._compute_nudge({"app": {"min_version": "0.11.0",
+                                      "latest_version": "0.11.5"}}) == \
+        "Nieuwe versie beschikbaar -- update in de AppStore"
+
+
+def test_compute_nudge_up_to_date_is_none():
+    gc = _nudge_controller("0.11.5")
+    assert gc._compute_nudge({"app": {"min_version": "0.11.0",
+                                      "latest_version": "0.11.5"}}) is None
+
+
+def test_compute_nudge_no_server_floor_is_none():
+    # An absent server constraint (older backend) must never nag.
+    gc = _nudge_controller("0.11.20")
+    assert gc._compute_nudge({}) is None
+    assert gc._compute_nudge({"app": {}}) is None
+
+
+def test_compute_nudge_unreadable_own_version_is_none():
+    # _app_version() returns '?' when the MANIFEST can't be read -> never nag.
+    gc = _nudge_controller("?")
+    assert gc._compute_nudge({"app": {"min_version": "0.11.0",
+                                      "latest_version": "0.11.5"}}) is None
+
+
+def test_take_fleet_banner_surfaces_new_broadcast_once():
+    gc = _nudge_controller("0.11.20")
+    gc.broadcast = "Ceremonie om 17:00 aan de bar"
+    assert gc.take_fleet_banner() == "Ceremonie om 17:00 aan de bar"
+    assert gc.take_fleet_banner() is None        # already shown; don't re-spam
+    gc.broadcast = "Spel gepauzeerd"             # a NEW value re-arms it
+    assert gc.take_fleet_banner() == "Spel gepauzeerd"
+    assert gc.take_fleet_banner() is None
+
+
+def test_take_fleet_banner_broadcast_capped_at_120():
+    gc = _nudge_controller("0.11.20")
+    gc.broadcast = "x" * 500
+    assert len(gc.take_fleet_banner()) == 120
+
+
+def test_take_fleet_banner_nudge_after_broadcast():
+    # A broadcast wins first; once shown, a pending nudge surfaces on the next poll.
+    gc = _nudge_controller("0.11.3")
+    gc.broadcast = "hallo"
+    gc.nudge_text = "Nieuwe versie beschikbaar -- update in de AppStore"
+    assert gc.take_fleet_banner() == "hallo"
+    assert gc.take_fleet_banner() == "Nieuwe versie beschikbaar -- update in de AppStore"
+    assert gc.take_fleet_banner() is None
+
+
+def test_take_fleet_banner_none_when_nothing_new():
+    gc = _nudge_controller("0.11.20")
+    assert gc.take_fleet_banner() is None
+    gc.broadcast = ""                            # empty broadcast is not shown
+    assert gc.take_fleet_banner() is None
