@@ -27,11 +27,13 @@ laptop (§6.1) and will be deployed with the same script.
 | 7 | systemd unit, enabled and started | `/etc/systemd/system/gotcha.service` | `sudo systemctl disable --now gotcha; sudo rm /etc/systemd/system/gotcha.service; sudo systemctl daemon-reload` |
 | 8 | systemd state directory (created by `StateDirectory=`) | `/var/lib/gotcha` (same as #3) | as #3 |
 | 9 | Source staged for the installer | `/tmp/gotcha-src/` | `rm -rf /tmp/gotcha-src` (or reboot) |
+| 10 | **Tailscale Funnel** exposing `:8080` to the public internet over HTTPS at `https://john-thinkpad-e15.tail44c8ab.ts.net` (added 2026-08-09) | Tailscale serve/funnel config | `sudo tailscale funnel --https=443 off` |
 
 **Not changed on this host:** no firewall rules (ufw was and remains inactive),
-no ports 80/443 bound (the service listens on **:8080** only), no changes to
-networking, DNS, `/etc/hosts`, timezone, packages outside the virtualenv, or any
-other systemd unit. `python3-venv` was already installed. No cron or timer units
+no ports 80/443 bound (the service listens on **:8080** only; the Funnel in row 10
+terminates TLS in the Tailscale daemon, not in this service), no changes to
+DNS, `/etc/hosts`, timezone, packages outside the virtualenv, or any other
+systemd unit. `python3-venv` was already installed. No cron or timer units
 were created — this server has no scheduled work by design (see `README.md`,
 "Derive, don't schedule").
 
@@ -46,6 +48,9 @@ were created — this server has no scheduled work by design (see `README.md`,
 | 2026-07-30 | Smoke test run 4× | `tools/smoke.py` over the LAN. Last run: enroll → signed sync → replay refused → ring built (6 players, 0 conflicts) → kill scored → dashboard. All checks passed. |
 | 2026-07-30 | 1000-sync soak run | `tools/smoke.py --soak 1000` over the LAN. Median 5.5 ms, no latency drift, service RSS flat at 35 MB. Database wiped afterwards. |
 | 2026-07-30 | Truce window moved and restored | By `smoke.py`, because the run happened at 06:00 inside the 22:00–08:00 truce. Restored to `22:00–08:00` in the same run; verified in the database afterwards. |
+| 2026-08-09 | Truce reset to 22:00–08:00 | The DB still held the `00:00–00:01` dev override from commit `7d9cef3`. Reset via `POST /v1/admin/truce_schedule` over localhost (the server is now on this machine, on casarural WiFi at `192.168.1.177`). |
+| 2026-08-09 | Tailscale Funnel enabled (row 10) | Exposes `:8080` publicly at `https://john-thinkpad-e15.tail44c8ab.ts.net`. Reason: casarural WiFi isolates clients, so badges cannot reach the server over the LAN. Verified end-to-end — a badge's signed `/v1/sync` over the funnel returned `200` and `synced_15m` went `0→1`. |
+| 2026-08-09 | Badges pointed at the funnel | All 3 dev badges (9de4, fac0/Badge2024lijn, bac8) on casarural WiFi, `config.json gotcha.api`/`enroll` set to the funnel URL, on app `0.11.16` (HTTPS sync support). |
 
 ### Operating notes
 

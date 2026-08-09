@@ -28,6 +28,24 @@ Deployment on the game laptop: `sudo deploy/install.sh`, undone by
 `sudo deploy/uninstall.sh`. Every host-level change is listed with its revert
 command in [`DEPLOY_LOG.md`](DEPLOY_LOG.md).
 
+### Reaching the server from badges (network note)
+
+Badges and the server must be able to talk. On a LAN where clients can reach
+each other, point badges at `http://<server-ip>:8080` (plain HTTP, D21). **If the
+WiFi isolates clients** (common on camp/B&B APs — devices get internet but cannot
+reach each other), expose the server publicly instead and point badges at its
+HTTPS URL. The simplest way, when the server host runs Tailscale:
+
+```bash
+sudo tailscale funnel --bg 8080     # https://<host>.ts.net -> 127.0.0.1:8080
+sudo tailscale funnel --https=443 off   # undo
+```
+
+The ESP32 has no root-CA store, so badge HTTPS needs verification disabled —
+handled in `gotcha.py` `GotchaSync._patch_tls_no_verify` (gated to `https://`
+URLs; safe because every request is HMAC-signed). See `DEPLOY_LOG.md` row 10 and
+the `gotcha-external-backend-funnel` memory.
+
 ## Layout
 
 | File | What lives there |

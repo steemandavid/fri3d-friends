@@ -1,3 +1,83 @@
+# !Fri3d Friends — Before-camp hardening + externally-exposed backend (Tailscale Funnel, HTTPS sync) — 2026-08-09
+
+Five days to camp (14–16 Aug). Session did the before-camp dev-flag reverts, brought the 3 USB
+badges to current, and — when the B&B WiFi turned out to isolate clients — stood up an
+**externally-reachable backend over the public internet** plus the badge HTTPS support to use it.
+Started 0.11.14, ended **0.11.16**. Two commits: `f681c09`, `8a78ac7`.
+
+## 1. Working-tree cleanup
+- The whole uncommitted changeset (~60 files) was **executable-bit churn** (100644→100755) from
+  files round-tripped through a permission-blind medium — **zero content edits**. Fixed at the root
+  with `git config core.fileMode false`; churn won't recur. Only `.claude/` (session dir) left untracked.
+
+## 2. Before-camp dev-flag reverts (`f681c09`, 0.11.14→0.11.15)
+- `gotcha.py` DEFAULTS truce `00:00/00:01` → **`22:00/08:00`** (camp night truce, D7).
+- `fri3d_friends.py` `SILENT = True` → **`False`** (kill siren + hunt pings now sound).
+- Removed the `gotcha_dbg.txt` writer (`_g_dbg` method + call + `_g_dbg_last` init).
+- Byte-compiled clean; truce default parsed (1320/480) on host.
+
+## 3. Badge ops — host toolchain bootstrap (this host is minimal)
+This host (ThinkPad, `john-ThinkPad-E15`) has **no mpremote/pip/pytest** (Python 3.14, `ensurepip`
+locked). Recipe saved to memory (`badge-dev-host-toolchain`):
+- Bootstrap mpremote from PyPI wheels into `/tmp` (`mpremote` + `platformdirs`), run via `PYTHONPATH`.
+- **ModemManager grabs the ttyACM ports** → `sudo systemctl stop ModemManager`.
+- **`john` not in `dialout`** (EACCES reads as "in use") → ran mpremote via `sudo`. Permanent fix:
+  `sudo usermod -aG dialout john` + re-login; plus a udev rule (`ID_MM_DEVICE_IGNORE` for VID `303a`).
+- Badges run the asyncio REPL → use `mpremote ... run file.py`, not multi-line `eval`.
+
+## 4. Badge probe + deploy 0.11.15 → cleanup
+- Probed all 3 (9de4/ttyACM0, fac0-Badge2024lijn/ttyACM1, bac8/ttyACM2): alive, enrolled, but
+  **versions fragmented** (0.11.7 / 0.11.13 / 0.11.14) with dev cruft.
+- Deployed 0.11.15 to all 3 via `tools/deploy.sh` (explicit code-file list incl. `gotcha_gatt.py`,
+  **excluding `config.json`**), RESET=1, sha-verified. bac8 (former half-deployed casualty) clean.
+- Removed stale `gotcha_dbg.txt` + `duel_log.txt`; reset 9de4's stale fake `clock_offset_s`
+  (946703400 → 946684800). Confirmed on-badge truce default `22:00 → 08:00`.
+
+## 5. Backend on this machine + truce reset
+- The backend was **already running here**: `/opt/gotcha/venv/bin/python -m gotcha_server.main`
+  on `:8080` (systemd). This machine is on **casarural WiFi at `192.168.1.177`** (the old
+  `192.168.1.57` was a different network).
+- Truce reset to 22:00–08:00 via `POST /v1/admin/truce_schedule` over **localhost** (the task that
+  was VPN-blocked last session — now local, no Tailscale/Mullvad issue).
+
+## 6. casarural WiFi isolates clients → external exposure
+- Diagnosis: badges (.183/.184/.185) and ThinkPad (.177) all on casarural, but **neither can reach
+  the other** (ping 100% loss, TCP EHOSTUNREACH/ETIMEDOUT), **no host firewall** (ufw inactive,
+  INPUT ACCEPT). L2 ARP resolved but all data dropped = **AP client isolation**.
+- The ThinkPad's WiFi card is **managed-only (no AP mode)**, no USB adapter → can't host a hotspot.
+- Fix: **Tailscale Funnel** (Tailscale already on the ThinkPad):
+  `sudo tailscale funnel --bg 8080` → `https://john-thinkpad-e15.tail44c8ab.ts.net` → `127.0.0.1:8080`
+  (HTTPS-only, auto Let's Encrypt). Undo: `sudo tailscale funnel --https=443 off`.
+
+## 7. Badge HTTPS sync support (`8a78ac7`, 0.11.15→0.11.16)
+- ESP32 has **no root-CA store** → urequests HTTPS fails `MBEDTLS_ERR_SSL_CA_CHAIN_REQUIRED`.
+- `gotcha.py GotchaSync._patch_tls_no_verify()`: for `https://` URLs, monkeypatch `ssl.wrap_socket`
+  → `cert_reqs=CERT_NONE` around the single blocking urequests call, then restore. **Safe because
+  every request is HMAC-signed (D21)** — integrity/auth doesn't depend on the TLS cert. `_get`/`_post`
+  gate it on the URL scheme; plain-HTTP path and host tests unchanged (host helper no-ops → None).
+- Validated empirically first: urequests uses `ssl.wrap_socket` (the patch flips verification);
+  `urequests.get` over the funnel returned `200 {"ok":true,...}`.
+
+## 8. Badges on casarural WiFi + funnel — verified end-to-end
+- mpos stores WiFi in `/prefs/com.micropythonos.system.wifiservice/config.json` as
+  `{"access_points": {SSID: {"password": ...}}}` — added `casarural` on all 3, rebooted → connected.
+- Set each badge `config.json gotcha.api`/`enroll` = the funnel URL. Deployed 0.11.16 to all 3.
+- **Proven:** 9de4 signed `GET /v1/sync` over the funnel → **200**; backend `synced_15m` **0→1**.
+  (Backend log source IP is Tailscale's funnel egress, not the badge LAN IP — expected.)
+
+## Notes / follow-ups
+- **App does not autostart** on these dev badges (boot to mpos launcher). The sync *path* is proven;
+  autonomous sync needs the app launched (A-press) or set to autostart. At camp they'll be running.
+- **The funnel URL is public** — internet bots started scanning it within seconds (harmless 404s;
+  admin login is the gate). Inherent to "reachable from an external network."
+- **Pytest suite (355) not run this session** — no pip/pytest on this host; run on the dev ThinkPad.
+- Optional host fixes still open: `dialout` group membership; ModemManager udev rule (it's stopped
+  for this session, restarts on reboot).
+- Phase 6 (dry run + power measure) and Phase 5 §8.10.4 (contacts.json preservation across AppStore
+  updates — a live data-loss bug) remain the priority code work before camp.
+
+---
+
 # !Fri3d Friends — Gotcha Phase 3b: the duel, built + VERIFIED end-to-end on hardware — 2026-08-02
 
 Implemented Phase 3b (the duel, §5.3) from the plan, then brought it up on real badges and
