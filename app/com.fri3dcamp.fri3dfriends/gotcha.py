@@ -1608,17 +1608,42 @@ class GotchaSync(object):
         self.state = state
 
     # -- low-level I/O (blocking urequests, kept tiny and finally-safe) --------
+    def _patch_tls_no_verify(self):
+        # External backends (e.g. a Tailscale Funnel URL) are https-only, but the
+        # ESP32 ships no root-CA store so urequests' default verification fails
+        # (MBEDTLS_ERR_SSL_CA_CHAIN_REQUIRED). Every request is HMAC-signed (D21),
+        # so integrity does not depend on the TLS cert -- disable verification for
+        # the one blocking urequests call, then restore. Returns the original
+        # ssl.wrap_socket (to restore) or None if it can't be patched (caller no-ops).
+        try:
+            import ssl
+            orig = ssl.wrap_socket
+        except Exception:
+            return None
+        def _wrap(sock, *a, **kw):
+            kw["cert_reqs"] = ssl.CERT_NONE
+            kw.pop("ca_certs", None)
+            return orig(sock, *a, **kw)
+        ssl.wrap_socket = _wrap
+        return orig
+
     def _get(self, url, headers, timeout=10):
         import urequests
-        r = urequests.get(url, headers=headers or {}, timeout=timeout)
+        _orig = self._patch_tls_no_verify() if url[:5] == "https" else None
         try:
-            sc = r.status_code
+            r = urequests.get(url, headers=headers or {}, timeout=timeout)
             try:
-                env = r.json()
-            except Exception:
-                env = None
+                sc = r.status_code
+                try:
+                    env = r.json()
+                except Exception:
+                    env = None
+            finally:
+                r.close()                   # never leak a socket across syncs
         finally:
-            r.close()                       # never leak a socket across syncs
+            if _orig is not None:
+                import ssl
+                ssl.wrap_socket = _orig
         return sc, env
 
     def _post(self, url, body, headers=None, timeout=10):
@@ -1627,15 +1652,21 @@ class GotchaSync(object):
         h = {"Content-Type": "application/json"}
         if headers:
             h.update(headers)
-        r = urequests.post(url, data=data, headers=h, timeout=timeout)
+        _orig = self._patch_tls_no_verify() if url[:5] == "https" else None
         try:
-            sc = r.status_code
+            r = urequests.post(url, data=data, headers=h, timeout=timeout)
             try:
-                obj = r.json()
-            except Exception:
-                obj = None
+                sc = r.status_code
+                try:
+                    obj = r.json()
+                except Exception:
+                    obj = None
+            finally:
+                r.close()
         finally:
-            r.close()
+            if _orig is not None:
+                import ssl
+                ssl.wrap_socket = _orig
         return sc, obj
 
     async def _yield(self):
