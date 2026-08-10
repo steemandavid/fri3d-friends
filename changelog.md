@@ -615,7 +615,8 @@ link-drop DODGE sub-case not yet demoed live** (victim was killed → 30-min res
   in ONE chained `mpremote` invocation. Repeated USBDEVFS resets can knock a badge **off the USB
   bus** (needs a physical replug — hit 9de4 + bac8).
 - **Server/admin (from john-ai):** SSH `192.168.1.57`, sudo; admin pw in `/etc/gotcha/gotcha.env`
-  (`mWCtbOZoo9W5VEl`); DB `/var/lib/gotcha/gotcha.sqlite3` (no sqlite3 CLI — use `sudo python3`);
+  (**never write it here — this repo is public**; read it with
+  `sudo grep GOTCHA_ADMIN_PASSWORD /etc/gotcha/gotcha.env`); DB `/var/lib/gotcha/gotcha.sqlite3` (no sqlite3 CLI — use `sudo python3`);
   admin login `POST /admin/login host=&password=` → cookie; `POST /v1/admin/player/{pid}`
   (reassign/protect/…), `POST /v1/admin/truce_schedule`. `sync` does NOT bump last_seen/app_version
   (only heartbeats do) — don't infer "offline" from a stale version.
