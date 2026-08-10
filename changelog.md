@@ -172,6 +172,39 @@ All three badges finished on **0.11.25, verified by loaded symbol**, left at the
 (the boot service still runs the victim responder + heartbeat, §5.6/D3) — the CDC stays
 healthy for further deploys that way.
 
+## 6c. §8.10.3 hunting gate + UPDATE NODIG validated on hardware — and A4 dropped
+**A4 (five power scenarios) is DROPPED**: no inline USB power meter available and none
+obtainable before camp. This *removes* a Phase 6 sign-off criterion rather than satisfying
+it — §8.7 stays datasheet arithmetic and must not be quoted as measured, and the lever-4
+battery-ladder thresholds are unvalidated. Meter-free substitutes worth doing instead:
+battery % already rides every §9.3 heartbeat, so the admin histogram yields a fleet-wide
+empirical drain curve across a real camp day; plus one badge run flat on battery against
+wall-clock. Neither validates per-lever attribution.
+
+**The gate itself is now hardware-proven.** Set `min_version=0.99.0` above the fleet, and
+on bac8 (app in foreground): the floor reached the badge (`gotcha.json` app block
+`{"min_version": "0.99.0", ...}`) and the banner rendered the **correct variant** —
+`UPDATE NODIG -- alles opgeslagen, update in de AppStore`, i.e. the queue-empty wording,
+not the "even synchroniseren" one. `below_min` is only reachable via that string, so the
+gate flag is confirmed set on-device; the block itself (`request_attack`/`request_reveal`
+refused, `apply_*` untouched) stays host-tested.
+
+⚠️ **Widget-walk caveat:** `label.get_text()` returns the last text even when the banner is
+hidden, so "the string is present" does NOT mean "it is on screen". Check the **parent's**
+HIDDEN flag — after the floor was lifted the label still read UPDATE NODIG with
+`label_visible=True parent_visible=False`, i.e. nothing displayed.
+
+## 6d. 🐛 A version floor could be set but never lifted (found by doing 6c)
+Restoring after the test revealed there was no way back: `/v1/admin/appversion` did
+`str(v)[:16] if v else None` then `COALESCE(?, min_version)`, so an empty string became
+`None` and COALESCE read it as "keep". Only a DB edit could clear a floor.
+
+In an endpoint that is a camp-wide kill switch this is serious: since §8.10.3 a badge below
+`min_version` stops hunting, so a mistyped floor takes the whole camp out of the game with
+no route back through the UI, mid-event. Now an **absent** key leaves the value alone and a
+**present but empty** key clears it to NULL; partial updates still work. Deployed to
+`/opt/gotcha`; the live game's floor is cleared.
+
 ## 7. Follow-ups
 - **Not validated on hardware:** the `below_min` hunting gate and the UPDATE NODIG banner.
   Both are fully host-tested; a live test means setting `min_version` above the fleet, which
