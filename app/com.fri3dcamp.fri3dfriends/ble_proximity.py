@@ -156,6 +156,73 @@ def parse_game_block(b):
             "gflags": b[3], "streak": b[4]}
 
 
+# Latin-1 / Latin Extended-A -> ASCII, for §8.9 (D26). Only the letters that
+# actually turn up in Dutch, French and German names; anything else non-ASCII is
+# dropped rather than guessed at.
+_FOLD = {
+    0xE0: "a", 0xE1: "a", 0xE2: "a", 0xE3: "a", 0xE4: "a", 0xE5: "a", 0xE6: "ae",
+    0xE7: "c", 0xE8: "e", 0xE9: "e", 0xEA: "e", 0xEB: "e",
+    0xEC: "i", 0xED: "i", 0xEE: "i", 0xEF: "i",
+    0xF1: "n", 0xF2: "o", 0xF3: "o", 0xF4: "o", 0xF5: "o", 0xF6: "o", 0xF8: "o",
+    0xF9: "u", 0xFA: "u", 0xFB: "u", 0xFC: "u", 0xFD: "y", 0xFF: "y", 0xDF: "ss",
+    0xC0: "A", 0xC1: "A", 0xC2: "A", 0xC3: "A", 0xC4: "A", 0xC5: "A", 0xC6: "AE",
+    0xC7: "C", 0xC8: "E", 0xC9: "E", 0xCA: "E", 0xCB: "E",
+    0xCC: "I", 0xCD: "I", 0xCE: "I", 0xCF: "I",
+    0xD1: "N", 0xD2: "O", 0xD3: "O", 0xD4: "O", 0xD5: "O", 0xD6: "O", 0xD8: "O",
+    0xD9: "U", 0xDA: "U", 0xDB: "U", 0xDC: "U", 0xDD: "Y",
+    0x152: "OE", 0x153: "oe", 0x160: "S", 0x161: "s", 0x178: "Y",
+    0x17D: "Z", 0x17E: "z",
+}
+
+
+def fold_ascii(s):
+    """Fold a display string down to printable ASCII (§8.9, D26).
+
+    This build cannot render anything else, and the failure is ugly rather than
+    graceful: MicroPython here is byte-oriented (a source "ë" is ONE 0xEB byte,
+    not two), and lvgl 9.4.0 is in ASCII text-encoding mode -- it renders one
+    glyph box PER BYTE and never decodes UTF-8. Measured on-badge 2026-08-10:
+    a 2-byte UTF-8 "e-acute" is exactly two fallback boxes wide, a 4-byte emoji
+    exactly four. So a phone sending {"name": "Renee"} with an acute renders as
+    `Ren` + two boxes + `e` on the badge AND on every peer's nearby-list.
+
+    Accepts either encoding, because both reach us: a phone posts UTF-8 over
+    BLE, while a byte-oriented literal or an older payload can carry bare
+    Latin-1. Transliterates rather than strips, so "Renee" keeps its shape
+    instead of becoming "Ren?e"; anything with no sensible ASCII form is
+    dropped. Idempotent, and a no-op on input that is already ASCII."""
+    if not isinstance(s, str) or not s:
+        return s if isinstance(s, str) else ""
+    try:
+        b = s.encode("utf-8") if max(ord(c) for c in s) > 0xFF else bytes(
+            ord(c) for c in s)
+    except Exception:
+        return "".join(c for c in s if 32 <= ord(c) < 127)
+    out = []
+    i = 0
+    n = len(b)
+    while i < n:
+        c = b[i]
+        if c < 0x80:
+            out.append(chr(c) if c >= 32 else " ")
+            i += 1
+            continue
+        cp = None
+        # Valid UTF-8 2- and 3-byte sequences (what a phone sends).
+        if 0xC2 <= c <= 0xDF and i + 1 < n and 0x80 <= b[i + 1] < 0xC0:
+            cp = ((c & 0x1F) << 6) | (b[i + 1] & 0x3F)
+            i += 2
+        elif 0xE0 <= c <= 0xEF and i + 2 < n and 0x80 <= b[i + 1] < 0xC0 \
+                and 0x80 <= b[i + 2] < 0xC0:
+            cp = ((c & 0x0F) << 12) | ((b[i + 1] & 0x3F) << 6) | (b[i + 2] & 0x3F)
+            i += 3
+        else:
+            cp = c                      # a bare high byte -> read it as Latin-1
+            i += 1
+        out.append(_FOLD.get(cp, ""))
+    return "".join(out).strip()
+
+
 def truncate_utf8(s, max_bytes):
     """Truncate string `s` so its UTF-8 encoding fits in `max_bytes`, cutting
     only on a character (codepoint) boundary — never mid-codepoint."""
@@ -185,7 +252,13 @@ def build_payload(group_ids, name, game=None, connectable=False):
     gids = sorted(set(int(g) & 0xFFFF for g in group_ids))[:MAX_GROUPS]
     has_game = isinstance(game, dict) and game.get("pid") is not None
     nb = name_budget(len(gids), game=has_game, connectable=connectable)
-    disp = truncate_utf8(name or "", nb)
+    # Fold to ASCII before budgeting (§8.9/D26): this build's lvgl draws one
+    # glyph box PER BYTE and never decodes UTF-8, so an accented name reaches
+    # every peer's nearby-list as mojibake. Folding here fixes it fleet-wide
+    # from one place, and it happens BEFORE truncate_utf8 so the byte budget is
+    # spent on letters rather than on multi-byte sequences that cannot render.
+    # The stored config keeps the real spelling (see ble_setup.sanitize_config).
+    disp = truncate_utf8(fold_ascii(name or ""), nb)
     name_b = disp.encode("utf-8")
 
     body = (

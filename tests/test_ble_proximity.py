@@ -551,6 +551,26 @@ def test_current_peers_and_has_peers_exclude_game_admitted(monkeypatch):
     assert b.peer_count() == 2       # _nearby is independent of the peer table
 
 
+def test_build_payload_folds_the_name_to_ascii():
+    """§8.9/D26. Measured on-badge 2026-08-10: lvgl 9.4.0 here renders one glyph
+    box PER BYTE and never decodes UTF-8, so an accented name reaches every
+    peer's nearby-list as mojibake. Folding in build_payload fixes it fleet-wide
+    from one place -- and, because it runs BEFORE truncate_utf8, the scarce
+    31-byte advert budget is spent on letters instead of on multi-byte sequences
+    that cannot render anyway."""
+    ids, _ = hash_groups(["G"])
+    adv = build_payload(ids, "Ren\u00e9e")
+    info = parse_payload(adv)
+    assert info["name"] == "Renee"
+
+    # The fold buys budget: the UTF-8 form is 6 bytes, the folded one 5.
+    long_ids, _ = hash_groups(["G1", "G2", "G3", "G4", "G5"])
+    nb = name_budget(len(long_ids))
+    folded = parse_payload(build_payload(long_ids, "Fran\u00e7ois-Xavier"))["name"]
+    assert len(folded.encode("utf-8")) <= nb
+    assert folded.startswith("Francois")        # not "Fran" + a truncated blob
+
+
 def test_peer_count_sees_a_crowd_of_strangers(monkeypatch):
     """§9.3 peers_seen must count badges that share NO group and are not the
     target -- the whole point is "am I standing in a crowd".

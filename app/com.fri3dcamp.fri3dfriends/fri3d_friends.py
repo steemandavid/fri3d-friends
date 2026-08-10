@@ -37,7 +37,7 @@ from mpos import Activity, TaskManager, BatteryManager, lights
 import mpos
 
 from ble_proximity import (
-    BLEProximity, build_own_table, hash_groups, fnv1a_16,
+    BLEProximity, build_own_table, hash_groups, fnv1a_16, fold_ascii,
     parse_groups_field, new_groups_from, merge_groups,
     EVICT_MS, RSSI_FLOOR_DEFAULT, MAX_GROUPS,
 )
@@ -1960,7 +1960,11 @@ class Fri3dFriends(Activity):
         # Name: bundled 42px TrueType font (1.5× the built-in max), single line,
         # scrolls when too long. Fixed font, not transform-scaled (scaling a
         # scrolling label re-renders every frame and starves the CPU).
-        self._name_lbl = self._label(scr, (W - NAME_W) // 2, NAME_TOP, cfg["name"],
+        # fold_ascii at the render boundary (§8.9/D26): the stored name keeps
+        # its accents, but lvgl here draws one box per byte, so the SCREEN gets
+        # the folded form. Same treatment on the reload path below.
+        self._name_lbl = self._label(scr, (W - NAME_W) // 2, NAME_TOP,
+                                     fold_ascii(cfg["name"]),
                                      COL_NAME, font=self._name_font, center=True, w=NAME_W)
         try:
             self._name_lbl.set_long_mode(lv.label.LONG_MODE.SCROLL_CIRCULAR)
@@ -3249,7 +3253,7 @@ class Fri3dFriends(Activity):
             pass
         if self._name_lbl is not None:
             try:
-                self._name_lbl.set_text(self._config.get("name", ""))
+                self._name_lbl.set_text(fold_ascii(self._config.get("name", "")))
             except Exception:
                 pass
         self._refresh_pills()

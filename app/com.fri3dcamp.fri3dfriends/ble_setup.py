@@ -29,6 +29,8 @@ except ImportError:                      # host/dev
 
 import os
 
+from ble_proximity import fold_ascii   # §8.9 display folding lives with the wire format
+
 # ---------------------------------------------------------------------------
 # Constants — protocol
 # ---------------------------------------------------------------------------
@@ -157,7 +159,12 @@ def sanitize_config(new, base):
     if not isinstance(new, dict):
         return cfg
 
-    # name
+    # name -- stored VERBATIM, accents and all. fold_ascii() exists for the
+    # render boundary, not for storage: config.json and contacts.json are the
+    # player's own data (and contacts.json is irreplaceable, §8.10.4), so
+    # "Renee"-ing someone's name on the way in would be destroying data to fix a
+    # display problem. The folding happens where the text meets the screen and
+    # the beacon instead.
     if "name" in new:
         name = new.get("name")
         cfg["name"] = (name if isinstance(name, str) else "").strip()

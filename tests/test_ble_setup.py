@@ -12,10 +12,58 @@ import json
 
 import ble_setup as bs
 from ble_setup import (
-    sanitize_config, ChunkAssembler, contacts_response, AuthState,
+    sanitize_config, fold_ascii, ChunkAssembler, contacts_response, AuthState,
     badge_id, setup_name, build_info, build_setup_adv,
     CONTACTS_HEADER_OFFSET, CONTACTS_PAGE, MAX_CFG_BYTES,
 )
+
+
+# --------------------------------------------------------------- fold_ascii
+
+def test_fold_ascii_transliterates_dutch_and_french_names():
+    """§8.9/D26. Measured on-badge 2026-08-10: this build's lvgl (9.4.0) renders
+    one glyph box PER BYTE and never decodes UTF-8 -- a 2-byte UTF-8 e-acute is
+    exactly two fallback boxes wide, a 4-byte emoji exactly four. So an accented
+    name must be folded, not passed through, or it is mojibake on the badge AND
+    on every peer's nearby-list."""
+    assert fold_ascii("Ren\u00e9e") == "Renee"
+    assert fold_ascii("Zo\u00eb") == "Zoe"
+    assert fold_ascii("Fran\u00e7ois") == "Francois"
+    assert fold_ascii("M\u00fcller") == "Muller"
+    assert fold_ascii("Stra\u00dfe") == "Strasse"          # expands to two chars
+    assert fold_ascii("Ma\u00eblle") == "Maelle"
+
+
+def test_fold_ascii_accepts_bare_latin1_as_well_as_utf8():
+    # Both encodings reach us: a phone posts UTF-8 over BLE, but this build is
+    # byte-oriented so a literal accent can arrive as one bare high byte.
+    assert fold_ascii("Ren" + chr(0xE9) + "e") == "Renee"
+    assert fold_ascii(chr(0xFC)) == "u"
+
+
+def test_fold_ascii_drops_what_it_cannot_transliterate():
+    assert fold_ascii("\u65e5\u672c") == ""               # CJK -> nothing
+    assert fold_ascii("ok\u65e5") == "ok"
+    assert fold_ascii("\U0001F600") == ""                  # emoji -> nothing
+
+
+def test_fold_ascii_is_a_noop_on_ascii_and_is_idempotent():
+    assert fold_ascii("David") == "David"
+    assert fold_ascii("") == ""
+    assert fold_ascii(None) == ""
+    once = fold_ascii("Ren\u00e9e")
+    assert fold_ascii(once) == once
+
+
+def test_sanitize_config_stores_names_verbatim_not_folded():
+    """Folding belongs at the render boundary, NOT at storage. config.json and
+    contacts.json are the player's own data -- and contacts.json is
+    irreplaceable (§8.10.4) -- so an accented name must round-trip intact even
+    though this build cannot draw it. See test_sanitize_config_utf8_names_preserved."""
+    cfg = sanitize_config({"name": "Ren\u00e9e", "groups": ["Caf\u00e9"]}, {})
+    assert cfg["name"] == "Ren\u00e9e"
+    assert cfg["groups"] == ["Caf\u00e9"]
+    assert fold_ascii(cfg["name"]) == "Renee"       # ...folded only for display
 
 
 # --------------------------------------------------------------- sanitize_config
