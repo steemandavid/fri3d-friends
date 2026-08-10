@@ -259,6 +259,34 @@ def test_appversion_absent_key_leaves_the_other_alone(server, badges):
     assert b.sync()["app"] == {"min_version": "0.11.0", "latest_version": "0.12.0"}
 
 
+def test_heartbeat_groups_absent_keeps_present_replaces(server, badges):
+    """The badge/server contract for `groups` (prior review D-47).
+
+    ABSENT means "no information" -> keep what is stored. PRESENT means "this is
+    my roster, verbatim" -> replace, including with the empty list. D-47 read the
+    empty case as a hazard, but the badge owns its own config and the request is
+    HMAC-signed, so a player can only ever rewrite their own groups -- and
+    suppressing it would mean a badge set up via "Overslaan", or a player who
+    left every group, could never sync that state at all."""
+    b = badges(1)
+    b.groups = ["Alpha", "Beta"]
+    b.heartbeat(); b.flush()
+    rows = server.db.all("SELECT name FROM player_groups WHERE pid=?", (b.pid,))
+    assert sorted(r["name"] for r in rows) == ["alpha", "beta"]   # clean_groups lowercases
+
+    # A heartbeat with no `groups` key at all leaves them alone.
+    b.queue.append({"uuid": "hb-no-groups", "type": "heartbeat", "at": b.now(),
+                    "ticks": 0, "alive": True})
+    b.flush()
+    rows = server.db.all("SELECT name FROM player_groups WHERE pid=?", (b.pid,))
+    assert sorted(r["name"] for r in rows) == ["alpha", "beta"]
+
+    # An explicit empty list clears them.
+    b.groups = []
+    b.heartbeat(); b.flush()
+    assert server.db.all("SELECT name FROM player_groups WHERE pid=?", (b.pid,)) == []
+
+
 def test_broadcast_is_capped_at_120_chars(server, badges):
     b = badges(1)
     server.admin_post("/v1/admin/broadcast", {"text": "x" * 500})

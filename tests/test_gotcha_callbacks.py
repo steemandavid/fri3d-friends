@@ -322,6 +322,27 @@ def test_heartbeat_carries_the_personal_quiet_window():
     assert _hb_of(gc)["quiet"] == {"from": "20:00", "to": "08:00"}
 
 
+def test_configure_clamps_a_hand_edited_quiet_window():
+    """Prior review D-50: clamp_quiet ran only on the BLE-setup path, so a
+    hand-edited config.json reached truce_active raw. An unclamped
+    {"from":"12:00","to":"13:00"} is a midday self-halt -- truce_active reports a
+    truce all afternoon, so the player can neither be attacked nor attack."""
+    gc = _enrolled_controller()
+    gc.configure({"quiet": {"from": "12:00", "to": "13:00"}}, "Otter", ["G"])
+    q = gc.quiet
+    # Snapped into the legal night band (QUIET_EARLIEST..QUIET_LATEST), or
+    # rejected outright -- either way, never left as a midday window.
+    assert q is None or (q["from"], q["to"]) != ("12:00", "13:00")
+    if q is not None:
+        assert q["from"] >= "20:00" or q["from"] <= "10:00"
+
+
+def test_configure_keeps_a_legal_quiet_window():
+    gc = _enrolled_controller()
+    gc.configure({"quiet": {"from": "20:00", "to": "08:00"}}, "Otter", ["G"])
+    assert gc.quiet == {"from": "20:00", "to": "08:00"}
+
+
 def test_heartbeat_omits_quiet_when_none_is_set():
     gc = _enrolled_controller()
     gc.configure({}, "Otter", ["G"])

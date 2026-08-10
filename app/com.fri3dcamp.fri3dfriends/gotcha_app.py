@@ -210,7 +210,13 @@ class GotchaController(object):
         # explicit `card` override, then `enroll` (https by contract), then `api`.
         self.card_base = (g.get("card") or g.get("enroll")
                           or g.get("api") or "").strip()
-        q = g.get("quiet")
+        # §10.4a: clamp on the way in. sanitize_gotcha (the BLE-setup path) already
+        # does this, but a hand-edited config.json -- or one written before that
+        # existed -- reaches us raw, and an unclamped {"from":"12:00","to":"13:00"}
+        # is a midday self-halt: truce_active() would report a truce all afternoon,
+        # so the player can neither be attacked nor attack. Clamping here covers
+        # every path into the controller, not just the phone.
+        q = gotcha.clamp_quiet(g.get("quiet"), self.cfg)
         self._quiet_cfg = q if isinstance(q, dict) else None
         self.quiet = self._quiet_cfg
         self.name = name or ""
@@ -406,7 +412,12 @@ class GotchaController(object):
                 # server's value only when this badge has none configured.
                 srv_q = (payload.get("me") or {}).get("quiet")
                 if self._quiet_cfg is None and isinstance(srv_q, dict):
-                    self.quiet = srv_q
+                    self.quiet = gotcha.clamp_quiet(srv_q, self.cfg)
+                elif self._quiet_cfg is not None:
+                    # Re-clamp against the freshly-synced band: the host can move
+                    # QUIET_EARLIEST/LATEST at any time (§5.4), which can leave a
+                    # previously-legal personal window outside it.
+                    self.quiet = gotcha.clamp_quiet(self._quiet_cfg, self.cfg)
                 self._push_game_context()
                 # §8.10.3: capture the host broadcast + derive the version nudge.
                 # Both are surfaced to the renderer via take_fleet_banner().

@@ -1269,13 +1269,18 @@ def heartbeat_event(battery=None, peers_seen=None, target_seen_ago_s=None,
         e["peers_seen"] = int(peers_seen)
     if target_seen_ago_s is not None:
         e["target_seen_ago_s"] = int(target_seen_ago_s)
-    # An empty list is a valid list, and the server's set_groups is
-    # DELETE-then-insert -- so sending [] wipes the player's groups. That is the
-    # right answer only when the player really has none, and the wrong one when a
-    # partial config load left us with an empty list. Omit it and let the server
-    # keep what it has; a genuine "I left all my groups" is rare enough to ride
-    # the next enroll/setup path rather than every heartbeat.
-    if isinstance(groups, list) and groups:
+    # ABSENT means "no information"; PRESENT means "this is my roster, verbatim"
+    # -- including the empty list. The badge owns its own config (the same call
+    # made for `quiet` above), requests are HMAC-signed so a player can only ever
+    # rewrite their own groups, and the server's set_groups is DELETE-then-insert,
+    # which is exactly right under that contract.
+    #
+    # Prior review D-47 read the empty case as a hazard ("a heartbeat carrying
+    # groups: [] wipes the player's groups"). It is not, given the above -- and
+    # suppressing it costs real behaviour: a badge set up via "Overslaan" or a
+    # player who leaves every group could otherwise never sync that state at all.
+    # Callers that genuinely do not know pass groups=None.
+    if isinstance(groups, list):
         e["groups"] = list(groups)
     if isinstance(quiet, dict) and quiet.get("from") and quiet.get("to"):
         # §10.4a: the badge owns the personal quiet window (it lives in

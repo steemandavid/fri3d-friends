@@ -804,10 +804,13 @@ def test_heartbeat_event_shape_and_droppable():
     # A half-filled or non-dict quiet is not a window; omit rather than send junk.
     assert "quiet" not in gotcha.heartbeat_event(quiet={"from": "20:00"})
     assert "quiet" not in gotcha.heartbeat_event(quiet="20:00-08:00")
-    # An EMPTY groups list is omitted, not sent: the server's set_groups is
-    # DELETE-then-insert, so `groups: []` from a badge whose config load half
-    # failed would wipe the player's groups every SYNC_S.
-    assert "groups" not in gotcha.heartbeat_event(groups=[])
+    # groups: ABSENT means "no information", PRESENT means "verbatim, including
+    # empty". The badge owns its roster and the request is signed, so an empty
+    # list legitimately clears it server-side -- that is how a badge set up via
+    # "Overslaan", or a player who left every group, syncs that state at all.
+    assert "groups" not in gotcha.heartbeat_event()              # None -> absent
+    assert "groups" not in gotcha.heartbeat_event(groups=None)
+    assert gotcha.heartbeat_event(groups=[])["groups"] == []     # empty -> sent
     assert gotcha.heartbeat_event(groups=["G"])["groups"] == ["G"]
 
 
