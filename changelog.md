@@ -205,6 +205,32 @@ no route back through the UI, mid-event. Now an **absent** key leaves the value 
 **present but empty** key clears it to NULL; partial updates still work. Deployed to
 `/opt/gotcha`; the live game's floor is cleared.
 
+## 6e. Prior-review D-47 and D-50 closed (0.11.26)
+**D-50 (badge)** — `clamp_quiet` ran only on the BLE-setup path, so a hand-edited
+`config.json` reached `truce_active` raw. An unclamped `{"from":"12:00","to":"13:00"}` is a
+midday self-halt: the player can neither be attacked nor attack, all afternoon. Now
+`configure()` clamps every path in, and `_do_sync` **re-clamps** against the freshly-synced
+band, because the host can move `QUIET_EARLIEST`/`LATEST` at any time (§5.4) and strand a
+previously-legal window. Verified on all three badges: a 12:00–13:00 window clamps to
+`None` → falls back to the camp truce.
+
+**D-47 (contract, not a guard)** — "a heartbeat carrying `groups: []` wipes the player's
+groups". Resolved by making the contract explicit rather than suppressing the empty case:
+**ABSENT** = "no information, keep what you have"; **PRESENT** = "this is my roster,
+verbatim", including `[]`. The badge owns its config (the same call already made for
+`quiet`) and requests are HMAC-signed, so a player can only rewrite their own groups.
+
+⚠️ **This reverses the 0.11.24 change that omitted empty lists.** That fix targeted a
+speculative "partial config load" I could not actually reach — `groups` is `[]` only when
+the player genuinely has none — and it cost real behaviour: a badge set up via *Overslaan*,
+or a player who leaves every group, could never sync that state at all. It is now symmetric
+with the absent-vs-empty rule established for `/v1/admin/appversion` in 6d.
+
+**Deploy note:** resetting the three badges *one at a time, verifying each*, avoided a
+repeat of 6b's enumeration fault — all three ports survived. Verification is by **behaviour
+probe** (empty-groups sent, `None` still absent, midday window clamped), never the version
+string, which lies.
+
 ## 7. Follow-ups
 - **Not validated on hardware:** the `below_min` hunting gate and the UPDATE NODIG banner.
   Both are fully host-tested; a live test means setting `min_version` above the fleet, which
