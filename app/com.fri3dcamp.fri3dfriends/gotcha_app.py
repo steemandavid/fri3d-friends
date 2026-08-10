@@ -481,12 +481,20 @@ class GotchaController(object):
         if peer is not None and peer.get("last_seen_ms") is not None:
             target_ago = max(0, time.ticks_diff(
                 time.ticks_ms(), int(peer["last_seen_ms"])) // 1000)
+        # quiet: upload ONLY a window this badge actually has configured
+        # (_quiet_cfg), never self.quiet. self.quiet may hold the server's echoed
+        # DEFAULT for a player who set nothing, and sending that back would store
+        # it as an explicit personal window -- a phantom the player never chose,
+        # pinned to whatever the truce was at first sync and no longer tracking
+        # it. That is not cosmetic: §2.2 says only the CAMP truce pauses streak
+        # decay, so a phantom personal window silently bleeds crown overnight for
+        # everyone who never touched the setting.
         s = self.state.d.get("state") or {}
         q.add(gotcha.heartbeat_event(
             battery=self._hb_battery, peers_seen=self._hb_peers,
             target_seen_ago_s=target_ago, groups=self.groups,
             background=self._hb_background, app_version=_app_version(),
-            alive=bool(s.get("alive", True)), quiet=self.quiet))
+            alive=bool(s.get("alive", True)), quiet=self._quiet_cfg))
 
     def _compute_nudge(self, app):
         # §8.10.3 update nudge, from the sync response's `app` block (or the copy

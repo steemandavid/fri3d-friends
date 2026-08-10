@@ -376,6 +376,27 @@ def test_sync_adopts_the_server_quiet_window_when_none_is_configured():
     assert gc.quiet == {"from": "22:00", "to": "08:00"}
 
 
+def test_heartbeat_never_uploads_the_servers_echoed_quiet_default():
+    """Regression: a badge with NO personal window must not send one back.
+
+    _do_sync adopts the server's `me.quiet` into self.quiet so truce_active has
+    something to evaluate, but that value is the server's DEFAULT (the camp
+    truce) for a player who set nothing. Uploading it stored a phantom personal
+    window the player never chose -- and since §2.2 pauses streak decay only for
+    the CAMP truce, that phantom silently bleeds crown overnight."""
+    import asyncio
+    gc = _enrolled_controller()
+    gc.configure({}, "Otter", ["G"])                 # no local quiet
+    assert gc._quiet_cfg is None
+
+    async def sync(base):
+        return {"me": {"quiet": {"from": "22:00", "to": "08:00"}}}
+    gc.sync.sync = sync
+    asyncio.run(gc._do_sync())
+    assert gc.quiet == {"from": "22:00", "to": "08:00"}   # adopted for local use
+    assert "quiet" not in _hb_of(gc)                      # ...but NOT uploaded
+
+
 def test_heartbeat_reports_death_honestly():
     gc = _enrolled_controller()
     gc.state.d["state"] = {"alive": False}
