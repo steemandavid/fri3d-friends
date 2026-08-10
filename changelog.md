@@ -1,3 +1,157 @@
+# !Fri3d Friends — Code review of §8.10 + remediation of every finding — 2026-08-10 (session 2)
+
+Ran `/codereviewer` over the §8.10 phase (commits `cef6ed1` / `5983702` / `7694f9f`, versions
+0.11.19–0.11.21), then fixed everything it found. **0.11.21 → 0.11.22.** Host suite **401 → 416
+pass**. Nothing deployed to a badge this session — the fixes are code + tests + docs only.
+
+Review document: `Code_Review_Phase8.10_20260810_0514.md` (verdict: PASS WITH NOTES).
+
+## 1. Session setup — this host has no pytest
+Same minimal-host problem as 2026-08-09 (no pip, no pytest). Bootstrapped from PyPI wheels:
+
+```bash
+cd /tmp && for p in pytest iniconfig pluggy packaging; do
+  u=$(curl -s https://pypi.org/pypi/$p/json | python3 -c "import sys,json;d=json.load(sys.stdin);print([f['url'] for f in d['urls'] if f['filename'].endswith('py3-none-any.whl')][0])")
+  curl -sLO "$u"; done
+mkdir -p /tmp/pylibs && python3 -c "import zipfile,glob;[zipfile.ZipFile(f).extractall('/tmp/pylibs') for f in glob.glob('/tmp/*.whl')]"
+PYTHONPATH=/tmp/pylibs python3 -m pytest tests/ -q
+```
+
+`python3 -m venv` / `ensurepip` do **not** work here (Debian strips the bundled wheels —
+"Install the python3-pip package to use pip itself"). Unpacking pure-python wheels onto
+`PYTHONPATH` is the working route. `fastapi`/`starlette` *are* installed system-wide, so the
+server tests run too.
+
+Syncthing was **stopped** (`systemctl --user stop syncthing`) for the duration of the edits and
+restarted afterwards — per the standing folder-churn caveat.
+
+## 2. What the review found (3 real defects, all in code shipped 0.11.19–0.11.21)
+
+### F-1 · CRITICAL · `target_seen_ago_s` mixed clock domains
+`gotcha_app._queue_heartbeat` computed `int(time.time())*1000 - peer["last_seen_ms"]`, but
+`last_seen_ms` is a **`ticks_ms()`** reading (monotonic uptime, wraps at 2³⁰), not wall clock.
+Result ≈ 8.4×10⁸ s → server clamps to `MAX_EVENT_AGE_S` (48 h) → `note_seen` only moves forward
+→ **the write is a no-op**. So the single best evidence that a target is awake was silently
+discarded on *every* heartbeat, precisely when the target *was* in range. §10.1 stall detection
+and the §3.2 dormancy splice lost their primary input.
+
+Why nothing caught it: `BadgeSim.heartbeat` passes `target_seen_ago_s` in directly, so the
+server-side tests exercised the field with correct values; no test covered the badge-side
+computation. Bench validation ran with no target in range.
+
+**Fix:** `max(0, time.ticks_diff(time.ticks_ms(), int(peer["last_seen_ms"])) // 1000)` + 3 tests.
+
+### F-2 · MAJOR · `peers_seen` counted friends only
+Both callers used `ble.current_peers()`, which deliberately filters `shared_id is None` — it is
+the *friends UI* accessor. A badge in a crowd of fifty strangers reported `peers_seen = 0`.
+Two server behaviours read it with the opposite meaning:
+- `events.py` `if peers: note_seen(pid, ts)` — the "standing in a populated place" sighting bump
+  (compounds F-1: both sighting channels failed together).
+- `admin.py` §9.5 lonely-kill report selects `COALESCE(p.peers_seen, 99) <= 1` — with friends-only
+  counting most badges report 0–1, so most *legitimate* kills land on the suspicion list.
+
+Bench had recorded `peers_seen NULL→0` on a badge with no peers at all — the one state where the
+bug is invisible.
+
+**Fix:** new `BLEProximity.peer_count()` → `len(self._seen)`; both callers use it.
+
+### F-3 · MAJOR · §10.4a personal quiet hours were inert end-to-end
+`_h_heartbeat` reads `ev["quiet"]` and **no badge code ever sent it**. Worse, the flow was
+inverted: the server always emits `me.quiet` defaulting to the camp truce, and
+`_do_sync` did `self.quiet = (payload.get("me") or {}).get("quiet") or self.quiet` — so a
+personal window set in `config.json` (phone page or on-badge editor) was **replaced by the camp
+truce on the first sync**. A parent setting 20:00 on a child's badge got 22:00 back within
+`SYNC_S`, and the badge sirens at 20:45 in a family tent — the exact outcome §10.4a exists to
+prevent. The server's `in_quiet` re-check and dormancy pause never saw the window either.
+
+**Fix:** heartbeat carries `quiet`; `configure()` records the configured window in `_quiet_cfg`;
+the sync read-back adopts the server value **only when the badge has none configured**.
+
+## 3. Spec deviation closed — the stay-killable hunting gate (D-2)
+§8.10.3 requires a badge below `min_app_version` to stop **hunting** while its **victim-side
+responder keeps running** (if falling behind removed you from the game, not updating would be
+perfect invulnerability — the D3 failure mode). 0.11.21 deferred this, so `min_version` in the
+admin UI was a control that only printed a banner line. Now built:
+
+- `GotchaController.below_min` set by `_compute_nudge`.
+- `_hunting_blocked()` gates `request_attack` / `request_reveal` only (with a Dutch on-screen
+  reason, "UPDATE NODIG -- jagen uit").
+- `apply_attack` / `apply_reveal` **untouched** — the badge stays killable.
+- Test asserts both halves: hunting refused, inbound REVEAL still lands and still fires the
+  spotted flash.
+
+## 4. ⚠️ `version_lt` already existed — 0.11.21 duplicated it with a worse one
+The review flagged that `_compute_nudge` ordered `version_tuple()` results, which is
+length-sensitive: `(0, 11) < (0, 11, 0)` is True, so a host typing a two-segment floor `0.11`
+into the admin form would put **every 0.11.x badge below min** and show the whole camp UPDATE
+NODIG. While fixing it I found `gotcha.version_lt(a, b)` at `gotcha.py:290` — a correct,
+zero-padding, string-taking, already-tested helper from the earlier §8.10 work. 0.11.21 had not
+used it and had reintroduced the bug in a parallel code path.
+
+**Fix:** deleted the duplicate; `_compute_nudge` uses the original `version_lt` for ordering,
+and `version_tuple` is now documented + tested as a *readability guard only* ("is this a real
+version at all"), with a `Do NOT order two of these with <` warning in its docstring.
+
+## 5. Everything else from the review
+| ID | Fix |
+|---|---|
+| F-4 | `alarm_enabled` widened from "the siren" to **every game-initiated sound** — new `beacon_service._alarm_on()` gates the reveal chirp, dodge relief chirp and death tone; `fri3d_friends._render_spotted` gates its `_sting`. LEDs still never gated. The hunt radar ping is deliberately **excluded** (it has its own `PING_ENABLED`; muting it would blind the hunter rather than quiet the campsite). |
+| F-6 | `take_fleet_banner` re-arms `_shown_broadcast` when the host clears the broadcast — otherwise re-sending the same text later was silently swallowed. |
+| F-7 | `configure()` seeds `broadcast` + nudge from the persisted `state.d`, so a badge booting offline (the normal case, §8.7) is not silent until the next sync. |
+| F-8 | heartbeat `alive` reflects `state.alive` instead of a hardcoded `True`. |
+| F-9 | an **empty** `groups` list is omitted from the heartbeat — the server's `set_groups` is DELETE-then-insert, so `groups: []` from a half-failed config load would wipe the player's groups every `SYNC_S` (prior review D-47, now unreachable from this path). |
+| F-10 | comment in `heartbeat_event` documenting why it deliberately carries **no `commitment`** (the C-2 repudiation hole) so nobody "completes the shape" later. |
+| D-3 | §8.10.4 step 3 partially built: below the floor the banner reads *"even synchroniseren voor je update..."* while events are queued and *"alles opgeslagen"* once they are not; `_do_sync` retries at 60 s instead of `SYNC_S` until the queue drains. |
+| D-1 | plan §8.10.3 corrected: the field names are `app: {min_version, latest_version}`, never the `min_app_version` of earlier drafts. |
+| §7.1 | `_app_version` monkeypatch is now a `monkeypatch` fixture instead of a permanent module-global assignment (was leaking into every later test in the session). |
+| §7.2 | `_compute_nudge(app)` takes the `app` dict, not the whole payload. |
+| §7.3 | `_app_version()` caches after the first **successful** read (a `"?"` is never cached, so a transient FS failure cannot permanently disable the nudge). |
+
+## 6. 🐛 Pre-existing test bug found while fixing the above
+`tests/test_gotcha_callbacks.py::_make_controller` used a **fixed** state path
+`/tmp/__gc_cb_gotcha.json`. `GotchaState` persists and reloads it, so the victim-path tests'
+`killed_by` events accumulated **across runs** until the 40-slot queue was full of `KEEP_TYPES`
+— at which point `EventQueue.add()` correctly refuses everything else, and the new heartbeat
+tests failed for a reason with nothing to do with heartbeats. Now a fresh
+`tempfile.mkdtemp()` per controller.
+
+Real-world corollary worth remembering: **a badge holding 40 unsent kills sends no heartbeats
+until some drain.** That is the intended priority (a kid's kills outrank telemetry), not a bug.
+
+## 7. Files touched
+| File | Change |
+|---|---|
+| `gotcha.py` | removed duplicate `version_lt`; moved/rewrote `version_tuple` next to it as a readability guard; `heartbeat_event` gains `alive`/`quiet`, omits empty `groups`, documents the no-commitment rule |
+| `gotcha_app.py` | F-1 clock fix, `quiet` upload + non-clobbering read-back, `below_min` + `_hunting_blocked`, `_compute_nudge(app)` via `version_lt`, D-3 messaging + fast retry, broadcast latch re-arm, offline seed in `configure()`, `_app_version` cache |
+| `ble_proximity.py` | new `peer_count()` |
+| `beacon_service.py` | new `_alarm_on()` gating all four victim callbacks; `peer_count()` |
+| `fri3d_friends.py` | `peer_count()`; `alarm_enabled` on the reveal sting |
+| `MANIFEST.JSON` | 0.11.21 → **0.11.22** |
+| `tests/test_gotcha.py` | `version_lt` padding, heartbeat `alive`/`quiet`/empty-groups, version_tuple retitled |
+| `tests/test_gotcha_callbacks.py` | fresh temp state per controller, `monkeypatch` fixture, 10 new heartbeat-content + quiet + hunting-gate tests |
+| `tests/test_ble_proximity.py` | `peer_count()` vs `current_peers()` |
+| `Implementation_Plan_Gotcha_20260726.md` | §8.10.1 + §8.10.3 BUILD STATUS for 0.11.22; §9.3 heartbeat row gains `background` + a warning block on the two easy-to-get-wrong fields |
+
+## 8. Verification
+- Host suite **416 pass** (401 → 416; +15 net). Full run, not a subset.
+- `python3 -m py_compile` clean on all five touched app modules.
+- **Not** bench-validated — no badge was flashed this session. 0.11.22 has never run on hardware.
+
+## 9. Follow-ups
+- **Deploy 0.11.22 to 9de4 / fac0 / bac8 and bench-validate** before camp. Specifically worth
+  watching on-device: `target_seen_ago_s` landing as a small number in the DB with a target in
+  range, `peers_seen` > 0 in a room with other badges, and the `quiet` window appearing in
+  `players.quiet_from/quiet_to`.
+- Prior review **D-47** (server-side: a heartbeat with `groups: []` wipes groups) is still open;
+  the badge no longer sends that, but the server should ignore an empty list regardless.
+- Prior review **D-50** (badge-side `clamp_quiet` is only applied on the BLE-setup path) still
+  open — the server clamps on ingest, so a hand-edited `config.json` window is corrected
+  server-side but enforced unclamped badge-locally until the next sync.
+- Still deferred by design: the prominent full-screen UPDATE NODIG screen (the banner carries the
+  text today), and `training_enabled` (Phase 6, no code path).
+
+---
+
 # !Fri3d Friends — Gotcha §8.10 kill switches + the missing heartbeat/flush path + fleet nudge — 2026-08-10
 
 Continued the Phase 5 §8.10 ("hotfix / update path") work. Three commits, all host-tested

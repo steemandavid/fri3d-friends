@@ -22,15 +22,28 @@ RETRY_MS = 60000                   # back into sync soon after a failure
 FULLNAME = "com.fri3dcamp.fri3dfriends"
 
 
+_VERSION_CACHE = None
+
+
 def _app_version():
     """This app's version from its MANIFEST (D31). The fleet histogram and the
     update nudge both read app_version, so a hardcoded literal lies the moment the
-    build drifts past it -- always report the real version."""
+    build drifts past it -- always report the real version.
+
+    Cached after the first read: this is on the sync path (every heartbeat and
+    every nudge computation) and the MANIFEST cannot change under a running app --
+    an AppStore update restarts it."""
+    global _VERSION_CACHE
+    if _VERSION_CACHE is not None:
+        return _VERSION_CACHE
     import json as _json
     for base in ("/apps", "/builtin/apps"):
         try:
             with open(base + "/" + FULLNAME + "/MANIFEST.JSON") as f:
-                return _json.load(f).get("version", "?")
+                v = _json.load(f).get("version", "?")
+                if v and v != "?":
+                    _VERSION_CACHE = v       # only ever cache a real answer
+                return v
         except Exception:
             pass
     return "?"
@@ -156,6 +169,14 @@ class GotchaController(object):
         self._shown_broadcast = None
         self.nudge_text = None
         self._shown_nudge_key = None
+        # §8.10.3: True when this badge is below the server's min_app_version.
+        # Gates HUNTING only (request_attack / request_reveal) -- never the victim
+        # responder, or not updating would be perfect invulnerability (D3).
+        self.below_min = False
+        # §10.4a: the personal quiet window as CONFIGURED on this badge. self.quiet
+        # is the live/enforced one; this is the source of truth we upload and the
+        # value a sync read-back must not silently overwrite.
+        self._quiet_cfg = None
         # Reveal (plan §5.7): hunter-side connect state + target-side spotted state.
         self._svc = None                # GotchaService (responder), set via set_service
         self._revealing = False         # a reveal connect is in flight (hunter side)
@@ -183,10 +204,22 @@ class GotchaController(object):
         g = gotcha_cfg if isinstance(gotcha_cfg, dict) else {}
         self.api_url = (g.get("api") or "").strip()
         self.enroll_url = (g.get("enroll") or self.api_url).strip()
-        self.quiet = g.get("quiet")
+        q = g.get("quiet")
+        self._quiet_cfg = q if isinstance(q, dict) else None
+        self.quiet = self._quiet_cfg
         self.name = name or ""
         self.groups = list(groups or [])
         self._api_host = _host_port(self.api_url)
+        # §8.10.3: a badge that boots with WiFi down (the normal case -- §8.7 has
+        # it up ~1.7% of the time) still has last sync's broadcast + version floor
+        # in gotcha.json. Surface them now rather than staying silent until the
+        # next successful sync.
+        try:
+            b = self.state.d.get("broadcast")
+            self.broadcast = b if isinstance(b, str) and b else None
+            self.nudge_text = self._compute_nudge(self.state.d.get("app"))
+        except Exception:
+            pass
 
     def start(self):
         self._running = True
@@ -358,12 +391,22 @@ class GotchaController(object):
                 self.cfg = gotcha.GameConfig.from_sync(payload.get("config"),
                                                         payload.get("game"))
                 self._apply_prox_filter()
-                self.quiet = (payload.get("me") or {}).get("quiet") or self.quiet
+                # §10.4a: the badge owns its personal quiet window -- it lives in
+                # config.json and is set from the phone page or the on-badge
+                # editor. The server's `me.quiet` is only ever an echo of what we
+                # uploaded on the heartbeat (clamped), and it DEFAULTS to the camp
+                # truce, so taking it unconditionally would silently revert a
+                # parent's 20:00 window to 22:00 on the first sync. Accept the
+                # server's value only when this badge has none configured.
+                srv_q = (payload.get("me") or {}).get("quiet")
+                if self._quiet_cfg is None and isinstance(srv_q, dict):
+                    self.quiet = srv_q
                 self._push_game_context()
                 # §8.10.3: capture the host broadcast + derive the version nudge.
                 # Both are surfaced to the renderer via take_fleet_banner().
-                self.broadcast = payload.get("broadcast")
-                self.nudge_text = self._compute_nudge(payload)
+                b = payload.get("broadcast")
+                self.broadcast = b if isinstance(b, str) and b else None
+                self.nudge_text = self._compute_nudge(payload.get("app"))
                 secs = int(self.cfg.get("SYNC_S") or SYNC_S)
                 # ±20% jitter (§10.3) so 700 badges don't sync on the same tick.
                 try:
@@ -375,6 +418,15 @@ class GotchaController(object):
                 self._last_sync_ms = now         # D5: anchor the deferral cap
                 self._next_sync_ms = time.ticks_add(now,
                                                      int(secs * (1.0 + jit) * 1000))
+                # §8.10.4 step 3: below the version floor with events still
+                # queued, come back quickly instead of waiting a full SYNC_S --
+                # the player is being told to update and must not carry unsent
+                # kills into an AppStore install that wipes /apps.
+                try:
+                    if self.below_min and len(self.state.queue):
+                        self._next_sync_ms = time.ticks_add(now, RETRY_MS)
+                except Exception:
+                    pass
             else:
                 self._next_sync_ms = time.ticks_add(time.ticks_ms(), RETRY_MS)
         except Exception as e:
@@ -388,6 +440,10 @@ class GotchaController(object):
         # flush. Only the most recent heartbeat matters, so drop any prior unsent
         # one first (a back-to-back sync would otherwise leave two in the queue,
         # and the older is stale truth the moment the newer is queued).
+        #
+        # No state.save() here: a heartbeat is the latest truth or nothing, so
+        # losing an unflushed one to a power pull costs nothing. flush_events
+        # saves once the server has accepted the batch.
         q = self.state.queue
         hb = [e for e in q.peek_batch(200) if e.get("type") == "heartbeat"]
         for e in hb:
@@ -397,32 +453,67 @@ class GotchaController(object):
         # target_seen_ago_s: how long since the proximity layer last had the
         # target in range. None if no target / never seen (the server only uses
         # it to freshness-mark the *target*, §10.1).
+        #
+        # last_seen_ms is a ticks_ms() reading -- a monotonic uptime counter that
+        # wraps -- so it MUST be differenced with ticks_diff against ticks_ms(),
+        # never against wall-clock time.time(). Mixing the two produced ~8e8
+        # seconds, which the server clamped to MAX_EVENT_AGE_S and then dropped
+        # (note_seen only moves forward), silently killing the §10.1 sighting
+        # channel exactly when the target WAS in range.
         peer = self.ble.peer_by_pid(tp) if tp is not None else None
         if peer is not None and peer.get("last_seen_ms") is not None:
-            target_ago = max(0, int((int(time.time()) * 1000 -
-                                     int(peer["last_seen_ms"])) // 1000))
+            target_ago = max(0, time.ticks_diff(
+                time.ticks_ms(), int(peer["last_seen_ms"])) // 1000)
+        s = self.state.d.get("state") or {}
         q.add(gotcha.heartbeat_event(
             battery=self._hb_battery, peers_seen=self._hb_peers,
             target_seen_ago_s=target_ago, groups=self.groups,
-            background=self._hb_background, app_version=_app_version()))
+            background=self._hb_background, app_version=_app_version(),
+            alive=bool(s.get("alive", True)), quiet=self.quiet))
 
-    def _compute_nudge(self, payload):
-        # §8.10.3 update nudge. < min_app_version -> prominent "UPDATE NODIG";
-        # >= min but < latest -> a soft "new version available" line. >= latest or
-        # any unreadable version -> None (never nag from a version we can't parse;
-        # an absent server floor means "no constraint").
-        app = payload.get("app") if isinstance(payload, dict) else None
+    def _compute_nudge(self, app):
+        # §8.10.3 update nudge, from the sync response's `app` block (or the copy
+        # apply_sync persisted). < min_version -> prominent "UPDATE NODIG" AND the
+        # hunting gate; >= min but < latest -> a soft "new version available"
+        # line. >= latest or any unreadable version -> None (never nag from a
+        # version we can't parse; an absent server floor means "no constraint").
         app = app if isinstance(app, dict) else {}
-        me = gotcha.version_tuple(_app_version())
-        if not me:
+        me = _app_version()
+        if not gotcha.version_tuple(me):
+            self.below_min = False           # unreadable own version -> never nag
             return None
-        mn = gotcha.version_tuple(app.get("min_version"))
-        latest = gotcha.version_tuple(app.get("latest_version"))
-        if mn and me < mn:
-            return "UPDATE NODIG -- update in de AppStore"
-        if latest and me < latest:
+        mn = app.get("min_version")
+        latest = app.get("latest_version")
+        # version_lt (not tuple ordering) so a two-segment floor from the admin
+        # form ('0.11') means 0.11.0 instead of sorting before every 0.11.x. An
+        # absent/garbage constraint is no constraint.
+        self.below_min = bool(gotcha.version_tuple(mn)) and gotcha.version_lt(me, mn)
+        if self.below_min:
+            # §8.10.4 step 3: never send a player to the AppStore holding unsent
+            # kills -- the queue is the one genuinely unrecoverable loss across an
+            # update. Say which state they are in; _do_sync retries soon while the
+            # queue is non-empty.
+            try:
+                pending = len(self.state.queue)
+            except Exception:
+                pending = 0
+            if pending:
+                return "UPDATE NODIG -- even synchroniseren voor je update..."
+            return "UPDATE NODIG -- alles opgeslagen, update in de AppStore"
+        if gotcha.version_tuple(latest) and gotcha.version_lt(me, latest):
             return "Nieuwe versie beschikbaar -- update in de AppStore"
         return None
+
+    def _hunting_blocked(self):
+        """§8.10.3: a badge below min_app_version stops HUNTING -- no attack, no
+        reveal -- but its victim-side responder (apply_attack / apply_reveal) is
+        deliberately untouched, so it stays killable. If falling behind removed
+        you from the game, not updating would be perfect invulnerability, which is
+        the exact failure mode D3 exists to prevent."""
+        if not self.below_min:
+            return False
+        self._set_reveal_msg("UPDATE NODIG -- jagen uit", 2500)
+        return True
 
     def take_fleet_banner(self):
         # §8.10.3: a one-shot banner for a NEW host broadcast or version nudge.
@@ -430,7 +521,11 @@ class GotchaController(object):
         # standing announcement does not re-spam every sync. The caller shows this
         # only when no duel/arrival banner is active (it is the lowest priority).
         b = self.broadcast
-        if isinstance(b, str) and b and b != self._shown_broadcast:
+        if not (isinstance(b, str) and b):
+            # The host cleared the broadcast ("Wissen"). Re-arm, or re-sending the
+            # same text later would be silently swallowed by the latch.
+            self._shown_broadcast = None
+        elif b != self._shown_broadcast:
             self._shown_broadcast = b
             return b[:120]                       # server caps at 120; defend in depth
         if self.nudge_text and self.nudge_text != self._shown_nudge_key:
@@ -630,6 +725,8 @@ class GotchaController(object):
         the connect. Returns True if a reveal was started."""
         if self._revealing or not self.enrolled or self._exch is None:
             return False
+        if self._hunting_blocked():
+            return False
         if self._strip_action() != "reveal":
             return False
         try:
@@ -821,6 +918,8 @@ class GotchaController(object):
         the action is 'attack' and the per-victim cooldown is clear. Returns True
         if an attack was started."""
         if self._attacking or self._revealing or not self.enrolled or self._exch is None:
+            return False
+        if self._hunting_blocked():
             return False
         if self._strip_action() != "attack":
             return False

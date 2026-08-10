@@ -2188,6 +2188,13 @@ live migration across a population you cannot reach.
 > keeps the held red LED (a muted badge is still visibly under attack — bench-proven
 > on 9de4); `bounty_enabled` downgrades a stray bounty write to a plain attack.
 > `training_enabled` ships False (Phase 6; no code path yet).
+>
+> **0.11.22:** `alarm_enabled` widened from "the siren" to **every game-initiated
+> sound** — the reveal chirp, the dodge relief chirp and the death tone are now
+> gated too (a host flipping the mute at 03:00 does not want chirps either). LED
+> effects are still never gated. The hunt radar ping keeps its own `PING_ENABLED`
+> switch and is deliberately left out: muting it would blind the hunter rather
+> than quiet the campsite.
 
 Before reaching for an app update, note how much is already retunable from the admin
 page with **no badge change at all** (§5.4, §9.4): every RSSI threshold, every timer,
@@ -2238,15 +2245,39 @@ feature:
 > version-nudge are rendered** on the badge (0.11.21): `version_tuple()` compare
 > → `< min` = "UPDATE NODIG"; `≥ min, < latest` = a soft line; absent floor = no
 > nag; `take_fleet_banner()` surfaces a NEW broadcast/nudge once per change via
-> the existing banner widget. **DEFERRED:** the prominent full-screen UPDATE NODIG
-> and the stay-killable hunting gate ("< min stops hunting, victim responder keeps
-> running") — the banner+nudge, ranked higher above, is done.
+> the existing banner widget. **DEFERRED at 0.11.21:** the prominent full-screen
+> UPDATE NODIG and the stay-killable hunting gate.
+
+> **BUILD STATUS (2026-08-10, 0.11.22 — code-review remediation):** The
+> **stay-killable hunting gate is now BUILT**: `below_min` blocks `request_attack`
+> / `request_reveal` only; `apply_attack` / `apply_reveal` (the victim responder)
+> are untouched, so an out-of-date badge stops hunting and stays killable (D3).
+> The version compare now goes through the pre-existing `gotcha.version_lt()`
+> (zero-padded) instead of ordering `version_tuple()` results, so a two-segment
+> floor ('0.11') no longer puts every 0.11.x badge below min. §8.10.4 step 3 is
+> **partially built**: below the floor the banner reads *"even synchroniseren voor
+> je update..."* while events are queued and *"alles opgeslagen"* once they are
+> not, and `_do_sync` retries every 60 s instead of every `SYNC_S` until the queue
+> drains. **STILL DEFERRED:** the prominent full-screen UPDATE NODIG (the banner
+> carries the text today).
+>
+> Also fixed in 0.11.22 (all found by code review, none reached camp):
+> `target_seen_ago_s` differenced `time.time()` against a `ticks_ms()` reading and
+> was therefore clamped and discarded server-side, killing the §10.1 sighting
+> channel; `peers_seen` counted friends only (`current_peers()`) instead of every
+> badge in range — now `BLEProximity.peer_count()`; the heartbeat carries the
+> badge-owned `quiet` window (§10.4a) and a sync read-back no longer overwrites a
+> locally configured one; `alarm_enabled` mutes every game-initiated sound, not
+> just the siren; the heartbeat's `alive` reflects real liveness and an empty
+> `groups` list is omitted rather than wiping the player's groups server-side.
 
 - **Report the version.** `app_version` already rides `/v1/enroll` (§9.2); add it to
   `heartbeat` (§9.3) so it is refreshed continuously. The admin dashboard gets a
   **version histogram** (§9.4) — you cannot manage an update you cannot see.
-- **Sync response gains** `min_app_version`, `latest_app_version`, and a free-text
-  `broadcast` (§9.2).
+- **Sync response gains** the version floor/ceiling and a free-text `broadcast`
+  (§9.2). *As built, these are `app: {min_version, latest_version}` and a top-level
+  `broadcast` — client and server agree; the `min_app_version` / `latest_app_version`
+  names in earlier drafts of this section were never implemented.*
 
 | Badge version | Behaviour |
 |---|---|
@@ -2422,7 +2453,25 @@ Every event carries `uuid`, `pid`, `at` (badge clock, offset-corrected), and `ti
 | `attack_started` | `victim_pid` | Cooldown bookkeeping, abuse detection |
 | `reveal` | `target_pid`, `rssi` | Log only. Feeds the audit page (§9.5) — someone standing in a crowd flashing strangers shows up here. |
 | `revealed` | `hunter_pid` | Log only. Also a **liveness signal for §10.1**: being revealed proves you were physically near someone, so it refreshes `last_seen`. |
-| `heartbeat` | `alive`, `target_seen_ago_s`, `peers_seen`, `battery`, `groups[]`, `quiet{from,to}`, `app_version` | Liveness, stale-target detection, group snapshot, personal quiet window (§10.4a) so the server can re-check it on ingest. **Cadence: queued once per `SYNC_S`**, immediately before the sync flush, so every sync carries exactly one. |
+| `heartbeat` | `alive`, `target_seen_ago_s`, `peers_seen`, `battery`, `groups[]`, `quiet{from,to}`, `background`, `app_version` | Liveness, stale-target detection, group snapshot, personal quiet window (§10.4a) so the server can re-check it on ingest. `background` is true when the headless boot responder emitted it (app closed), so the admin dashboard can tell the two apart. **Cadence: queued once per `SYNC_S`**, immediately before the sync flush, so every sync carries exactly one. |
+
+> ⚠️ Two heartbeat fields have meanings that are easy to get wrong, and both were
+> got wrong once (fixed 0.11.22):
+> - **`peers_seen` is every badge in range, friend or not.** The server reads it as
+>   "is this player standing in a populated place" (§10.1's sighting bump) and as
+>   the §9.5 lonely-kill heuristic. Counting only group-sharing friends reports 0
+>   for a player in a crowd of strangers, which inverts the signal. Badge side that
+>   is `BLEProximity.peer_count()`, **not** `current_peers()` (friends-only, for the
+>   UI).
+> - **`target_seen_ago_s` derives from `ticks_ms()`**, the monotonic uptime counter
+>   the scanner stamps peers with — so it must be differenced with `ticks_diff`
+>   against `ticks_ms()`, never against wall-clock `time.time()`. Mixing the two
+>   yields ~8e8 s, which the server clamps to `MAX_EVENT_AGE_S` and then discards
+>   (`note_seen` only moves forward), silently killing the sighting channel.
+>
+> The heartbeat deliberately carries **no `commitment`**, even though the ingest
+> handler accepts one: that was the C-2 repudiation hole, and the fresh commitment
+> already rides `killed_by` (a KEEP_TYPE, mirrored to `/prefs`).
 | `optout` / `optin` | — | Splice out of / into the ring |
 
 ### 9.4 Admin endpoints

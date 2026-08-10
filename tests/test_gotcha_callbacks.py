@@ -53,9 +53,17 @@ class FakeBLE(object):
 
 def _make_controller(on_engaged=None, on_killed=None, on_dodged=None, on_spotted=None):
     """An enrolled, in-game controller with the truce disabled (truce_from ==
-    truce_to -> _in_window False) so the victim paths are not short-circuited."""
+    truce_to -> _in_window False) so the victim paths are not short-circuited.
+
+    A FRESH state file per controller. A fixed path is persisted to and reloaded
+    on the next construction, so the victim tests' killed_by events accumulated
+    across runs until the 40-slot queue was full of KEEP_TYPES -- at which point
+    add() correctly refuses everything else and the heartbeat tests started
+    failing for a reason that had nothing to do with the heartbeat."""
+    import tempfile
+    path = tempfile.mkdtemp(prefix="gc_cb_") + "/gotcha.json"
     gc = gotcha_app.GotchaController(
-        FakeBLE(), state_path="/tmp/__gc_cb_gotcha.json", log=lambda m: None,
+        FakeBLE(), state_path=path, log=lambda m: None,
         on_engaged=on_engaged, on_killed=on_killed,
         on_dodged=on_dodged, on_spotted=on_spotted)
     # Disable the camp truce deterministically (quiet stays None -> no personal).
@@ -253,57 +261,203 @@ def test_do_sync_flush_failure_does_not_block_sync():
 
 
 # ---------------------------------------------------------------------------
+# §9.3 heartbeat CONTENT: the signals the server's dormancy/anti-cheat logic
+# reads. Shape is covered in test_gotcha.py; these pin what _queue_heartbeat
+# actually puts in them, which is where the clock-domain bug lived.
+# ---------------------------------------------------------------------------
+
+class _PeerBLE(FakeBLE):
+    """A FakeBLE that can hold one target peer with a ticks_ms last_seen."""
+
+    def __init__(self, peer=None, count=0):
+        self._peer = peer
+        self._count = count
+
+    def peer_by_pid(self, pid):
+        return self._peer
+
+    def peer_count(self):
+        return self._count
+
+
+def _hb_of(gc):
+    hbs = [e for e in gc.state.queue.peek_batch(200)
+           if e.get("type") == "heartbeat"]
+    assert len(hbs) == 1
+    return hbs[0]
+
+
+def test_heartbeat_target_seen_ago_uses_the_ticks_clock():
+    # last_seen_ms is a ticks_ms() reading (monotonic uptime), NOT wall clock.
+    # Differencing it against time.time()*1000 produced ~8e8 seconds, which the
+    # server clamped to 48 h and then dropped, silently killing the §10.1
+    # sighting channel exactly when the target WAS in range.
+    gc = _enrolled_controller()
+    gc.ble = _PeerBLE(peer={"last_seen_ms": _stdtime.ticks_ms() - 12000})
+    gc._queue_heartbeat()
+    assert _hb_of(gc)["target_seen_ago_s"] in (11, 12, 13)
+
+
+def test_heartbeat_target_seen_ago_is_zero_when_target_is_right_here():
+    gc = _enrolled_controller()
+    gc.ble = _PeerBLE(peer={"last_seen_ms": _stdtime.ticks_ms()})
+    gc._queue_heartbeat()
+    assert _hb_of(gc)["target_seen_ago_s"] == 0
+
+
+def test_heartbeat_omits_target_seen_ago_with_no_target_in_range():
+    gc = _enrolled_controller()
+    gc.ble = _PeerBLE(peer=None)
+    gc._queue_heartbeat()
+    assert "target_seen_ago_s" not in _hb_of(gc)
+
+
+def test_heartbeat_carries_the_personal_quiet_window():
+    # §10.4a: the heartbeat is the ONLY channel that gets the badge-owned quiet
+    # window to the server, which needs it for the ingest re-check and the
+    # dormancy pause.
+    gc = _enrolled_controller()
+    gc.configure({"quiet": {"from": "20:00", "to": "08:00"}}, "Otter", ["G"])
+    gc._queue_heartbeat()
+    assert _hb_of(gc)["quiet"] == {"from": "20:00", "to": "08:00"}
+
+
+def test_heartbeat_omits_quiet_when_none_is_set():
+    gc = _enrolled_controller()
+    gc.configure({}, "Otter", ["G"])
+    gc._queue_heartbeat()
+    assert "quiet" not in _hb_of(gc)
+
+
+def test_sync_does_not_clobber_a_locally_configured_quiet_window():
+    # The server's me.quiet defaults to the camp truce, so taking it
+    # unconditionally reverted a parent's 20:00 window to 22:00 on first sync.
+    import asyncio
+    gc = _enrolled_controller()
+    gc.configure({"quiet": {"from": "20:00", "to": "08:00"}}, "Otter", ["G"])
+
+    async def sync(base):
+        return {"me": {"quiet": {"from": "22:00", "to": "08:00"}}}
+    gc.sync.sync = sync
+    asyncio.run(gc._do_sync())
+    assert gc.quiet == {"from": "20:00", "to": "08:00"}
+
+
+def test_sync_adopts_the_server_quiet_window_when_none_is_configured():
+    import asyncio
+    gc = _enrolled_controller()
+    gc.configure({}, "Otter", ["G"])
+
+    async def sync(base):
+        return {"me": {"quiet": {"from": "22:00", "to": "08:00"}}}
+    gc.sync.sync = sync
+    asyncio.run(gc._do_sync())
+    assert gc.quiet == {"from": "22:00", "to": "08:00"}
+
+
+def test_heartbeat_reports_death_honestly():
+    gc = _enrolled_controller()
+    gc.state.d["state"] = {"alive": False}
+    gc._queue_heartbeat()
+    assert _hb_of(gc)["alive"] is False
+
+
+def test_heartbeat_peers_seen_comes_from_the_raw_peer_count():
+    # peer_count() counts everyone in range; current_peers() is friends-only and
+    # would report 0 for a badge standing in a crowd of strangers.
+    gc = _enrolled_controller()
+    gc.ble = _PeerBLE(count=17)
+    gc._hb_peers = gc.ble.peer_count()      # what both tick() callers now pass
+    gc._queue_heartbeat()
+    assert _hb_of(gc)["peers_seen"] == 17
+
+
+# ---------------------------------------------------------------------------
 # §8.10.3: the fleet banner -- a NEW host broadcast or version nudge surfaced
 # once per change via take_fleet_banner() (the renderer polls it when no
 # duel/arrival banner owns the strip).
 # ---------------------------------------------------------------------------
 
-def _nudge_controller(my_version):
-    gc = _make_controller()
-    gc.state.d["enrolled"] = True
-    gc.sync = _FakeSync()
-    # _app_version() reads the on-device MANIFEST, which the host has no /apps
-    # copy of, so fix the version under test.
-    gotcha_app._app_version = lambda: my_version
-    return gc
+@pytest.fixture
+def nudge_controller(monkeypatch):
+    """Factory for a controller with _app_version() pinned.
+
+    _app_version() reads the on-device MANIFEST, which the host has no /apps copy
+    of, so it has to be faked. Via monkeypatch, NOT a bare module assignment: an
+    unrestored patch of a module global leaks into every later test in the
+    session and makes the suite order-dependent."""
+    def make(my_version):
+        gc = _make_controller()
+        gc.state.d["enrolled"] = True
+        gc.sync = _FakeSync()
+        monkeypatch.setattr(gotcha_app, "_app_version", lambda: my_version)
+        return gc
+    return make
 
 
-def test_compute_nudge_below_min_is_prominent():
-    gc = _nudge_controller("0.10.0")
-    assert gc._compute_nudge({"app": {"min_version": "0.11.0",
-                                      "latest_version": "0.11.5"}}) == \
-        "UPDATE NODIG -- update in de AppStore"
+UPDATE_CLEAN = "UPDATE NODIG -- alles opgeslagen, update in de AppStore"
+UPDATE_PENDING = "UPDATE NODIG -- even synchroniseren voor je update..."
+SOFT_NUDGE = "Nieuwe versie beschikbaar -- update in de AppStore"
 
 
-def test_compute_nudge_below_latest_is_soft():
-    gc = _nudge_controller("0.11.3")
-    assert gc._compute_nudge({"app": {"min_version": "0.11.0",
-                                      "latest_version": "0.11.5"}}) == \
-        "Nieuwe versie beschikbaar -- update in de AppStore"
+def test_compute_nudge_below_min_is_prominent(nudge_controller):
+    gc = nudge_controller("0.10.0")
+    assert gc._compute_nudge({"min_version": "0.11.0",
+                              "latest_version": "0.11.5"}) == UPDATE_CLEAN
+    assert gc.below_min is True
 
 
-def test_compute_nudge_up_to_date_is_none():
-    gc = _nudge_controller("0.11.5")
-    assert gc._compute_nudge({"app": {"min_version": "0.11.0",
-                                      "latest_version": "0.11.5"}}) is None
+def test_compute_nudge_below_min_with_queued_events_says_sync_first(nudge_controller):
+    # §8.10.4 step 3: never send a player to the AppStore holding unsent kills.
+    gc = nudge_controller("0.10.0")
+    gc.state.queue.add(gotcha.reveal_event(1004))
+    assert gc._compute_nudge({"min_version": "0.11.0"}) == UPDATE_PENDING
 
 
-def test_compute_nudge_no_server_floor_is_none():
+def test_compute_nudge_below_latest_is_soft(nudge_controller):
+    gc = nudge_controller("0.11.3")
+    assert gc._compute_nudge({"min_version": "0.11.0",
+                              "latest_version": "0.11.5"}) == SOFT_NUDGE
+    assert gc.below_min is False
+
+
+def test_compute_nudge_up_to_date_is_none(nudge_controller):
+    gc = nudge_controller("0.11.5")
+    assert gc._compute_nudge({"min_version": "0.11.0",
+                              "latest_version": "0.11.5"}) is None
+    assert gc.below_min is False
+
+
+def test_compute_nudge_no_server_floor_is_none(nudge_controller):
     # An absent server constraint (older backend) must never nag.
-    gc = _nudge_controller("0.11.20")
+    gc = nudge_controller("0.11.20")
+    assert gc._compute_nudge(None) is None
     assert gc._compute_nudge({}) is None
-    assert gc._compute_nudge({"app": {}}) is None
+    assert gc.below_min is False
 
 
-def test_compute_nudge_unreadable_own_version_is_none():
-    # _app_version() returns '?' when the MANIFEST can't be read -> never nag.
-    gc = _nudge_controller("?")
-    assert gc._compute_nudge({"app": {"min_version": "0.11.0",
-                                      "latest_version": "0.11.5"}}) is None
+def test_compute_nudge_unreadable_own_version_is_none(nudge_controller):
+    # _app_version() returns '?' when the MANIFEST can't be read -> never nag,
+    # and never gate hunting off a version we could not read.
+    gc = nudge_controller("?")
+    assert gc._compute_nudge({"min_version": "0.11.0",
+                              "latest_version": "0.11.5"}) is None
+    assert gc.below_min is False
 
 
-def test_take_fleet_banner_surfaces_new_broadcast_once():
-    gc = _nudge_controller("0.11.20")
+def test_compute_nudge_short_server_floor_does_not_false_trigger(nudge_controller):
+    # A host typing a two-segment floor ('0.11') must not put every 0.11.x badge
+    # below min: a bare tuple compare would, since (0, 11) < (0, 11, 0).
+    gc = nudge_controller("0.11.0")
+    assert gc._compute_nudge({"min_version": "0.11"}) is None
+    assert gc.below_min is False
+    # Same on the soft side: 0.12.0 is not behind a 'latest' of 0.12.
+    gc = nudge_controller("0.12.0")
+    assert gc._compute_nudge({"min_version": "0.11", "latest_version": "0.12"}) is None
+
+
+def test_take_fleet_banner_surfaces_new_broadcast_once(nudge_controller):
+    gc = nudge_controller("0.11.20")
     gc.broadcast = "Ceremonie om 17:00 aan de bar"
     assert gc.take_fleet_banner() == "Ceremonie om 17:00 aan de bar"
     assert gc.take_fleet_banner() is None        # already shown; don't re-spam
@@ -312,24 +466,63 @@ def test_take_fleet_banner_surfaces_new_broadcast_once():
     assert gc.take_fleet_banner() is None
 
 
-def test_take_fleet_banner_broadcast_capped_at_120():
-    gc = _nudge_controller("0.11.20")
+def test_take_fleet_banner_reshows_after_the_host_clears_it(nudge_controller):
+    # Host sends X, clears it ("Wissen"), then sends X again an hour later. The
+    # latch must have been re-armed by the clear, or the second send is swallowed.
+    gc = nudge_controller("0.11.20")
+    gc.broadcast = "Spel gepauzeerd"
+    assert gc.take_fleet_banner() == "Spel gepauzeerd"
+    gc.broadcast = None                          # cleared server-side
+    assert gc.take_fleet_banner() is None
+    gc.broadcast = "Spel gepauzeerd"             # same text again
+    assert gc.take_fleet_banner() == "Spel gepauzeerd"
+
+
+def test_take_fleet_banner_broadcast_capped_at_120(nudge_controller):
+    gc = nudge_controller("0.11.20")
     gc.broadcast = "x" * 500
     assert len(gc.take_fleet_banner()) == 120
 
 
-def test_take_fleet_banner_nudge_after_broadcast():
+def test_take_fleet_banner_nudge_after_broadcast(nudge_controller):
     # A broadcast wins first; once shown, a pending nudge surfaces on the next poll.
-    gc = _nudge_controller("0.11.3")
+    gc = nudge_controller("0.11.3")
     gc.broadcast = "hallo"
-    gc.nudge_text = "Nieuwe versie beschikbaar -- update in de AppStore"
+    gc.nudge_text = SOFT_NUDGE
     assert gc.take_fleet_banner() == "hallo"
-    assert gc.take_fleet_banner() == "Nieuwe versie beschikbaar -- update in de AppStore"
+    assert gc.take_fleet_banner() == SOFT_NUDGE
     assert gc.take_fleet_banner() is None
 
 
-def test_take_fleet_banner_none_when_nothing_new():
-    gc = _nudge_controller("0.11.20")
+def test_take_fleet_banner_none_when_nothing_new(nudge_controller):
+    gc = nudge_controller("0.11.20")
     assert gc.take_fleet_banner() is None
     gc.broadcast = ""                            # empty broadcast is not shown
     assert gc.take_fleet_banner() is None
+
+
+# ---------------------------------------------------------------------------
+# §8.10.3: below min_app_version the badge stops HUNTING but stays killable.
+# ---------------------------------------------------------------------------
+
+def test_below_min_blocks_hunting_but_not_the_victim_responder(nudge_controller):
+    gc = nudge_controller("0.10.0")
+    gc._exch = object()                     # request_* needs an exchange present
+    gc._compute_nudge({"min_version": "0.11.0"})
+    assert gc.below_min is True
+    assert gc.request_attack() is False
+    assert gc.request_reveal() is False
+    # ...and the victim side keeps working: an inbound REVEAL still lands, so an
+    # out-of-date badge cannot make itself invulnerable by not updating (D3).
+    seen = []
+    gc._on_spotted = lambda h: seen.append(h)
+    gc.apply_reveal({"t": "ME", "h": "HUNTER42"})
+    assert seen == ["HUNTER42"]
+    assert gc.is_spotted(_stdtime.ticks_ms()) is True
+
+
+def test_up_to_date_badge_is_not_hunting_blocked(nudge_controller):
+    gc = nudge_controller("0.11.5")
+    gc._compute_nudge({"min_version": "0.11.0", "latest_version": "0.11.5"})
+    assert gc.below_min is False
+    assert gc._hunting_blocked() is False

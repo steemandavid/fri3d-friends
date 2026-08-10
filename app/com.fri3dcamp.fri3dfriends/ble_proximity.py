@@ -836,6 +836,17 @@ class BLEProximity:
                 return True
         return False
 
+    def peer_count(self):
+        """Every badge currently in range, friend or not.
+
+        This is the §9.3 heartbeat's `peers_seen`, and it means something quite
+        different from current_peers()/has_peers(): the server reads it as "is
+        this badge standing in a populated place" (the sighting bump that keeps a
+        present player out of `stale`, §10.1) and as the §9.5 lonely-kill
+        heuristic. Filtering to friends would report 0 for a player standing in a
+        crowd of fifty strangers, which is the opposite of the intended signal."""
+        return len(self._seen)
+
     # ---- validation ----
     @staticmethod
     def _validate_floor(v):

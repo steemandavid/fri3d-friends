@@ -44,31 +44,6 @@ def _hex(b):
     return "".join("%02x" % x for x in b)
 
 
-def version_tuple(s):
-    """Parse a dotted numeric version ('0.11.20') into a tuple of ints for
-    comparison (§8.10.3 version nudge). A missing/garbage version parses to ()
-    so `version_tuple(me) < version_tuple(min)` is False when either side is
-    unknown -- the badge never nags from a version it cannot read. Non-numeric
-    segments (a '-rc' suffix) parse to their leading int, then 0."""
-    if not isinstance(s, str) or not s:
-        return ()
-    out = []
-    any_digit = False
-    for part in s.split("."):
-        n = ""
-        for ch in part:
-            if ch.isdigit():
-                n += ch
-            else:
-                break
-        if n:
-            any_digit = True
-        out.append(int(n) if n else 0)
-    # A string with no digits anywhere ('?', 'garbage') is not a real version ->
-    # () so the nudge's `if mn/me:` guards treat it as "unknown, never nag".
-    return tuple(out) if any_digit else ()
-
-
 def hmac_sha256(key, msg):
     """RFC-2104 HMAC-SHA256. `key` and `msg` are bytes; returns 32 bytes.
 
@@ -272,12 +247,43 @@ def _ver_parts(s):
 
 def version_lt(a, b):
     """Per-component numeric compare: True iff version a is strictly older than b.
-    Never compares as strings (so 0.10.0 > 0.9.0)."""
+    Never compares as strings (so 0.10.0 > 0.9.0).
+
+    Zero-pads to equal length, which is what makes a two-segment floor typed into
+    the admin form ('0.11') mean 0.11.0 rather than sorting before every 0.11.x.
+    This is the ONLY version comparison in the app -- version_tuple() below is a
+    parse/"is this a readable version at all" check, not an ordering."""
     pa, pb = _ver_parts(a), _ver_parts(b)
     n = max(len(pa), len(pb))
     pa = pa + [0] * (n - len(pa))
     pb = pb + [0] * (n - len(pb))
     return pa < pb
+
+
+def version_tuple(s):
+    """Parse a dotted numeric version ('0.11.20') into a tuple of ints -- or ()
+    when the string holds no digits at all ('?' from an unreadable MANIFEST,
+    'garbage', None, '').
+
+    Used as the readability guard on both sides of the §8.10.3 nudge: the badge
+    must never nag, and must never gate hunting, off a version it could not read.
+    Do NOT order two of these with `<` -- that compare is length-sensitive
+    ((0, 11) < (0, 11, 0) is True). Use version_lt() on the raw strings."""
+    if not isinstance(s, str) or not s:
+        return ()
+    out = []
+    any_digit = False
+    for part in s.split("."):
+        n = ""
+        for ch in part:
+            if ch.isdigit():
+                n += ch
+            else:
+                break
+        if n:
+            any_digit = True
+        out.append(int(n) if n else 0)
+    return tuple(out) if any_digit else ()
 
 
 # ---------------------------------------------------------------------------
@@ -1205,25 +1211,48 @@ def dodge_event(attacker_pid=None, victim_pid=None, counterpart_pid=None, at=Non
 
 
 def heartbeat_event(battery=None, peers_seen=None, target_seen_ago_s=None,
-                    groups=None, background=False, app_version="", at=None):
+                    groups=None, background=False, app_version="", at=None,
+                    alive=True, quiet=None):
     """A 'heartbeat' event (§9.3, §8.10.3): one per SYNC_S, queued immediately
     before the flush. It proves the badge is awake, refreshes the server's
     app_version (so the admin version-histogram + update nudge stay honest), and
     carries the liveness signals the dormancy/stale logic needs (battery,
-    peers_seen, target_seen_ago_s). Droppable on overflow -- it is retried whole
-    on the next flush and a heartbeat is only ever the latest truth.
+    peers_seen, target_seen_ago_s) plus the badge-owned personal quiet window
+    (§10.4a). Droppable on overflow -- it is retried whole on the next flush and
+    a heartbeat is only ever the latest truth.
 
     `background` is True when emitted by the headless beacon_service (app closed);
-    the foreground app passes False. Matches BadgeSim.heartbeat's shape exactly."""
-    e = {"type": "heartbeat", "alive": True, "background": bool(background)}
+    the foreground app passes False.
+
+    Deliberately does NOT carry the soul `commitment`, even though the server's
+    heartbeat handler accepts one. A heartbeat-borne commitment was the C-2
+    repudiation hole (any victim mid-chase could rotate and invalidate a genuine
+    kill already sitting in the hunter's offline queue). The server fill-if-absent
+    fix closed that, but the fresh commitment already rides `killed_by`, which is
+    a KEEP_TYPE and is mirrored to /prefs (§8.10.4) -- so there is nothing to gain
+    here and a repeat of C-2 to lose. Do not "complete the shape"."""
+    e = {"type": "heartbeat", "alive": bool(alive),
+         "background": bool(background)}
     if battery is not None:
         e["battery"] = int(battery)
     if peers_seen is not None:
         e["peers_seen"] = int(peers_seen)
     if target_seen_ago_s is not None:
         e["target_seen_ago_s"] = int(target_seen_ago_s)
-    if isinstance(groups, list):
+    # An empty list is a valid list, and the server's set_groups is
+    # DELETE-then-insert -- so sending [] wipes the player's groups. That is the
+    # right answer only when the player really has none, and the wrong one when a
+    # partial config load left us with an empty list. Omit it and let the server
+    # keep what it has; a genuine "I left all my groups" is rare enough to ride
+    # the next enroll/setup path rather than every heartbeat.
+    if isinstance(groups, list) and groups:
         e["groups"] = list(groups)
+    if isinstance(quiet, dict) and quiet.get("from") and quiet.get("to"):
+        # §10.4a: the badge owns the personal quiet window (it lives in
+        # config.json and is enforced badge-locally); the server re-checks it on
+        # ingest and needs it for the dormancy pause. This is the only channel
+        # that carries it. clamp_quiet runs server-side on receipt.
+        e["quiet"] = {"from": quiet["from"], "to": quiet["to"]}
     if isinstance(app_version, str) and app_version:
         e["app_version"] = app_version[:16]      # server caps at 16 (C1)
     if at is not None:

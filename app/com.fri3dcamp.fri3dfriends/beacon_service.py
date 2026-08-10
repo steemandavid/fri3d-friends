@@ -325,11 +325,27 @@ class Fri3dBeaconService(Service):
             except Exception:
                 pass
 
+    def _alarm_on(self):
+        """The §8.10.1 alarm_enabled kill switch: the host's nuisance-noise mute.
+        It covers EVERY game-initiated sound (siren, reveal chirp, relief chirp,
+        death tone), not just the siren -- a host flipping it at 03:00 because the
+        campsite is awake does not want chirps either. The LED effects are never
+        gated, so a muted badge still shows what happened to it. Absent switch ->
+        enabled (older-backend safety)."""
+        if self._gc is None:
+            return True
+        try:
+            return bool(self._gc.cfg.get("alarm_enabled", True))
+        except Exception:
+            return True
+
     # The four victim-side effect callbacks (wired into the headless controller).
     def _on_spotted(self, hunter):
         # §5.7 reveal flash: gold LEDs + a chirp. The hunter disconnects right
         # after the write, so there is no live link for a lights.write to starve.
         self._leds(255, 200, 0)
+        if not self._alarm_on():
+            return
         try:
             TaskManager.create_task(self._chirp(2200))
         except Exception:
@@ -337,10 +353,10 @@ class Fri3dBeaconService(Service):
 
     def _on_engaged(self, attacker, hold_ms):
         # §5.3 under-attack: ONE red LED write (held, no animation) + the siren.
-        # The alarm kill switch (§8.10.1) mutes only the siren -- the red LED
-        # still shows, so a muted badge is still visibly under attack.
+        # The alarm kill switch (§8.10.1) mutes the siren -- the red LED still
+        # shows, so a muted badge is still visibly under attack.
         self._leds(255, 0, 0)
-        if self._gc is not None and not self._gc.cfg.get("alarm_enabled", True):
+        if not self._alarm_on():
             return
         self._start_siren(hold_ms)
 
@@ -348,6 +364,8 @@ class Fri3dBeaconService(Service):
         # §5.3 escape: stop the siren, green flash, relief chirp.
         self._stop_siren()
         self._leds(0, 200, 0)
+        if not self._alarm_on():
+            return
         try:
             TaskManager.create_task(self._chirp(660))
         except Exception:
@@ -357,6 +375,8 @@ class Fri3dBeaconService(Service):
         # §5.3 death: stop the siren, dim red, a low descending tone.
         self._stop_siren()
         self._leds(120, 0, 0)
+        if not self._alarm_on():
+            return
         try:
             TaskManager.create_task(self._chirp(330, ms=400))
         except Exception:
@@ -489,7 +509,11 @@ class Fri3dBeaconService(Service):
                         except Exception:
                             pass
                         try:
-                            peers = len(self._gc.ble.current_peers())
+                            # peer_count(), NOT current_peers(): the server reads
+                            # peers_seen as "anyone nearby" (§10.1 sighting bump,
+                            # §9.5 lonely-kill check), and the friends-only filter
+                            # would report 0 in a crowd of strangers.
+                            peers = self._gc.ble.peer_count()
                         except Exception:
                             pass
                         self._gc.tick(now, self._wifi_up(), self._sound,

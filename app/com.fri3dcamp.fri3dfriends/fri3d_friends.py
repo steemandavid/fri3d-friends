@@ -709,8 +709,10 @@ class Fri3dFriends(Activity):
         if self._gc is None:
             return
         # §9.3 heartbeat signals: battery % (None on USB / unreadable) and the
-        # count of friends currently in range (a "populated place" sighting proxy
-        # the server's dormancy logic reads off the heartbeat).
+        # count of badges currently in range (the "populated place" sighting proxy
+        # the server's dormancy logic reads off the heartbeat). peer_count(), NOT
+        # current_peers(): the server means "anyone nearby", and the friends-only
+        # filter would report 0 in a crowd of strangers.
         battery = None
         try:
             battery = BatteryManager.get_battery_percentage()
@@ -718,7 +720,7 @@ class Fri3dFriends(Activity):
             pass
         peers = 0
         try:
-            peers = len(self._gc.ble.current_peers())
+            peers = self._gc.ble.peer_count()
         except Exception:
             pass
         try:
@@ -794,7 +796,10 @@ class Fri3dFriends(Activity):
                 self._flash_leds(255, 200, 0, ms=ms)     # bright gold on every LED
             except Exception:
                 pass
-            if self._sound:
+            # alarm_enabled (§8.10.1) is the host's nuisance-noise mute: it covers
+            # every game-initiated sound, not just the siren. The gold flash still
+            # fires, so a muted badge still shows it was spotted.
+            if self._sound and gc.cfg.get("alarm_enabled", True):
                 try:
                     TaskManager.create_task(self._sting(2200))   # chirp
                 except Exception:

@@ -538,10 +538,17 @@ def test_current_peers_and_has_peers_exclude_game_admitted(monkeypatch):
     assert all(p[2] is not None for p in peers)         # never a None gid (C5)
     assert b.has_peers() is True                         # the friend counts
 
-    # With only the game peer left, it is not a "nearby friend".
+    # ...but peer_count() counts EVERY badge in range, friend or not: it is the
+    # §9.3 heartbeat's peers_seen, which the server reads as "standing in a
+    # populated place" (§10.1 sighting bump) and as the §9.5 lonely-kill check.
+    assert b.peer_count() == 2
+
+    # With only the game peer left, it is not a "nearby friend" -- but it is
+    # still a badge in range.
     del b._seen[(0, b"\x01")]
     assert b.current_peers() == []
     assert b.has_peers() is False
+    assert b.peer_count() == 1
 
 
 # ---------------------------------------------------------------------------

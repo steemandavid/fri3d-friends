@@ -794,13 +794,40 @@ def test_heartbeat_event_shape_and_droppable():
     assert gotcha.heartbeat_event(app_version="x" * 500)["app_version"] == "x" * 16
     assert "app_version" not in gotcha.heartbeat_event(app_version="")
     assert "heartbeat" not in gotcha.EventQueue.KEEP_TYPES
+    # `alive` is the real liveness, not a constant.
+    assert gotcha.heartbeat_event(alive=False)["alive"] is False
+    # §10.4a: the personal quiet window rides the heartbeat -- the only channel
+    # that carries it to the server.
+    assert gotcha.heartbeat_event(
+        quiet={"from": "20:00", "to": "08:00"})["quiet"] == {"from": "20:00",
+                                                             "to": "08:00"}
+    # A half-filled or non-dict quiet is not a window; omit rather than send junk.
+    assert "quiet" not in gotcha.heartbeat_event(quiet={"from": "20:00"})
+    assert "quiet" not in gotcha.heartbeat_event(quiet="20:00-08:00")
+    # An EMPTY groups list is omitted, not sent: the server's set_groups is
+    # DELETE-then-insert, so `groups: []` from a badge whose config load half
+    # failed would wipe the player's groups every SYNC_S.
+    assert "groups" not in gotcha.heartbeat_event(groups=[])
+    assert gotcha.heartbeat_event(groups=["G"])["groups"] == ["G"]
 
 
-def test_version_tuple_parse_and_compare():
-    # §8.10.3: the version nudge compares dotted versions.
+def test_version_tuple_is_a_readability_check_not_an_ordering():
+    # §8.10.3: version_tuple() answers "is this a readable version at all"; the
+    # ORDERING is version_lt()'s job, because a bare tuple compare is
+    # length-sensitive -- (0, 11) < (0, 11, 0) is True -- and a two-segment floor
+    # typed into the admin form ('0.11') would then put every 0.11.x badge below
+    # min_version and show the whole camp UPDATE NODIG.
+    assert gotcha.version_tuple("0.11") < gotcha.version_tuple("0.11.0")  # the trap
+    assert gotcha.version_lt("0.11", "0.11.0") is False                   # the fix
+    assert gotcha.version_lt("0.11.0", "0.11") is False
+    assert gotcha.version_lt("0.11.0", "0.12") is True
+    assert gotcha.version_lt("0.11.3", "0.11.20") is True
+
+
+def test_version_tuple_parses_and_flags_unreadable_versions():
+    # §8.10.3: version_tuple() is the readability guard, not the ordering (that is
+    # version_lt -- see test_version_tuple_is_a_readability_check_not_an_ordering).
     assert gotcha.version_tuple("0.11.20") == (0, 11, 20)
-    assert gotcha.version_tuple("0.11.3") < gotcha.version_tuple("0.11.20")
-    assert gotcha.version_tuple("1.0") > gotcha.version_tuple("0.11.99")
     # A '-rc1' suffix parses to its leading int then drops.
     assert gotcha.version_tuple("0.11.20-rc1") == (0, 11, 20)
     # No digits anywhere -> () (not a real version; the nudge must never fire).
@@ -808,8 +835,8 @@ def test_version_tuple_parse_and_compare():
     assert gotcha.version_tuple("garbage") == ()
     assert gotcha.version_tuple(None) == ()
     assert gotcha.version_tuple("") == ()
-    # So an unreadable own version is falsy -> _compute_nudge's `if not me` guard
-    # catches it before any comparison (an unknown own version never nags).
+    # So an unreadable version is falsy -> _compute_nudge's guards catch it before
+    # any comparison: an unknown version never nags and never gates hunting.
     assert not gotcha.version_tuple("?")
     # A literal "0" still parses (it has a digit).
     assert gotcha.version_tuple("0") == (0,)
