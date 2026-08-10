@@ -2180,6 +2180,15 @@ live migration across a population you cannot reach.
 
 #### 8.10.1 The hotfix mechanism you already have is the config push
 
+> **BUILD STATUS (2026-08-10, 0.11.19, commit cef6ed1):** The four kill switches
+> (`reveal_enabled`/`bounty_enabled`/`training_enabled`/`alarm_enabled`) are pushed
+> in the sync `config` block and the badge treats an absent switch as `true`
+> (older-backend safety). **Badge-side reads COMPLETE:** `reveal_enabled` was
+> already gated end-to-end; `alarm_enabled` now mutes the under-attack siren but
+> keeps the held red LED (a muted badge is still visibly under attack — bench-proven
+> on 9de4); `bounty_enabled` downgrades a stray bounty write to a plain attack.
+> `training_enabled` ships False (Phase 6; no code path yet).
+
 Before reaching for an app update, note how much is already retunable from the admin
 page with **no badge change at all** (§5.4, §9.4): every RSSI threshold, every timer,
 `DODGE_LIMIT`, `BOUNTY_STREAK`, streak grace and decay, `SYNC_S`, the truce, scoring
@@ -2213,6 +2222,25 @@ feature:
   ingest on a version.
 
 #### 8.10.3 Seeing the fleet, and nudging it
+
+> **BUILD STATUS (2026-08-10, 0.11.20/0.11.21, commits 5983702 + 7694f9f):**
+> ⚠️ **The badge→server heartbeat + event-flush path was UNBUILT until 0.11.20.**
+> The badge queued kill/reveal/dodge/killed_by/attack_started events into
+> `state.queue` but `flush_events` was never called and no heartbeat was sent, so
+> kills scored on a badge never reached the server (only the badge simulator
+> exercised upload). **FIXED:** `_do_sync` now does **heartbeat → flush → sync**
+> once per `SYNC_S` (§9.3 order), gated by the existing online/`_defer_for_bar`
+> envelope (no sync mid-chase). `heartbeat_event()` carries battery/peers_seen/
+> target_seen_ago_s/groups/background/app_version; the boot service passes
+> `background=True`. **Bench-validated** on 9de4: pid 1004 DB row refreshed
+> app_version, battery, peers_seen, bg_service, last_seen_at. **Version reporting
+> is live** (the admin histogram stays current). The **broadcast banner +
+> version-nudge are rendered** on the badge (0.11.21): `version_tuple()` compare
+> → `< min` = "UPDATE NODIG"; `≥ min, < latest` = a soft line; absent floor = no
+> nag; `take_fleet_banner()` surfaces a NEW broadcast/nudge once per change via
+> the existing banner widget. **DEFERRED:** the prominent full-screen UPDATE NODIG
+> and the stay-killable hunting gate ("< min stops hunting, victim responder keeps
+> running") — the banner+nudge, ranked higher above, is done.
 
 - **Report the version.** `app_version` already rides `/v1/enroll` (§9.2); add it to
   `heartbeat` (§9.3) so it is refreshed continuously. The admin dashboard gets a

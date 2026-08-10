@@ -1,3 +1,86 @@
+# !Fri3d Friends — Gotcha §8.10 kill switches + the missing heartbeat/flush path + fleet nudge — 2026-08-10
+
+Continued the Phase 5 §8.10 ("hotfix / update path") work. Three commits, all host-tested
+(**401 pass**) and bench-validated on the 3 USB badges. Started **0.11.18**, ended **0.11.21**.
+The headline is that the badge→server **event-upload half of the game loop was unbuilt on real
+hardware** — fixed and proven end-to-end.
+
+## 1. §8.10.1 — alarm + bounty kill switches (`cef6ed1`, 0.11.19)
+The backend already pushes `reveal_enabled`/`bounty_enabled`/`training_enabled`/`alarm_enabled`
+in the sync `config` block, but the badge-side reads were missing for two:
+- **`alarm_enabled`** — `beacon_service._on_engaged` still fires the held red-LED write (a muted
+  badge stays visibly under attack) but skips `_start_siren` when off; the foreground siren trigger
+  in `fri3d_friends.py` gates on the same flag. Absent switch ⇒ enabled (older-backend safety).
+- **`bounty_enabled`** — `gotcha.validate_attack` downgrades a stray bounty write to a plain target
+  attack ("ok") when bounties are off; absent ⇒ "bounty" (on).
+- `reveal_enabled` was already gated; `training_enabled` has no code path yet (ships False, Phase 6).
+- **Bench-proven on 9de4:** ATTACK still engages (`VICTIM ENGAGED by=9999`) but `SIREN_UNTIL=0`
+  with `alarm_enabled=False`.
+
+## 2. §8.10.3 + §9.3 — ⚠️ the badge heartbeat + event-flush path (`5983702`, 0.11.20)
+**Critical finding:** the badge queued `kill`/`reveal`/`dodge`/`killed_by`/`attack_started` into
+`state.queue`, but **`flush_events` was never called anywhere on the badge, and no heartbeat was
+ever sent.** So kills scored on a badge never reached the server — the upload path was exercised
+only by the badge simulator in tests, never by real hardware. (The prior session's changelog even
+flagged this at item D-6/D-7: "need flush_events/heartbeat".)
+- `gotcha.heartbeat_event()`: builder matching `BadgeSim.heartbeat`'s shape
+  (`alive`/`battery`/`peers_seen`/`target_seen_ago_s`/`groups`/`background`/`app_version`),
+  `app_version` capped at 16 (server C-1 bound).
+- `gotcha_app._do_sync()`: now does **heartbeat → flush → sync** once per `SYNC_S` (§9.3 order).
+  Queues exactly one heartbeat (de-duping any prior unsent one), flushes, then the GET sync. Flush
+  failure never blocks sync (WiFi down ~98% of the time).
+- `tick()` gains `battery`/`peers_seen`/`background`; `_gc_tick` (foreground) and the boot
+  `beacon_service` pass them (background=True from the boot service → admin sees `bg_service=1`).
+  Gated by the existing `online`/`_defer_for_bar` envelope so the new traffic stays inside the §5.4
+  coexistence budget (no sync mid-chase).
+- **Bench-validated on 9de4** (boot service, WiFi=`casarural`, Funnel HTTPS): pid 1004 DB row
+  refreshed `app_version 0.11.0→0.11.20`, `battery NULL→100`, `peers_seen NULL→0`, `bg_service 0→1`,
+  `last_seen_at` current. A kill traverses the identical flush path.
+
+## 3. §8.10.3 — broadcast banner + version-nudge (`7694f9f`, 0.11.21)
+The sync response already carried `min_app_version`/`latest_app_version` + `broadcast` (server-side
+since Phase 1, parsed into state since 0.11.x) but the badge never rendered any of it:
+- `gotcha.version_tuple()`: dotted-version compare; a no-digit string (`'?'` from an unreadable
+  MANIFEST) parses to `()` so the nudge never fires from an unknown own version.
+- `gotcha_app._compute_nudge()`: `< min` → "UPDATE NODIG"; `≥ min, < latest` → soft "Nieuwe versie
+  beschikbaar"; `≥ latest` or no server floor → `None`.
+- `gotcha_app.take_fleet_banner()`: one-shot edge detector — returns a NEW broadcast (capped 120)
+  or nudge once per change, then `None` (no re-spam every sync).
+- `fri3d_friends._render_fleet_banner()`: shows it via the existing banner widget, lowest priority
+  (only when no duel/arrival banner owns the strip).
+- **Bench-validated on 9de4:** a broadcast set in the game row reached `gc.broadcast` over
+  `/v1/sync`; nudge computed `0.11.21` vs min `0.11.0`/latest `0.11.30` correctly; banner surfaced.
+- **DEFERRED (lower priority, per the plan):** the prominent full-screen UPDATE NODIG + the
+  stay-killable hunting gate ("< min stops hunting, victim responder keeps running").
+
+## 4. Backend access + deploy notes (for future sessions)
+- **Backend reachable via Tailscale IP `100.64.72.86`** (john-ThinkPad-E15); LAN `192.168.1.57` SSH
+  is "No route to host" (Mullvad/Tailscale routing churn). `ssh john@100.64.72.86`;
+  `curl http://100.64.72.86:8080/healthz`; DB `/var/lib/gotcha/gotcha.sqlite3` via `sudo python3 -c`.
+  Badges talk to it over the **Tailscale Funnel** HTTPS endpoint `https://john-thinkpad-e15.tail44c8ab.ts.net`.
+- **Admin cookie auth via curl didn't take** (`/admin/login` → `/v1/admin/broadcast` ⇒ login_required).
+  Bench workaround: write game-row fields directly in SQLite
+  (`UPDATE games SET broadcast=..., min_version=..., latest_version=...`); `/v1/sync` reads them live.
+- **Post-Phase-4 deploy is more wedge-prone:** the boot beacon_service now runs the full proximity
+  stack (scan + victim respond), not advertise-only, so BLE IRQs disrupt USB-CDC during cp even at
+  the launcher. Reliable pattern: `reset.py` (`machine.reset`, throws I/O as it reboots — normal) →
+  `sleep 8` → ONE chained cp session (`cp a + cp b + ...`). A wedged file: reset + retry just that
+  file (mpremote's "Up to date" dedup skips matching files). **USBDEVFS_RESET**
+  (`fcntl.ioctl(fd, 21780)` on `/dev/bus/usb/<bus>/<dev>`) recovers a wedged CDC without a replug.
+- **Probe the running boot service:** write a script to `/tmp`, `mpremote run /tmp/x.py` (NOT inline
+  eval — badges run aiorepl). `import beacon_service as bs; bs._ACTIVE` is the live service;
+  `_ACTIVE._gc` its headless controller; `_gc.broadcast`/`_gc.nudge_text`/`_gc.take_fleet_banner()`
+  read §8.10.3 state post-sync. A USB reset does NOT reboot (code stays in memory); `machine.reset()` does.
+
+## 5. Verification
+- Host suite **401 pass** (+15 new this session: alarm kill-switch, bounty downgrade, heartbeat
+  shape, §9.3 order, dedup, no-heartbeat-pre-enroll, flush-failure-isolates-sync, version_tuple,
+  `_compute_nudge` ×4, `take_fleet_banner` ×4).
+- All 3 badges (9de4, fac0/Badge2024lijn, bac8) on **0.11.21**; all 5 §8.10.3 method markers
+  verified present on-device.
+
+---
+
 # !Fri3d Friends — Before-camp hardening + externally-exposed backend (Tailscale Funnel, HTTPS sync) — 2026-08-09
 
 Five days to camp (14–16 Aug). Session did the before-camp dev-flag reverts, brought the 3 USB
