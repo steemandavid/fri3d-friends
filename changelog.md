@@ -1,3 +1,134 @@
+# !Fri3d Friends — Player-card QR flow + hardware validation of the §8.10 fixes — 2026-08-10 (session 3)
+
+Built the last unbuilt Phase 5 deliverable (the player-card QR), deployed to all three
+USB badges, and validated the previous session's review fixes on real hardware. Found and
+fixed two further bugs in the process — one of them live on the game ring.
+**0.11.22 → 0.11.24.** Host suite **416 → 425 pass**.
+
+## 1. The QR flow (§9.1/D31) — `75a1ef9`
+`card_token` had been arriving in the sync response and being stored since 0.11.x and
+**nothing on the badge ever read it** (`grep card_token app/` returned only the two state
+lines) — so players had no route to their own card.
+
+- `gotcha.card_url(base, pid, token)` → `<base>/gotcha/?badge=<pid>&t=<token>`.
+- `GotchaController.card_url()` / `.card_base`. **The base is the https endpoint**
+  (`gotcha.card` override → `enroll` → `api`): a phone browser opens this, not §6.3's
+  plain-http signed-request path.
+- **"Mijn kaart (QR)"** menu row (shown once a game has ever been joined) → a
+  create-once/hidden overlay on the same 128 px white-box pattern as the setup window.
+  A or X closes it; it owns no radio, so it does not suspend proximity.
+- A missing/stale token **still renders a QR** — the page degrades to the public view, and
+  the overlay says `alleen openbaar - nog niet gesynct`.
+- Opening it nudges a sync (`refresh_card_token`) but never forces one: still gated by
+  online/`_defer_for_bar`.
+
+## 2. ⚠️ The earlier `peers_seen` fix was incomplete
+Last session's change (`current_peers()` → `peer_count()` = `len(self._seen)`) did **not**
+actually fix the reported bug. `admit_peer()` (`ble_proximity.py:688`) drops non-friends
+*before* they reach `_seen`, so the peer table is friends + the game target and still
+reports ~0 for a player in a crowd of strangers — precisely the signal §10.1's sighting
+bump and §9.5's lonely-kill check read.
+
+**Real fix:** `BLEProximity._nearby`, `(addr_type, addr) -> ticks_ms`, recorded *before*
+the admission gate, capped at `NEARBY_CAP=96` (drop-oldest), evicted on the same
+`EVICT_MS` schedule. Addresses only — no name, no groups, never feeds the UI (§13: count
+bodies, not identities).
+
+**Also learned:** the boot `beacon_service` **deliberately never scans** (§5.6/D3 —
+hunting requires the app open), so a background badge's `peers_seen` is honestly 0. This
+bug only ever affected the foreground app's heartbeat.
+
+## 3. 🐛 Ring: `splice_in` could assign a permanent self-target — `b472837`
+Found on the **live** dev ring while validating: pid 1004 was hunting itself.
+
+`splice_in` skips candidates whose target is already `pid`, but that `continue` also skips
+the `if best is None: best = p` fallback *inside* the loop. When every candidate already
+hunts `pid` — the state a small or converging ring reaches — the loop exits with
+`best=None`, the post-loop fallback takes `pool[0]`, and `changes[pid] =
+targets.get(best)` inherits pool[0]'s target, **which is `pid`**.
+
+It is a **stable fixed point**, not a transient: the next reconcile sees `target == pid`,
+re-enters the same branch, re-derives it. The player can never score, and since reconcile
+runs at the top of every `/v1/sync`, it never heals. Resolved as a mutual pair — what the
+ring-of-two branch already does and what §10.5 prescribes.
+
+Deployed to `/opt/gotcha` + `systemctl restart gotcha`; verified on the live ring:
+`1004→1004` became `1004→1003 / 1003→1004` on the next sync, no self-targets remain.
+
+## 4. Hardware validation — the A/B that proves last session's fixes
+All three badges at **0.11.24**, foreground app, `peers_seen=2`, `last_seen_ago ≤ 28 s`.
+
+Badge **fac0 / pid 1007** turned out to be the ideal test: its groups are
+`["Makerspace Baasrode"]`, so it shares **no group** with the other two — the
+stranger-in-a-crowd case exactly. It accidentally ran old code for a while (see §5),
+giving a clean before/after from the server's own `events` table:
+
+| | old code | new code |
+|---|---|---|
+| `peers_seen` | `0` | **`2`** |
+| `target_seen_ago_s` | `839661950` | **`0`** |
+
+`839661950` is `time.time() - ticks_ms()/1000` to the second — the F-1 clock-domain bug
+producing a value the server clamps to 48 h and then discards.
+
+Other confirmations from the raw heartbeat payloads:
+- **§10.4a quiet hours now reach the server for the first time.** Set
+  `{"from":"20:00","to":"08:00"}` in 9de4's `config.json`; DB shows
+  `quiet_from=20:00, quiet_to=08:00` for pid 1004 while the other two show the 22:00 camp
+  default — the badge-owned window survives the sync read-back exactly as intended.
+- `bg_service` correctly flips 1→0 when the app is foregrounded.
+- `last_seen_at` for pid 1004 went from **10 h stale → 23 s**, and status `stale → active`:
+  the `if peers: note_seen(...)` bump working for the first time.
+
+**Card QR, end to end:** the badge composes
+`https://john-thinkpad-e15.tail44c8ab.ts.net/gotcha/?badge=1003&t=<token>` (read off bac8);
+its **own live token** returns `target: {pid: 1004, name: "Badge9de4"}` from
+`/v1/public/player/1003`, the tokenless call omits `target`, and the page returns HTTP 200.
+The overlay is confirmed built on-device — walking the live LVGL tree shows
+`'Mijn kaart'`, `'scan met je telefoon'`, `'Sluiten'`.
+
+## 5. ⚠️ Deploy gotcha: verified files ≠ running code
+fac0 reported `app_version 0.11.24`, every file sha256-verified on disk, `sys.modules`
+`__file__` pointing at the right paths — and was still **executing the previous modules**
+(`hasattr(BLEProximity, "peer_count")` → `False`). The version lies because
+`_app_version()` reads MANIFEST.JSON off disk at call time, while behaviour comes from
+whatever was imported at app start. A second `mpremote reset` fixed it.
+
+**Always verify a symbol that only exists in the new code**, not just the files:
+```python
+import ble_proximity as bp, gotcha_app
+print(hasattr(bp.BLEProximity, "peer_count"), hasattr(gotcha_app.GotchaController, "card_url"))
+```
+
+## 6. Host + environment notes
+- pytest again bootstrapped from PyPI wheels into `/tmp/pylibs`; `mpremote` wrapped at
+  `/tmp/bin/mpremote` (`sudo PYTHONPATH=/tmp/mpremote_pkg python3 -m mpremote`).
+- **Do not use `tools/deploy.sh` with no file list** — its default set includes
+  `config.json`, which would clobber the badge's name/groups/endpoints. Always pass the
+  changed files explicitly.
+- Admin login is **form-encoded** at `POST /admin/login` (`host=` + `password=`), not JSON
+  at `/v1/admin/login`.
+- `HUNT_SYNC_DEFER=false` + `SYNC_S=60` were set via `/v1/admin/tunables` to force fast
+  syncs during validation, and **restored to `true` / `300`** afterwards (verified in
+  `games.config_json`).
+
+## 7. Follow-ups
+- **Not validated on hardware:** the `below_min` hunting gate and the UPDATE NODIG banner.
+  Both are fully host-tested; a live test means setting `min_version` above the fleet, which
+  would gate all three badges, so it was left for a supervised session.
+- The card URL is **108 chars** at the current Funnel hostname, which is a dense QR in a
+  108 px box. A short camp domain (`https://gotcha.fri3d.be/...` ≈ 75 chars) makes it
+  comfortably easier; worth re-checking scannability once the real hostname exists.
+- A badge with no personal quiet window now echoes the server's camp-truce default back on
+  each heartbeat. Harmless and idempotent (the plan says the default *is* the truce), but it
+  means the server cannot distinguish "unset" from "set to exactly the truce".
+- Prior review items **D-47** (server should ignore an empty `groups` list) and **D-50**
+  (badge-side `clamp_quiet` only on the BLE-setup path) remain open.
+- Old test players 1005/1006 still point at 1004 and never sync; harmless, but they are
+  noise in the ring and could be kicked before camp.
+
+---
+
 # !Fri3d Friends — Code review of §8.10 + remediation of every finding — 2026-08-10 (session 2)
 
 Ran `/codereviewer` over the §8.10 phase (commits `cef6ed1` / `5983702` / `7694f9f`, versions
