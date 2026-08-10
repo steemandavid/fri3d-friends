@@ -122,6 +122,56 @@ print(hasattr(bp.BLEProximity, "peer_count"), hasattr(gotcha_app.GotchaControlle
   syncs during validation, and **restored to `true` / `300`** afterwards (verified in
   `games.config_json`).
 
+## 6a. §14.2 A6 answered — Latin-1 is a NO-GO, and names now fold at the render boundary (0.11.25)
+Probed the fonts on bac8. The answer is no, for a reason more basic than glyph coverage:
+**lvgl 9.4.0 here is in ASCII text-encoding mode — one glyph box PER BYTE, never decodes
+UTF-8.** A 2-byte UTF-8 `é` measures exactly two fallback boxes, a 3-byte `€` three, a
+4-byte emoji four (9/18/27/46 px against a 9 px box). MicroPython here is byte-oriented in
+source too (`"e"+"ë"+"e"` is **3** bytes). **§8.9's ASCII-only rule stands.**
+
+⚠️ **Two probes give false answers** — I hit both before finding the right one:
+`get_glyph_width()` returns a per-codepoint fallback (12) for missing glyphs, so accents
+*look* present; measuring a bare high byte gives width 0, so they then *look* absent. Only
+`lv.text_get_size()` on proper UTF-8 **with CJK/Hebrew controls** discriminates.
+
+**The bug this exposed:** a phone sending `{"name": "Renée"}` rendered as `Ren` + two boxes
++ `e`, on the badge *and* in every peer's nearby-list. Common at a Belgian camp.
+
+**Fixed at the render boundary, not at storage:**
+- `ble_proximity.fold_ascii()` — Latin-1/Latin-Ext-A → ASCII (é→e, ß→ss, œ→oe), accepting
+  both UTF-8 and bare Latin-1 because both reach us; unmappable → dropped.
+- `build_payload()` folds **before** `truncate_utf8`, so one change fixes every peer *and*
+  the scarce 31-byte advert budget buys letters instead of unrenderable sequences.
+- The nametag label folds on both the build and reload paths.
+- `sanitize_config()` deliberately does **not** fold. An existing test
+  (`test_sanitize_config_utf8_names_preserved`) already encoded that intent and my first
+  attempt violated it — `config.json`/`contacts.json` are the player's own data,
+  `contacts.json` is irreplaceable (§8.10.4), and the web card renders UTF-8 correctly.
+
+**On-device proof (bac8):** raw UTF-8 name renders **68 px**, folded **53 px** — byte-identical
+to plain ASCII `"Renee"`. Beacon name parses back as `Renee`.
+
+## 6b. 🔌 Lost a badge to an enumeration fault (and what it taught)
+Deploying with `RESET=1` to three badges in a tight loop **while the foreground app was
+advertising and scanning** wedged the CDC, and 9de4 dropped off the USB bus entirely — gone
+from `lsusb`, not just from `/dev`, so `recover_badge_port.py` had nothing to reset. It
+needed a physical replug (the standing warning in that tool's own docstring, earned again).
+Deploys to the two *responsive* badges then succeeded fine **without** `RESET=1`.
+
+**And the replug demonstrated the deploy trap perfectly:** afterwards 9de4 reported
+`manifest=0.11.25` while `hasattr(ble_proximity, "fold_ascii")` was **False** — new files,
+old code, a lying version. One clean reset from the REPL fixed it. Verify the *symbol*, never
+the version:
+```python
+import ble_proximity as bp, gotcha_app
+print(hasattr(bp, "fold_ascii"), hasattr(bp.BLEProximity, "peer_count"),
+      hasattr(gotcha_app.GotchaController, "card_url"))
+```
+
+All three badges finished on **0.11.25, verified by loaded symbol**, left at the launcher
+(the boot service still runs the victim responder + heartbeat, §5.6/D3) — the CDC stays
+healthy for further deploys that way.
+
 ## 7. Follow-ups
 - **Not validated on hardware:** the `below_min` hunting gate and the UPDATE NODIG banner.
   Both are fully host-tested; a live test means setting `min_version` above the fleet, which
