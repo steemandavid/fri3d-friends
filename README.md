@@ -240,6 +240,14 @@ touchscreen) to open it:
 | **Telefoon-setup** | Open the phone-setup window (Bluetooth QR + code) |
 | **Instellingen** | Open the on-badge settings editor (name, groups, sound, range, banner) |
 
+Three more rows appear **only once a Gotcha game has ever been joined**:
+
+| Menu item | Action |
+|---|---|
+| **Mijn kaart (QR)** | Show the player-card QR — scan it with a phone for your score, rank, target and the leaderboards |
+| **Gotcha demo** | Walk through the game screens without a live game |
+| **Stoppen met Gotcha** / **Meedoen met Gotcha** | Opt out of / back into the game (always reachable in a couple of seconds) |
+
 | Input | Action |
 |---|---|
 | Joystick ↑ / ↓ | move the highlight |
@@ -354,7 +362,7 @@ each with the command that undoes it, so the machine can be returned to its prio
 state after camp.
 
 ```bash
-python3 -m pytest tests/ -q                                   # 255 tests, no badge needed
+python3 -m pytest tests/ -q                                   # 425 tests, no badge needed
 python3 server/tools/smoke.py http://<host>:8080 --badges 6    # check a deployment
 ```
 

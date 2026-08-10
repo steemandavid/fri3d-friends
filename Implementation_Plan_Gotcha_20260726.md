@@ -2769,6 +2769,17 @@ leaderboard, that is a display-layer opt-in and must not become a gameplay input
 | Situation | Behaviour |
 |---|---|
 | Inheritance yields yourself | Walk forward to the next alive player. |
+
+> 🐛 **FIXED 2026-08-10 (commit `b472837`) — this rule was violated by
+> `ring.splice_in`, and permanently.** Its `t == pid` guard `continue`s past the
+> in-loop `best` fallback, so when *every* candidate in the pool already hunts
+> `pid` — the state a small or converging ring reaches — the loop exits with
+> `best=None`, the post-loop fallback takes `pool[0]`, and inheriting its target
+> hands `pid` **itself**. It is a stable fixed point, not a transient: the next
+> reconcile sees `target == pid`, re-enters the same branch and re-derives it, so
+> the player can never score and `/v1/sync`'s reconcile never heals it. Found live
+> on the dev ring (pid 1004 hunting itself). Resolved as a mutual pair, matching
+> the ring-of-two branch directly above it in the same function.
 | Inheritance yields a dead player | Walk forward. |
 | Inheritance creates a group conflict | One re-splice attempt, then accept and log (§3.2). |
 | Group constraint unsatisfiable | Start the game anyway; surface the conflict count on the admin page. |

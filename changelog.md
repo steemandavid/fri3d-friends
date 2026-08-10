@@ -100,6 +100,16 @@ import ble_proximity as bp, gotcha_app
 print(hasattr(bp.BLEProximity, "peer_count"), hasattr(gotcha_app.GotchaController, "card_url"))
 ```
 
+## 5a. Documentation caught up
+- `README.md`: the pytest line still advertised **255 tests** (now **425**), and the
+  on-badge menu table predated Gotcha entirely — it now documents the three rows that
+  appear once a game has been joined, including the new **Mijn kaart (QR)**.
+  *(Surfaced by a stray background `find / -name pytest` left over from the code review;
+  it also confirmed `/opt/gotcha/venv` has no pytest, so the `/tmp/pylibs` wheel bootstrap
+  is the only route on this host.)*
+- Plan §9.1 gained a BUILD STATUS block for the card QR; §10.5's "inheritance yields
+  yourself" row now records that `ring.splice_in` violated it and how it was fixed.
+
 ## 6. Host + environment notes
 - pytest again bootstrapped from PyPI wheels into `/tmp/pylibs`; `mpremote` wrapped at
   `/tmp/bin/mpremote` (`sudo PYTHONPATH=/tmp/mpremote_pkg python3 -m mpremote`).
