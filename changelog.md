@@ -3895,3 +3895,71 @@ development phases** and closed the three structural gaps the review flagged.
 - Plan is now phased with gated deliverables and a home for the unit tests;
   everything else unchanged. Still unimplemented; Phase 0 spikes remain the entry
   point.
+
+---
+
+# Automated BadgeHub publishing via API v3 — 2026-08-10
+
+Replaced the manual "log in at badgehub.eu, upload the `.mpk`" publish step
+with a script that does the whole thing via BadgeHub's documented API v3.
+Used it to publish the app live (rev 17 → 18, `0.10.0` → `0.11.22` — the
+published build had been stale for a while).
+
+## Files
+- `tools/publish_badgehub.py` — new. Builds the deterministic `.mpk` (same
+  recipe as the README), deletes any stale `.mpk` already in the draft
+  (so exactly one is ever present — no ambiguity about which is "main"),
+  uploads the new one + the icon, PATCHes the draft metadata
+  (version/executable synced from `MANIFEST.JSON`), and PATCHes `/publish` to
+  cut a new revision. `--dry-run` builds + prints the metadata without
+  touching the network.
+- `README.md` — "Build & publish" section now leads with the automated path;
+  the existing manual recipe/gotchas kept below it as reference.
+- `.gitignore` — added `badgehub-pwd.txt` and `*.env` as a safety net.
+- `~/.claude/secrets/badgehub.env` (outside the repo, chmod 600, not synced) —
+  new. Holds `BADGEHUB_USERNAME`/`BADGEHUB_PASSWORD` (Keycloak login) and
+  `BADGEHUB_PROJECT_SLUG`/`BADGEHUB_API_TOKEN` (long-lived per-project token).
+
+## What was figured out
+1. **BadgeHub has a real API v3** — spec at `https://badgehub.eu/api-docs/swagger.json`
+   (discovered via the Swagger UI at `/api-docs/`). It has exactly the
+   endpoints needed for scripted publishing: `POST .../draft/files/{filePath}`
+   (multipart upload), `PATCH .../draft/metadata`, `PATCH .../publish`, plus
+   `POST .../draft/icon` (regenerate icon sizes from an uploaded file — makes
+   the old "BadgeHub freezes the icon from the first .mpk" gotcha avoidable
+   going forward, though the script currently just re-uploads `icon-64x64.png`
+   directly rather than using this endpoint).
+2. **Auth: two schemes** — `bearerAuth` (Keycloak JWT, for interactive/user
+   actions like creating a project) and `apiTokenAuth` (a `badgehub-api-token`
+   header, project-scoped, explicitly meant for automation). Minted the
+   project token once via `POST /api/v3/projects/{slug}/token` while
+   authenticated with a Keycloak password-grant bearer token (realm `master`,
+   client_id `badgehub-eu`, discovered from `badgehub.eu`'s bundled JS
+   config). `GET .../token` shows `created_at`/`last_used_at` but no
+   expiry field — token appears to be long-lived.
+3. **Gotcha: Python's `urllib` gets Cloudflare-blocked on POST.** First attempt
+   using `urllib.request` for the multipart upload got `HTTP 403 error code:
+   1010` (Cloudflare bot-management), even with a custom `User-Agent`. The
+   identical request via `curl` succeeded (`204`). Rewrote the script to shell
+   out to `curl` for every request rather than debugging the urllib
+   fingerprinting further.
+4. Extracted the password from the user's `badgehub-pwd.txt` (which they said
+   they'd delete shortly) into the secrets file before it was removed.
+
+5. User flagged (mid-session) that the project listing showed both the old
+   `0.10.0.mpk` and the new `0.11.22.mpk` after the first automated publish,
+   and asked for the old one to be deleted and the new one set as "main" on
+   future publishes. Added a cleanup step: the script now `GET`s the current
+   draft before uploading and `DELETE`s any `.mpk` that isn't the one about to
+   ship. "Main" was already correct — `metadata.json`'s
+   `application[0].executable` is what BadgeHub/badges use to pick the launch
+   file, and the script always points it at the freshly-uploaded `.mpk`. Ran a
+   one-off cleanup to remove the pre-existing `0.10.0.mpk` (rev 18 → 19).
+
+## Notes / follow-ups
+- A duplicate `icon_64x64.png` (underscore) sits alongside the
+  `icon-64x64.png` (hyphen) that `icon_map` actually references — harmless
+  leftover from pre-script manual uploads, not a `.mpk` so the cleanup step
+  doesn't touch it.
+- Full context saved to memory: `badgehub-automated-publish` (supersedes the
+  old `/storage/fileshare/...` manual-staging workflow for this project).

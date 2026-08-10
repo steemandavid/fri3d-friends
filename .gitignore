@@ -13,3 +13,7 @@ __pycache__/
 
 # build artifacts (.mpk packages) — reproducible from app/ via the bundling recipe
 dist/
+
+# secrets — never commit
+badgehub-pwd.txt
+*.env

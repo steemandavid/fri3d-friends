@@ -364,6 +364,20 @@ detailed verification status.
 
 ## Build & publish (`.mpk` → BadgeHub)
 
+**Automated (preferred):** `python3 tools/publish_badgehub.py` builds the
+`.mpk`, uploads it + the icon, syncs `metadata.json` from `MANIFEST.JSON`, and
+publishes a new BadgeHub revision — all via the BadgeHub API v3
+(`https://badgehub.eu/api-docs/`). Use `--dry-run` to build + preview without
+publishing. Requires a project API token in `~/.claude/secrets/badgehub.env`
+(not in this repo — see `BADGEHUB_API_TOKEN`, created via
+`POST /api/v3/projects/{slug}/token` while authenticated as the project owner).
+Note: it shells out to `curl` for the HTTP calls — Python's `urllib` gets a
+Cloudflare 403 (bot-management) on POST to badgehub.eu even with a custom
+User-Agent, `curl` is unaffected.
+
+The manual steps below are what the script automates, useful if you need to
+publish without the stored token or want to inspect the process:
+
 Apps are distributed as `.mpk` packages (a ZIP whose single top-level folder is
 the app's `fullname`). Build a deterministic one:
 
