@@ -216,7 +216,18 @@ def splice_in(targets, huntable, pid, groups_by_pid, rng=None, tries=10):
             best = p                              # fallback: accept a conflict
     if best is None:
         best = pool[0]
-    changes[pid] = targets.get(best)
+    t = targets.get(best)
+    if t is None or t == pid:
+        # Every candidate in the pool already hunts us, so inheriting their
+        # target would hand us OURSELVES (§10.5: "inheritance yields yourself ->
+        # walk forward"). Worse, it is a stable fixed point: the next reconcile
+        # sees target == pid, re-enters here, and re-derives the same self-target
+        # forever, leaving a player who can never score. Resolve it the way the
+        # ring-of-two branch above does -- a mutual pair.
+        changes[pid] = best
+        changes[best] = pid
+        return changes
+    changes[pid] = t
     changes[best] = pid
     return changes
 

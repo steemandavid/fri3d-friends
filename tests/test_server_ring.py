@@ -91,6 +91,36 @@ def test_splice_in_prefers_a_non_conflicting_neighbour():
     assert _is_single_cycle(targets)
 
 
+def test_splice_in_never_assigns_a_self_target():
+    """§10.5: "inheritance yields yourself -> walk forward". Reproduces a live
+    ring seen on the dev backend (2026-08-10): every other huntable player
+    already targets `pid`, so every candidate is skipped by the `t == pid`
+    guard, `best` falls back to pool[0], and inheriting ITS target hands `pid`
+    itself. That is also a stable fixed point -- the next reconcile re-derives
+    the same self-target forever, so the player can never score."""
+    rng = random.Random(3)
+    targets = {1003: 1004, 1004: 1004, 1007: 1004}
+    changes = ring.splice_in(targets, {1003, 1004, 1007}, 1004, {}, rng)
+    targets.update(changes)
+    assert targets[1004] != 1004
+    assert targets[1004] in (1003, 1007)
+    # ...and it is reciprocal, so 1004 is hunted too rather than orphaned.
+    assert targets[targets[1004]] == 1004
+
+    # Idempotent: running it again on the repaired ring leaves it valid.
+    changes = ring.splice_in(targets, {1003, 1004, 1007}, 1004, {}, rng)
+    targets.update(changes)
+    assert targets[1004] != 1004
+
+
+def test_splice_in_two_player_pool_all_pointing_at_us():
+    # The minimal case: one other huntable player, already hunting us.
+    targets = {1: 2, 2: 1}
+    changes = ring.splice_in(targets, {1, 2}, 2, {}, random.Random(0))
+    targets.update(changes)
+    assert targets[2] == 1 and targets[1] == 2
+
+
 def test_splice_out_hands_the_target_to_the_hunter():
     targets = {1: 2, 2: 3, 3: 1}
     huntable = {1, 3}                           # 2 has just died
