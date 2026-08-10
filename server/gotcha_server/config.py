@@ -88,6 +88,12 @@ SERVER_DEFAULTS = {
     "MAX_REPAIR_PASSES": 20,      # §3.2 ring repair
     "SIG_WINDOW_S": 600,          # +-10 min on X-Ts (§9.1)
     "CARD_TOKEN_S": 86400,        # private player-card read token lifetime
+    # §8.10.4 step 4: after an AppStore wipe the badge re-enrolls with a FRESH
+    # soul, so a hunter holding the previous one would have an otherwise genuine
+    # kill rejected `life_over`. Accept a proof for the immediately-preceding
+    # life for this long after it ended. Server-side ingest only -- badges never
+    # evaluate it, so it is not a badge-pushed tunable.
+    "SOUL_GRACE_S": 900,          # 15 min
     "ADMIN_SESSION_S": 43200,     # 12 h admin login
     # §9.2's enrollment rate limit. Deliberately loose: it is an abuse guard, not
     # a game rule, and Friday morning is 700 badges enrolling at once. If the camp

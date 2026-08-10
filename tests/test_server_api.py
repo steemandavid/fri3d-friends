@@ -297,6 +297,74 @@ def test_broadcast_is_capped_at_120_chars(server, badges):
 # The kill (§2, §3.4, §9.3)
 # ---------------------------------------------------------------------------
 
+def test_soul_grace_accepts_a_kill_after_the_victim_re_enrolled(server, badges):
+    """§8.10.4 step 4. An AppStore wipe re-enrolls the badge with a FRESH soul,
+    ending the old life WITHOUT a death. A hunter still holding the previous soul
+    had its otherwise-genuine kill thrown away as `life_over`; within
+    SOUL_GRACE_S it is now accepted and applied to the victim's current life."""
+    a, v = badges(2)
+    server.start_game()
+    server.advance(200)
+    _force_target(server, a, v)
+    ev = a.report_kill(v)                    # queued offline, holding v's OLD soul
+    v.rotate_soul()
+    v.enroll()                               # the wipe: life_id+1, old life ended
+    re_enrolled_life = int(server.db.one("SELECT life_id FROM players WHERE pid=?",
+                                         (v.pid,))["life_id"])
+    server.clock.advance(60)                 # inside the 15 min grace
+    out = a.flush()
+    assert out["rejected"] == [], out
+    row = server.db.one("SELECT * FROM kills WHERE assassin_pid=? AND voided=0",
+                        (a.pid,))
+    assert row is not None
+    # The kill lands on the life the victim was ON after re-enrolling (not the
+    # old life the soul belonged to), and it really kills them. apply_death then
+    # bumps life_id again for the respawn, so the player's life_id is one ahead
+    # of the row's -- that is the death, not a mismatch.
+    assert int(row["victim_life_id"]) == re_enrolled_life
+    victim = server.db.one("SELECT life_id, base_status, deaths FROM players "
+                           "WHERE pid=?", (v.pid,))
+    assert victim["base_status"] == "dead"
+    assert int(victim["deaths"]) == 1
+    assert int(victim["life_id"]) == re_enrolled_life + 1
+
+
+def test_soul_grace_expires(server, badges):
+    a, v = badges(2)
+    server.start_game()
+    server.advance(200)
+    _force_target(server, a, v)
+    a.report_kill(v)
+    v.rotate_soul()
+    v.enroll()
+    server.clock.advance(16 * 60)            # past SOUL_GRACE_S (900 s)
+    out = a.flush()
+    assert out["rejected"] and out["rejected"][0]["reason"] == "life_over"
+
+
+def test_soul_grace_cannot_kill_the_same_life_twice(server, badges):
+    """The carve-out must not become a second bite: a previous life that ended in
+    a DEATH already has a non-voided kill row, so `already_dead` still fires."""
+    a, b, v = badges(3)
+    server.start_game()
+    server.advance(200)
+    _force_target(server, a, v)
+    _force_target(server, b, v)
+    a.report_kill(v); a.flush()              # v genuinely dies to a
+    stolen = v.soul                          # b holds the same (now burned) soul
+    v.rotate_soul()
+    v.enroll()
+    server.clock.advance(60)
+    b.queue.append({"uuid": "steal-1", "type": "kill", "at": b.now(), "ticks": 0,
+                    "victim_pid": v.pid, "soul": stolen.hex(), "rssi": -60,
+                    "as": "target"})
+    out = b.flush()
+    assert out["rejected"] and out["rejected"][0]["reason"] in ("already_dead",
+                                                                "life_over")
+    assert int(server.db.one("SELECT deaths FROM players WHERE pid=?",
+                             (v.pid,))["deaths"]) == 1
+
+
 def _force_target(server, hunter, victim):
     """Point the ring at a chosen victim, so a test can be about one rule."""
     server.db.execute("UPDATE players SET target_pid=? WHERE pid=?",

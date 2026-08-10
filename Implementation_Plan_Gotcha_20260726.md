@@ -2357,6 +2357,27 @@ If it wipes, the damage is very unevenly distributed:
    to `SYNC_S`. The backend must **accept the previous commitment for a grace window**
    (15 min) rather than voiding an otherwise legitimate kill.
 
+> **BUILD STATUS (2026-08-11):** **BUILT.** `events._h_kill` accepts a proof for the
+> *immediately preceding* life for `SOUL_GRACE_S` (900 s, a server-only default --
+> badges never evaluate it) after that life ended, and applies the kill to the
+> victim's **current** life, so the re-enrolled player actually dies.
+>
+> Two interactions had to be handled, both found while building it:
+> - **It cannot become a second bite.** A previous life that ended in a *death*
+>   already carries a non-voided kill row, so the existing `dup` check raises
+>   `already_dead` first. The carve-out is therefore only reachable for a life that
+>   ended *without* a kill — exactly the wipe/re-enroll case. The duplicate check is
+>   re-run against the life actually being ended.
+> - **Spawn protection would otherwise defeat it.** Protection is stored as a bare
+>   `protected_until` with no record of when it began, and a re-enroll grants
+>   `SPAWN_PROTECT_S`. Since the kill is judged at `at` (before the re-enroll),
+>   `at < protected_until` made protection retroactively shield the victim. The
+>   grace path passes `ignore_protection=True`; safe, because the outcome is the
+>   re-enrolled player dying, which nobody can engineer in their own favour.
+>
+> 442 host tests pass (+3: accepted inside the window, `life_over` after it expires,
+> and the same-life-twice abuse case).
+
 #### 8.10.5 Why not an OTA updater
 
 Rejected deliberately. MicroPythonOS already has a sanctioned install path and badges

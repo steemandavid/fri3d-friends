@@ -186,16 +186,43 @@ def _h_kill(db, game, assassin, ev, cfg, ts, rng):
             return {"kill_id": dup["id"], "deduped": True}
         raise Rejected("already_dead")
 
-    if int(life["life_id"]) != int(victim["life_id"]):
-        # A proof for a life that has already ended some other way (a re-enroll,
-        # say). The soul is genuine but there is nothing left to kill.
-        raise Rejected("life_over")
+    kill_life = int(life["life_id"])
+    soul_grace = False
+    if kill_life != int(victim["life_id"]):
+        # A proof for a life that has already ended some other way. Normally
+        # there is nothing left to kill -- but §8.10.4 step 4 carves out the one
+        # case where the hunter did nothing wrong: an AppStore wipe re-enrolls
+        # the badge with a FRESH soul, ending the old life without a death, and a
+        # hunter still holding the previous soul would have a genuine kill thrown
+        # away. Accept a proof for the IMMEDIATELY PRECEDING life for
+        # SOUL_GRACE_S after it ended, and apply it to the victim's current life.
+        #
+        # This cannot be used to kill twice: a previous life that ended in a
+        # death already has a non-voided kill row, and the `dup` check above
+        # raises `already_dead` before reaching here. So the carve-out is only
+        # ever reachable for a life that ended WITHOUT a kill -- exactly the wipe
+        # /re-enroll case it exists for.
+        grace = int(cfg.get("SOUL_GRACE_S", 900))
+        ended = life["ended_at"]
+        fresh = (ended is not None and 0 <= ts - int(ended) <= grace)
+        if not (kill_life == int(victim["life_id"]) - 1 and fresh):
+            raise Rejected("life_over")
+        kill_life = int(victim["life_id"])
+        soul_grace = True
+        # Re-run the duplicate check against the life we are actually ending.
+        dup = db.one("SELECT * FROM kills WHERE victim_pid=? AND victim_life_id=? "
+                     "AND voided=0", (int(victim["pid"]), kill_life))
+        if dup is not None:
+            if int(dup["assassin_pid"]) == int(assassin["pid"]):
+                return {"kill_id": dup["id"], "deduped": True}
+            raise Rejected("already_dead")
 
-    _check_kill_legal(db, game, assassin, victim, cfg, at)
+    _check_kill_legal(db, game, assassin, victim, cfg, at,
+                      ignore_protection=soul_grace)
 
     return _apply_kill(db, game, assassin, victim, cfg, ts, at, rng,
                        reported_by="assassin", rssi=_int_or_none(ev.get("rssi")),
-                       life_id=int(life["life_id"]))
+                       life_id=kill_life)
 
 
 def _life_for_soul(db, victim, soul_hex):
@@ -277,8 +304,17 @@ def _h_killed_by(db, game, victim, ev, cfg, ts, rng):
                        new_commitment=pending_commitment)
 
 
-def _check_kill_legal(db, game, assassin, victim, cfg, at):
-    """Every server-side rule a kill has to clear (§9.5). Raises Rejected."""
+def _check_kill_legal(db, game, assassin, victim, cfg, at, ignore_protection=False):
+    """Every server-side rule a kill has to clear (§9.5). Raises Rejected.
+
+    `ignore_protection` is set only by the §8.10.4 soul-grace path. Protection is
+    stored as a bare `protected_until`, with no record of when it began, so a
+    re-enroll (which grants SPAWN_PROTECT_S) makes `at < protected_until` true for
+    kills that happened BEFORE the protection existed -- retroactively shielding
+    the victim against a hunter who did nothing wrong. Skipping the check there is
+    safe: that path is only reachable for a previous life that ended without a
+    death, and the outcome is the re-enrolled player dying, which nobody can
+    engineer in their own favour."""
     if game["state"] != "running":
         raise Rejected("game_not_running")
 
@@ -301,7 +337,7 @@ def _check_kill_legal(db, game, assassin, victim, cfg, at):
         raise Rejected("already_dead")
     if victim["base_status"] in (state.OPTED_OUT, state.KICKED, state.RETIRED):
         raise Rejected("victim_" + victim["base_status"])
-    if state.is_protected(victim, at):
+    if not ignore_protection and state.is_protected(victim, at):
         raise Rejected("protected")
 
     # Target validity: your assigned target, or anyone carrying a bounty (rule 10).
