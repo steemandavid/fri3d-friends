@@ -258,7 +258,14 @@ def build_payload(group_ids, name, game=None, connectable=False):
     # from one place, and it happens BEFORE truncate_utf8 so the byte budget is
     # spent on letters rather than on multi-byte sequences that cannot render.
     # The stored config keeps the real spelling (see ble_setup.sanitize_config).
-    disp = truncate_utf8(fold_ascii(name or ""), nb)
+    folded = fold_ascii(name or "")
+    if name and not folded:
+        # A name with NO Latin content at all (CJK, Greek) folds away to nothing,
+        # and an empty beacon name is worse than the mojibake it replaced: the
+        # peer's card loses every trace of who is standing there. Emit a visible
+        # placeholder so the badge is at least present and countable.
+        folded = "?"
+    disp = truncate_utf8(folded, nb)
     name_b = disp.encode("utf-8")
 
     body = (

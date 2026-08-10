@@ -570,6 +570,12 @@ def test_build_payload_folds_the_name_to_ascii():
     assert len(folded.encode("utf-8")) <= nb
     assert folded.startswith("Francois")        # not "Fran" + a truncated blob
 
+    # A name with NO Latin content folds away to nothing. An empty beacon name is
+    # worse than the mojibake it replaced -- the peer's card loses every trace of
+    # who is there -- so a placeholder goes out instead.
+    assert parse_payload(build_payload(ids, "\u65e5\u672c\u8a9e"))["name"] == "?"
+    assert parse_payload(build_payload(ids, ""))["name"] == ""      # genuinely unnamed
+
 
 def test_peer_count_sees_a_crowd_of_strangers(monkeypatch):
     """§9.3 peers_seen must count badges that share NO group and are not the
