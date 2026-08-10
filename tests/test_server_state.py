@@ -85,6 +85,35 @@ def test_quiet_is_clamped_to_bounds_and_contains_the_truce():
     assert q == ((22, 0), (8, 0))
 
 
+def test_quiet_window_honours_the_tuned_bounds():
+    """QUIET_EARLIEST/QUIET_LATEST are live tunables (§5.4), and the INGEST path
+    (events._h_heartbeat) already clamps with the tuned values. This read path
+    used to fall through to clamp_quiet's hardcoded 20:00/10:00 defaults, so the
+    two disagreed the moment a host moved the bounds: a window stored under the
+    tuned bounds was re-clamped to the defaults on every read, silently ignoring
+    the host's setting."""
+    g = _game(truce_from="22:00", truce_to="08:00")
+    row = _row(quiet_from="19:00", quiet_to="11:00")
+    # Default bounds clamp the evening side up to 20:00 and the morning down to 10:00.
+    assert state.quiet_window(row, g) == ((20, 0), (10, 0))
+    # A host who widens the band must actually get the wider window.
+    wide = {"QUIET_EARLIEST": "18:00", "QUIET_LATEST": "12:00"}
+    assert state.quiet_window(row, g, wide) == ((19, 0), (11, 0))
+    # ...and narrowing it must bite.
+    narrow = {"QUIET_EARLIEST": "21:00", "QUIET_LATEST": "09:00"}
+    assert state.quiet_window(row, g, narrow) == ((21, 0), (9, 0))
+
+
+def test_in_quiet_follows_the_tuned_bounds():
+    # CAMP_FRIDAY_10H is 10:00 camp-local; +9.5 h -> 19:30, outside the default
+    # 20:00 band but inside a widened one.
+    g = _game(truce_from="22:00", truce_to="08:00")
+    row = _row(quiet_from="19:00", quiet_to="11:00")
+    ts = CAMP_FRIDAY_10H + int(9.5 * 3600)
+    assert state.in_quiet(row, g, ts) is False                       # clamped to 20:00
+    assert state.in_quiet(row, g, ts, {"QUIET_EARLIEST": "18:00"}) is True
+
+
 def test_in_quiet_evening_and_afternoon():
     g = _game()
     p = _row(quiet_from="20:00", quiet_to="09:00")

@@ -285,9 +285,9 @@ def _check_kill_legal(db, game, assassin, victim, cfg, at):
     # Truce and quiet hours, evaluated at the time of the kill, not of the upload.
     if state.camp_truce_active(game, at, db):
         raise Rejected("truce")
-    if state.in_quiet(victim, game, at):
+    if state.in_quiet(victim, game, at, cfg):
         raise Rejected("victim_quiet")
-    if state.in_quiet(assassin, game, at):
+    if state.in_quiet(assassin, game, at, cfg):
         # Symmetry is what stops quiet hours being an invulnerability exploit.
         raise Rejected("attacker_quiet")
 

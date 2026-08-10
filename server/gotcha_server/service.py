@@ -467,7 +467,7 @@ def sync_payload(db, game, player, config=None, ts=None, secret=""):
                 "last_seen_ago_s": max(0, ts - int(seen)),
                 # The badge needs this to know why its radar is dark (§10.4):
                 # "Otter 42 - slaapt" rather than an unexplained refusal.
-                "halted": state.pair_halted(player, t, game, ts, db),
+                "halted": state.pair_halted(player, t, game, ts, db, cfg),
             }
 
     dodges = {}
@@ -477,7 +477,7 @@ def sync_payload(db, game, player, config=None, ts=None, secret=""):
         left = max(0, int(cfg["DODGE_LIMIT"]) - int(r["used"]))
         dodges[str(int(r["attacker_pid"]))] = left
 
-    quiet_from, quiet_to = state.quiet_window(player, game)
+    quiet_from, quiet_to = state.quiet_window(player, game, cfg)
     payload = {
         "server_time": ts,
         "game": {

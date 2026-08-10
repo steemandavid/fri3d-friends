@@ -131,15 +131,25 @@ def truce_until(game, ts=None, db=None):
     return None
 
 
-def quiet_window(player, game):
+def quiet_window(player, game, config=None):
     """A player's personal quiet window as ((h, m), (h, m)), clamped to the
     §10.4a bounds. Default is exactly the camp truce, so setting nothing changes
-    nothing -- and the camp truce is always contained in it."""
+    nothing -- and the camp truce is always contained in it.
+
+    `config` supplies QUIET_EARLIEST/QUIET_LATEST. Passing it matters: those are
+    live tunables (§5.4), and the INGEST path (events._h_heartbeat) already
+    clamps with the tuned values. This read path used to fall through to
+    clamp_quiet's hardcoded 20:00/10:00 defaults, so the two disagreed the moment
+    a host moved the bounds -- a window stored under the tuned bounds was then
+    re-clamped to the defaults on every read, silently ignoring the setting."""
+    cfg = config or {}
     d_from = clock.parse_hm(game["truce_from"], (22, 0))
     d_to = clock.parse_hm(game["truce_to"], (8, 0))
     q_from = clock.parse_hm(player["quiet_from"], d_from) if player["quiet_from"] else d_from
     q_to = clock.parse_hm(player["quiet_to"], d_to) if player["quiet_to"] else d_to
-    return clamp_quiet(q_from, q_to, d_from, d_to)
+    return clamp_quiet(q_from, q_to, d_from, d_to,
+                       cfg.get("QUIET_EARLIEST", "20:00"),
+                       cfg.get("QUIET_LATEST", "10:00"))
 
 
 def clamp_quiet(q_from, q_to, d_from=(22, 0), d_to=(8, 0),
@@ -165,7 +175,7 @@ def clamp_quiet(q_from, q_to, d_from=(22, 0), d_to=(8, 0),
     return (f // 60, f % 60), (t // 60, t % 60)
 
 
-def in_quiet(player, game, ts=None):
+def in_quiet(player, game, ts=None, config=None):
     """Is this player inside their personal quiet window right now?
 
     Symmetric by construction (§10.4a): callers use this for both "can be
@@ -173,22 +183,22 @@ def in_quiet(player, game, ts=None):
     invulnerability exploit and every kid would find it on Friday afternoon.
     """
     ts = clock.now() if ts is None else ts
-    q_from, q_to = quiet_window(player, game)
+    q_from, q_to = quiet_window(player, game, config)
     return bool(clip(daily_window(q_from, q_to, ts - 1, ts + 1), ts, ts + 1))
 
 
-def quiet_intervals(player, game, t0, t1):
-    q_from, q_to = quiet_window(player, game)
+def quiet_intervals(player, game, t0, t1, config=None):
+    q_from, q_to = quiet_window(player, game, config)
     return clip(daily_window(q_from, q_to, t0, t1), t0, t1)
 
 
-def pair_halted(a, b, game, ts=None, db=None):
+def pair_halted(a, b, game, ts=None, db=None, config=None):
     """§10.4: the halt is per-pair -- radar dark, attacks refused -- if EITHER
     side is in a camp truce or in personal quiet hours."""
     ts = clock.now() if ts is None else ts
     if camp_truce_active(game, ts, db):
         return True
-    return in_quiet(a, game, ts) or in_quiet(b, game, ts)
+    return in_quiet(a, game, ts, config) or in_quiet(b, game, ts, config)
 
 
 # ---------------------------------------------------------------------------
@@ -294,7 +304,7 @@ def dormancy_seconds(player, game, db, ts=None, config=None):
         return 0
     grace = int(cfg.get("DORMANT_GRACE_S", DEFAULTS["DORMANT_GRACE_S"]))
     excluded = camp_truce_intervals(game, since, ts, db)
-    excluded += quiet_intervals(player, game, since, ts)
+    excluded += quiet_intervals(player, game, since, ts, cfg)
     excluded += outage_intervals(db, since, ts)
     # Extend each excluded window by the grace period, then merge: a badge
     # powered on at 08:30 has an hour to get a sync in before the clock restarts.
