@@ -202,12 +202,27 @@ async def set_appversion(request: Request):
     db = request.app.state.db
     body = await _json(request)
     game = service.current_game(db)
+    # A key that is ABSENT leaves the stored value alone; a key present but empty
+    # CLEARS it. Without the second case a floor could be set and then never
+    # lifted -- `if min_v else None` turned "" into None, which COALESCE read as
+    # "keep", so the only way back was a DB edit. That is a bad corner to leave in
+    # an endpoint whose whole job is a camp-wide kill switch: since §8.10.3 a badge
+    # below min_version stops hunting, so a floor typed by mistake takes the camp
+    # out of the game with no way back through the UI.
+    sets, params = [], []
+    for key in ("min_version", "latest_version"):    # literals, never user input
+        if key not in body:
+            continue                                 # absent -> leave it alone
+        v = body.get(key)
+        v = str(v).strip()[:16] if v is not None else ""
+        sets.append(key + "=?")
+        params.append(v or None)                     # "" / null -> clear it
+    if sets:
+        params.append(game["id"])
+        db.execute("UPDATE games SET " + ", ".join(sets) + " WHERE id=?",
+                   tuple(params))
     min_v = body.get("min_version")
     latest_v = body.get("latest_version")
-    db.execute("UPDATE games SET min_version=COALESCE(?, min_version), "
-               "latest_version=COALESCE(?, latest_version) WHERE id=?",
-               (str(min_v)[:16] if min_v else None,
-                str(latest_v)[:16] if latest_v else None, game["id"]))
     db.commit()
     log_action(db, host, "appversion", None, {"min": min_v, "latest": latest_v})
     game = service.current_game(db)

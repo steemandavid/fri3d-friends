@@ -233,6 +233,32 @@ def test_broadcast_and_app_version_reach_the_badge(server, badges):
     assert p["app"] == {"min_version": "0.11.0", "latest_version": "0.11.2"}
 
 
+def test_appversion_floor_can_be_lifted_again(server, badges):
+    """A version floor must be removable through the API.
+
+    Since §8.10.3 a badge below min_version stops hunting, so a floor typed by
+    mistake takes the camp out of the game. The endpoint used to do
+    `str(v) if v else None` + COALESCE, which read an empty string as "keep" --
+    so a floor could be set and then never lifted except by editing the DB."""
+    b = badges(1)
+    server.admin_post("/v1/admin/appversion", {"min_version": "0.99.0",
+                                               "latest_version": "0.99.0"})
+    assert b.sync()["app"] == {"min_version": "0.99.0", "latest_version": "0.99.0"}
+
+    server.admin_post("/v1/admin/appversion", {"min_version": "",
+                                               "latest_version": ""})
+    assert b.sync()["app"] == {"min_version": None, "latest_version": None}
+
+
+def test_appversion_absent_key_leaves_the_other_alone(server, badges):
+    # Partial updates must not clear the field they do not mention.
+    b = badges(1)
+    server.admin_post("/v1/admin/appversion", {"min_version": "0.11.0",
+                                               "latest_version": "0.11.9"})
+    server.admin_post("/v1/admin/appversion", {"latest_version": "0.12.0"})
+    assert b.sync()["app"] == {"min_version": "0.11.0", "latest_version": "0.12.0"}
+
+
 def test_broadcast_is_capped_at_120_chars(server, badges):
     b = badges(1)
     server.admin_post("/v1/admin/broadcast", {"text": "x" * 500})
