@@ -130,6 +130,7 @@ class GotchaController(object):
         # endpoints / prefs (set by configure)
         self.api_url = ""
         self.enroll_url = ""
+        self.card_base = ""
         self.quiet = None
         self.name = ""
         self.groups = []
@@ -204,6 +205,11 @@ class GotchaController(object):
         g = gotcha_cfg if isinstance(gotcha_cfg, dict) else {}
         self.api_url = (g.get("api") or "").strip()
         self.enroll_url = (g.get("enroll") or self.api_url).strip()
+        # §9.1/D31 player-card QR base. A phone browser opens this, so it wants
+        # the https endpoint, not §6.3's plain-http signed-request one: prefer an
+        # explicit `card` override, then `enroll` (https by contract), then `api`.
+        self.card_base = (g.get("card") or g.get("enroll")
+                          or g.get("api") or "").strip()
         q = g.get("quiet")
         self._quiet_cfg = q if isinstance(q, dict) else None
         self.quiet = self._quiet_cfg
@@ -503,6 +509,25 @@ class GotchaController(object):
         if gotcha.version_tuple(latest) and gotcha.version_lt(me, latest):
             return "Nieuwe versie beschikbaar -- update in de AppStore"
         return None
+
+    def card_url(self):
+        """The player-card URL for this badge's QR (§9.1), or None if there is
+        nothing to point at (never enrolled / no endpoint configured).
+
+        The token may be absent or stale -- the page degrades to the public view
+        rather than erroring, so we always render whatever we have. The Activity
+        nudges a sync when it opens the card, which refreshes the token if the
+        badge happens to be online."""
+        return gotcha.card_url(self.card_base, self.state.d.get("pid"),
+                               self.state.d.get("card_token"))
+
+    def refresh_card_token(self):
+        """Ask for a sync at the next tick so the card token is as fresh as it
+        can be. Best effort by design: it still passes through the online /
+        _defer_for_bar gates, so it never steals the radio mid-chase and does
+        nothing at all when WiFi is down (~98% of the time, §8.7)."""
+        if self.enrolled and not self._syncing:
+            self._next_sync_ms = 0
 
     def _hunting_blocked(self):
         """§8.10.3: a badge below min_app_version stops HUNTING -- no attack, no

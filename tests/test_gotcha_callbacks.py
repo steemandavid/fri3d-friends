@@ -502,6 +502,62 @@ def test_take_fleet_banner_none_when_nothing_new(nudge_controller):
 
 
 # ---------------------------------------------------------------------------
+# §9.1/D31: the player-card QR the badge shows a phone.
+# ---------------------------------------------------------------------------
+
+def test_card_base_prefers_https_endpoints_in_order():
+    # A phone browser opens this URL, so it wants the https endpoint, not §6.3's
+    # plain-http signed-request one. Explicit `card` wins, then `enroll`, then api.
+    gc = _make_controller()
+    gc.configure({"api": "http://a", "enroll": "https://e", "card": "https://c"},
+                 "Otter", [])
+    assert gc.card_base == "https://c"
+    gc.configure({"api": "http://a", "enroll": "https://e"}, "Otter", [])
+    assert gc.card_base == "https://e"
+    gc.configure({"api": "http://a"}, "Otter", [])
+    assert gc.card_base == "http://a"
+    gc.configure({}, "Otter", [])
+    assert gc.card_base == ""
+
+
+def test_card_url_uses_live_pid_and_token():
+    gc = _make_controller()
+    gc.configure({"enroll": "https://camp.example"}, "Otter", [])
+    gc.state.d["pid"] = 1004
+    gc.state.d["card_token"] = "1786400000.deadbeef"
+    assert gc.card_url() == \
+        "https://camp.example/gotcha/?badge=1004&t=1786400000.deadbeef"
+    # Never synced: no token yet, but the public card still resolves.
+    gc.state.d["card_token"] = None
+    assert gc.card_url() == "https://camp.example/gotcha/?badge=1004"
+
+
+def test_card_url_is_none_before_enrollment_or_without_an_endpoint():
+    gc = _make_controller()
+    gc.configure({"enroll": "https://camp.example"}, "Otter", [])
+    gc.state.d["pid"] = None
+    assert gc.card_url() is None            # never enrolled -> no card
+    gc.configure({}, "Otter", [])
+    gc.state.d["pid"] = 1004
+    assert gc.card_url() is None            # no endpoint -> nothing to point at
+
+
+def test_refresh_card_token_asks_for_a_sync_without_forcing_one():
+    # Opening the card nudges the scheduler; it must NOT bypass the online /
+    # _defer_for_bar gates (no radio grab mid-chase, nothing at all offline).
+    gc = _make_controller()
+    gc.enrolled = True
+    gc._next_sync_ms = _stdtime.ticks_ms() + 999999
+    gc.refresh_card_token()
+    assert gc._next_sync_ms == 0
+    # A sync already in flight is left alone.
+    gc._next_sync_ms = 12345
+    gc._syncing = True
+    gc.refresh_card_token()
+    assert gc._next_sync_ms == 12345
+
+
+# ---------------------------------------------------------------------------
 # §8.10.3: below min_app_version the badge stops HUNTING but stays killable.
 # ---------------------------------------------------------------------------
 

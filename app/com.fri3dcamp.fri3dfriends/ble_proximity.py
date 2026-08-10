@@ -56,6 +56,7 @@ OVERHEAD = 2 + 2 + 4 + 1 + 1 + 1 + 1   # +1 vs v1 for the `blocks` byte
 ADV_MS = 250                    # advertise interval (ms)
 EVICT_MS = 30000                # peer gone if not seen for this long (ms)
 SEEN_CAP = 64                   # LRU cap on the peer table (plan §4)
+NEARBY_CAP = 96                 # cap on the §9.3 peers_seen headcount (addrs only)
 # Scanning: a CONTINUOUS, dense scan with an explicit interval/window. This is
 # critical — MicroPython's gap_scan() with DEFAULT args enables NimBLE's
 # duplicate filter, so each peer is reported only ~once and presence flaps as
@@ -480,6 +481,7 @@ class BLEProximity:
         self._own_table = []          # [(name, id), ...]
         self._rssi_floor = RSSI_FLOOR_DEFAULT
         self._seen = {}               # key (addr_type, addr_bytes) -> dict
+        self._nearby = {}             # §9.3 peers_seen: (addr_type, addr) -> ticks_ms
         self._seen_cap = SEEN_CAP     # LRU cap on the peer table (plan §4)
         self._arrivals = []           # queued new-arrival events for UI
         self._pending = []            # raw scan results captured in the IRQ, drained in tick()
@@ -590,6 +592,7 @@ class BLEProximity:
             pass
         self._ble = None
         self._seen = {}
+        self._nearby = {}
         self._arrivals = []
         self._pending = []
 
@@ -685,6 +688,14 @@ class BLEProximity:
         info = parse_payload(adv_data)
         if info is None:
             return
+        # Count EVERY !Fri3d badge in range, before the friend/target admission
+        # gate below throws strangers away. This is the §9.3 heartbeat's
+        # peers_seen: the server reads it as "is this player standing in a
+        # populated place" (§10.1's sighting bump) and as the §9.5 lonely-kill
+        # heuristic, and a crowd of strangers is exactly the case that matters.
+        # Address only -- no name, no groups, nothing retained about who they
+        # are, and it never feeds the UI (§13: we count bodies, not identities).
+        self._note_nearby(addr_type, addr, now)
         game_live = bool(self._admit_pids) or bool(self._pin_pids)
         if not admit_peer(self._own_ids, info, self._admit_pids, game_live):
             return                  # not a friend, and not a game-admitted peer
@@ -790,6 +801,21 @@ class BLEProximity:
         GATT writes) to `fn(event, data)`. Pass None to detach."""
         self._gatt_dispatch = fn
 
+    # ---- nearby-badge headcount (§9.3 peers_seen) ----
+    def _note_nearby(self, addr_type, addr, now_ms):
+        """Record that *a* badge is in range. Address -> last_seen_ms only."""
+        self._nearby[(addr_type, addr)] = now_ms
+        if len(self._nearby) > NEARBY_CAP:
+            # A dense crowd is the point of this counter, but it must not grow
+            # without bound: drop the oldest. NEARBY_CAP is well above the §9.5
+            # threshold that reads it, so a truncated count still says "crowd".
+            oldest = None
+            for k, t in self._nearby.items():
+                if oldest is None or t < self._nearby[oldest]:
+                    oldest = k
+            if oldest is not None:
+                del self._nearby[oldest]
+
     # ---- eviction ----
     def _evict(self, now_ms):
         from time import ticks_diff
@@ -799,6 +825,10 @@ class BLEProximity:
                 stale.append(key)
         for k in stale:
             del self._seen[k]
+        gone = [k for k, t in self._nearby.items()
+                if ticks_diff(now_ms, t) > EVICT_MS]
+        for k in gone:
+            del self._nearby[k]
 
     # ---- UI accessors ----
     def take_arrivals(self):
@@ -837,15 +867,19 @@ class BLEProximity:
         return False
 
     def peer_count(self):
-        """Every badge currently in range, friend or not.
+        """Every !Fri3d badge currently in range, friend or not.
 
         This is the §9.3 heartbeat's `peers_seen`, and it means something quite
         different from current_peers()/has_peers(): the server reads it as "is
         this badge standing in a populated place" (the sighting bump that keeps a
         present player out of `stale`, §10.1) and as the §9.5 lonely-kill
         heuristic. Filtering to friends would report 0 for a player standing in a
-        crowd of fifty strangers, which is the opposite of the intended signal."""
-        return len(self._seen)
+        crowd of fifty strangers, which is the opposite of the intended signal.
+
+        Counted from `_nearby`, NOT `_seen`: admit_peer() drops strangers before
+        they ever reach the peer table, so `_seen` is friends + the game target
+        and would undercount a crowd almost as badly as current_peers() does."""
+        return len(self._nearby)
 
     # ---- validation ----
     @staticmethod

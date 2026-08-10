@@ -2393,6 +2393,28 @@ something operable from a phone at a muddy campsite.
   pattern); the token rides the sync response.
   The pages are **served by the backend itself** (D31) over Let's Encrypt HTTPS,
   same origin as the API — D21 governs the *badge* path only.
+
+> **BUILD STATUS (2026-08-10, 0.11.23):** Card QR **BUILT**. `gotcha.card_url()`
+> composes `<base>/gotcha/?badge=<pid>&t=<token>`; `GotchaController.card_url()`
+> supplies the live pid + `card_token` (already parsed out of the sync response
+> since 0.11.x, but until now never used by anything). A **"Mijn kaart (QR)"**
+> menu row — shown once a game has ever been joined, next to the existing Gotcha
+> rows — opens a create-once/hidden overlay built to the same 128 px white-box
+> pattern as the setup window; A or X closes it. Three deliberate calls:
+> - **The base is the https endpoint**, not §6.3's plain-http `gotcha.api`: a
+>   phone browser opens this. Order is `gotcha.card` (new optional override) →
+>   `gotcha.enroll` → `gotcha.api`.
+> - **A missing/stale token still renders a QR.** The page degrades to the public
+>   view, so an unsynced badge is not a dead QR; the overlay says
+>   *"alleen openbaar - nog niet gesynct"* so the player knows why there is no
+>   target on it.
+> - **Opening the card nudges a sync** (`refresh_card_token()` sets
+>   `_next_sync_ms = 0`) but does not force one — it still passes the
+>   online/`_defer_for_bar` gates, so it never grabs the radio mid-chase and does
+>   nothing at all offline.
+>
+> The overlay owns no radio (unlike the setup window), so it does not suspend
+> proximity and is safe to open at any time no other overlay is up.
 - **Host:** session login on `/admin` over HTTPS, reachable from a phone.
 
 ### 9.2 Player endpoints

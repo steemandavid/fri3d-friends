@@ -811,6 +811,25 @@ def test_heartbeat_event_shape_and_droppable():
     assert gotcha.heartbeat_event(groups=["G"])["groups"] == ["G"]
 
 
+def test_card_url_builds_the_player_card_link():
+    # §9.1/D31: the badge QR points a phone at the backend-served card.
+    assert gotcha.card_url("https://camp.example", 1004, "1786400000.abc") == \
+        "https://camp.example/gotcha/?badge=1004&t=1786400000.abc"
+    # A trailing slash on the configured base must not double up.
+    assert gotcha.card_url("https://camp.example/", 1004, None) == \
+        "https://camp.example/gotcha/?badge=1004"
+    # No token -> still a valid link; the page degrades to the public view
+    # rather than erroring, so an unsynced badge is not a dead QR.
+    assert gotcha.card_url("https://camp.example", 7, "") == \
+        "https://camp.example/gotcha/?badge=7"
+    # Nothing to point at -> None, and the caller hides the QR box.
+    assert gotcha.card_url("", 1004, "t") is None
+    assert gotcha.card_url(None, 1004, "t") is None
+    assert gotcha.card_url("   ", 1004, "t") is None
+    assert gotcha.card_url("https://camp.example", None, "t") is None
+    assert gotcha.card_url("https://camp.example", "", "t") is None
+
+
 def test_version_tuple_is_a_readability_check_not_an_ordering():
     # §8.10.3: version_tuple() answers "is this a readable version at all"; the
     # ORDERING is version_lt()'s job, because a bare tuple compare is

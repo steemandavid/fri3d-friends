@@ -287,6 +287,36 @@ def version_tuple(s):
 
 
 # ---------------------------------------------------------------------------
+# 1c2. PLAYER-CARD URL -- what the badge's QR points a phone at (§9.1, D31)
+# ---------------------------------------------------------------------------
+
+def card_url(base, pid, token=None):
+    """The backend-served player card: `<base>/gotcha/?badge=<pid>&t=<token>`.
+
+    Without `t` the page shows public data only (score, streak, boards); with a
+    valid one it also shows your target, which is the whole point of scanning
+    your own badge. The token is short-lived (`CARD_TOKEN_S`, 24 h) and rides the
+    sync response rather than living in the URL forever, so a QR photographed by
+    a bystander goes stale.
+
+    `base` should be the **https** endpoint (`gotcha.card`, else `gotcha.enroll`)
+    -- this URL is opened by a phone browser, not by the signed-request path, and
+    §6.3's `gotcha.api` is the plain-http one.
+
+    Returns None when there is nothing to point at (no base, no pid): the caller
+    hides the QR rather than rendering a broken link. The token is
+    `<digits>.<32 hex>` (server crypto.card_token) so it needs no URL escaping."""
+    if not isinstance(base, str) or not base.strip():
+        return None
+    if pid is None or pid == "":
+        return None
+    u = base.strip().rstrip("/") + "/gotcha/?badge=" + str(pid)
+    if isinstance(token, str) and token:
+        u += "&t=" + token
+    return u
+
+
+# ---------------------------------------------------------------------------
 # 1d. GAME CONFIG -- defensive parse of the server-pushed tunables (plan §5.4)
 # ---------------------------------------------------------------------------
 #

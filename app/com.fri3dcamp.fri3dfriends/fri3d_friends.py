@@ -360,6 +360,16 @@ class Fri3dFriends(Activity):
         self._qr = None
         self._qr_box = None
         self._qr_last = None
+        # §9.1/D31 player-card QR overlay (create-once, hidden).
+        self._card_overlay = None
+        self._card_qr = None
+        self._card_qr_box = None
+        self._card_qr_last = None
+        self._card_info_lbl = None
+        self._card_hint_lbl = None
+        self._card_close_btn = None
+        self._card_open = False
+        self._card_next_ms = 0
         self._setup_widgets = []
         self._reload_pending = False
         self._setup_skipped = False       # user chose "skip for now" on Configure-me
@@ -1082,6 +1092,8 @@ class Fri3dFriends(Activity):
             objs = self._menu_rows[:self._menu_count]
         elif self._adopt_open:
             objs = self._adopt_rows[:self._adopt_count] + [self._adopt_join]
+        elif self._card_open:
+            objs = [self._card_close_btn]
         elif self._setup_open:
             objs = [self._setup_close_btn]
         elif self._show_setup_screen():
@@ -1543,6 +1555,7 @@ class Fri3dFriends(Activity):
         # setup overlay too, and will swap to the nametag (menu overlay) later.
         self._build_menu(scr)
         self._build_setup_overlay(scr)
+        self._build_card_overlay(scr)
         self._build_adopt_panel(scr)
         self._build_banner(scr)
 
@@ -1708,6 +1721,158 @@ class Fri3dFriends(Activity):
         self._setup_close_btn = close
         ov.add_flag(lv.obj.FLAG.HIDDEN)
         self._overlay = ov
+
+    def _build_card_overlay(self, scr):
+        # §9.1/D31 player-card QR: the route from a badge to your own score,
+        # target and the leaderboards on your phone. Same create-once/hide
+        # discipline as the setup overlay (deleting live widgets hard-crashes
+        # this build), and the same 128px white QR box so the two read as one
+        # family. No countdown: unlike the setup window this owns no radio and
+        # has no deadline -- A or X closes it.
+        ov = self._rbox(scr, 0, 0, W, H, COL_BG, radius=0)
+        try:
+            ov.set_style_border_width(2, 0)
+            ov.set_style_border_color(_col(COL_HINT), 0)
+            ov.remove_flag(lv.obj.FLAG.SCROLLABLE)
+        except Exception:
+            pass
+        self._label(ov, 0, 6, "Mijn kaart", COL_HINT,
+                    font=lv.font_montserrat_24, center=True)
+        self._label(ov, 0, 34, "scan met je telefoon", COL_NONE,
+                    font=lv.font_montserrat_14, center=True)
+        try:
+            box = self._rbox(ov, (W - 128) // 2, 50, 128, 128, 0xFFFFFF, radius=6)
+            qr = lv.qrcode(box)
+            qr.set_size(108)
+            qr.set_dark_color(_col(0x000000))
+            qr.set_light_color(_col(0xFFFFFF))
+            qr.center()
+            self._card_qr = qr
+            self._card_qr_box = box
+        except Exception:
+            self._card_qr = None
+            self._card_qr_box = None
+        self._card_info_lbl = self._label(ov, 0, 182, "", COL_NEAR,
+                                          font=lv.font_montserrat_16, center=True)
+        self._card_hint_lbl = self._label(ov, 0, 200, "", COL_NONE,
+                                          font=lv.font_montserrat_12, center=True)
+        close = lv.button(ov)
+        close.set_size(96, 22)
+        close.set_pos((W - 96) // 2, 212)
+        try:
+            close.set_style_bg_color(_col(COL_PANEL), 0)
+            close.set_style_bg_opa(lv.OPA.COVER, 0)
+            close.set_style_radius(11, 0)
+            close.set_style_border_width(1, 0)
+            close.set_style_border_color(_col(COL_CARD_LINE), 0)
+            close.set_style_shadow_width(0, 0)
+        except Exception:
+            pass
+        clbl = lv.label(close)
+        clbl.set_text("Sluiten")
+        clbl.set_style_text_color(_col(COL_HINT), 0)
+        clbl.set_style_text_font(lv.font_montserrat_14, 0)
+        try:
+            clbl.center()
+        except Exception:
+            pass
+        self._make_focusable(close)
+        self._bind_event(close, self._on_card_close_clicked, lv.EVENT.CLICKED)
+        self._card_close_btn = close
+        ov.add_flag(lv.obj.FLAG.HIDDEN)
+        self._card_overlay = ov
+
+    def _on_card_close_clicked(self, e=None):
+        self._close_card()
+
+    def _open_card(self):
+        # Show the player-card QR. Owns no radio, so unlike the setup window it
+        # can open from any state that is not already holding an overlay.
+        if self._gc is None or self._card_overlay is None:
+            return
+        if (self._card_open or self._exchanging or self._setup_open or
+                self._setup_task is not None or self._adopt_open):
+            return
+        url = None
+        try:
+            url = self._gc.card_url()
+        except Exception:
+            url = None
+        if not url:
+            # Never enrolled, or no endpoint configured: say so rather than
+            # showing an empty white box.
+            self._show_banner("Nog geen kaart -- doe eerst mee met Gotcha")
+            return
+        self._card_open = True
+        try:
+            self._gc.refresh_card_token()      # best effort; no-op when offline
+        except Exception:
+            pass
+        self._render_card(url)
+        try:
+            self._card_overlay.remove_flag(lv.obj.FLAG.HIDDEN)
+            self._card_overlay.move_foreground()
+        except Exception:
+            pass
+        if self._banner_bg is not None:
+            try:
+                self._banner_bg.move_foreground()
+            except Exception:
+                pass
+        self._set_focus([self._card_close_btn])
+        self._wake()
+
+    def _render_card(self, url):
+        if self._card_qr is None or self._card_qr_box is None:
+            return
+        if url != self._card_qr_last:
+            try:
+                self._card_qr.update(url, len(url))
+                self._card_qr_box.remove_flag(lv.obj.FLAG.HIDDEN)
+                self._card_qr_last = url
+            except Exception:
+                return
+        gc = self._gc
+        name = (self._config.get("name") or "?")
+        try:
+            pid = gc.state.d.get("pid")
+        except Exception:
+            pid = None
+        self._set_lbl(self._card_info_lbl,
+                      "%s   #%s" % (name, pid if pid is not None else "?"))
+        # Be honest about what the phone will show: without a live token the
+        # page falls back to the public view (no target).
+        try:
+            has_tok = bool(gc.state.d.get("card_token"))
+        except Exception:
+            has_tok = False
+        self._set_lbl(self._card_hint_lbl,
+                      "A of X om te sluiten" if has_tok
+                      else "alleen openbaar - nog niet gesynct")
+
+    def _refresh_card(self, now):
+        # The token is refreshed by _do_sync; if it lands while the card is open,
+        # re-render so the QR the player is pointing a phone at is the live one.
+        if not self._card_open or self._gc is None:
+            return
+        if time.ticks_diff(now, self._card_next_ms) < 0:
+            return
+        self._card_next_ms = time.ticks_add(now, 1000)
+        try:
+            url = self._gc.card_url()
+        except Exception:
+            return
+        if url and url != self._card_qr_last:
+            self._render_card(url)
+
+    def _close_card(self):
+        self._card_open = False
+        if self._card_overlay is not None:
+            try:
+                self._card_overlay.add_flag(lv.obj.FLAG.HIDDEN)
+            except Exception:
+                pass
+        self._set_focus([self._menu_btn])
 
     def _build_adopt_panel(self, scr):
         # Post-swap "join my friend's group(s)?" prompt, rebuilt (v0.10.0) as
@@ -2207,6 +2372,7 @@ class Fri3dFriends(Activity):
                 self._refresh_battery(now)
                 self._refresh_clock(now)
                 self._refresh_setup(now)
+                self._refresh_card(now)
                 self._resync_time(now)
                 if self._banner_until and time.ticks_diff(now, self._banner_until) >= 0:
                     self._hide_banner()
@@ -2584,7 +2750,7 @@ class Fri3dFriends(Activity):
         if not self._entered:
             return
         if (self._menu_open or self._exchanging or self._setup_open or
-                self._setup_task is not None or self._adopt_open):
+                self._setup_task is not None or self._adopt_open or self._card_open):
             return
         items = [
             ("Vrienden dichtbij", "detail"),
@@ -2596,6 +2762,7 @@ class Fri3dFriends(Activity):
         # Gotcha rows appear once a game has ever been joined (§13: opt-out is
         # always reachable in a few seconds; opt-in brings you back).
         if self._gc is not None and self._gc.ever_enrolled():
+            items.append(("Mijn kaart (QR)", "card"))
             items.append(("Gotcha demo", "gotcha_demo"))
             items.append(("Stoppen met Gotcha" if not self._gc.is_opted_out()
                           else "Meedoen met Gotcha", "gotcha_toggle"))
@@ -2654,6 +2821,9 @@ class Fri3dFriends(Activity):
                     "Geluid: %s" % ("aan" if self._sound else "uit"))
             except Exception:
                 pass
+        elif action == "card":
+            self._close_menu()
+            self._open_card()
         elif action == "setup":
             self._close_menu()
             self._open_setup_window()
@@ -2726,6 +2896,9 @@ class Fri3dFriends(Activity):
             return True
         if self._adopt_open:
             self._close_adopt()
+            return True
+        if self._card_open:
+            self._close_card()
             return True
         if self._setup_open:
             self._stop_setup()
@@ -2899,8 +3072,8 @@ class Fri3dFriends(Activity):
         # Configure-me / skipped badge (no proximity running) it simply brings
         # the radio up for the window. Reached from the menu's "Telefoon-setup"
         # item and Configure-me's "Telefoon-setup" row.
-        if (self._exchanging or self._setup_open or
-                self._setup_task is not None or self._adopt_open or self._menu_open):
+        if (self._exchanging or self._setup_open or self._setup_task is not None
+                or self._adopt_open or self._menu_open or self._card_open):
             return
         self._setup_open = True
         self._setup_win_deadline = time.ticks_add(time.ticks_ms(), SETUP_WINDOW_MS)

@@ -18,8 +18,8 @@ from ble_proximity import (
     fnv1a_16, normalize_group, hash_groups, name_budget, truncate_utf8,
     build_payload, parse_payload, intersect, shared_name_for, build_own_table,
     build_game_block, parse_game_block, admit_peer, evict_lru,
-    MAGIC, VERSION, ADV_TOTAL, OVERHEAD, MAX_GROUPS, SEEN_CAP,
-    BLOCK_GAME, GAME_BLOCK_LEN, GFLAG_ALIVE, GFLAG_BOUNTY,
+    MAGIC, VERSION, ADV_TOTAL, OVERHEAD, MAX_GROUPS, SEEN_CAP, NEARBY_CAP,
+    EVICT_MS, BLOCK_GAME, GAME_BLOCK_LEN, GFLAG_ALIVE, GFLAG_BOUNTY,
 )
 
 
@@ -548,7 +548,45 @@ def test_current_peers_and_has_peers_exclude_game_admitted(monkeypatch):
     del b._seen[(0, b"\x01")]
     assert b.current_peers() == []
     assert b.has_peers() is False
-    assert b.peer_count() == 1
+    assert b.peer_count() == 2       # _nearby is independent of the peer table
+
+
+def test_peer_count_sees_a_crowd_of_strangers(monkeypatch):
+    """§9.3 peers_seen must count badges that share NO group and are not the
+    target -- the whole point is "am I standing in a crowd".
+
+    admit_peer() drops those before they reach `_seen`, so counting the peer
+    table reports 0 for a player surrounded by fifty strangers and inverts the
+    signal the server is reading (§10.1 sighting bump, §9.5 lonely-kill)."""
+    import time as _time
+    monkeypatch.setattr(_time, "ticks_ms", lambda: 10_000, raising=False)
+    monkeypatch.setattr(_time, "ticks_diff", lambda a, b: a - b, raising=False)
+    b = _scanner("MyGroup")
+    for i in range(5):
+        strangers = build_payload(hash_groups(["NotMyGroup%d" % i])[0], "Vreemde%d" % i)
+        b._process_result(0, bytes([0x20 + i]), strangers, -70, 1000)
+
+    assert b.current_peers() == []          # none of them is a friend
+    assert b.has_peers() is False
+    assert len(b._seen) == 0                # and none reached the peer table
+    assert b.peer_count() == 5              # ...but the headcount sees them all
+
+    # They age out on the same EVICT_MS schedule as the peer table.
+    b._evict(1000 + EVICT_MS + 1)
+    assert b.peer_count() == 0
+
+
+def test_peer_count_is_capped_and_drops_the_oldest(monkeypatch):
+    # A dense crowd is the point, but the headcount must not grow without bound.
+    import time as _time
+    monkeypatch.setattr(_time, "ticks_ms", lambda: 10_000, raising=False)
+    monkeypatch.setattr(_time, "ticks_diff", lambda a, b: a - b, raising=False)
+    b = _scanner("MyGroup")
+    for i in range(NEARBY_CAP + 20):
+        b._note_nearby(0, b"a%d" % i, 1000 + i)
+    assert b.peer_count() == NEARBY_CAP
+    assert (0, b"a0") not in b._nearby           # oldest dropped
+    assert (0, b"a%d" % (NEARBY_CAP + 19)) in b._nearby
 
 
 # ---------------------------------------------------------------------------
