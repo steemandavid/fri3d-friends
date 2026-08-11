@@ -57,9 +57,10 @@ def test_parse_rejects_foreign_advert():
 
 def test_parse_rejects_unknown_version():
     adv = bytearray(build_exchange_adv(nonce=5))
-    # version byte sits right after company(2)+magic(4) inside the AD body:
-    #   [len][type][company:2][magic:4][ver] -> index 2+2+4 = 8
-    adv[8] = 0x7F
+    # The advert leads with a 3-byte Flags AD, then the manufacturer AD: the
+    # version byte sits right after company(2)+magic(4) inside that body:
+    #   [flags_ad:3][len][type][company:2][magic:4][ver] -> index 3+2+2+4 = 11
+    adv[11] = 0x7F
     assert parse_exchange_adv(bytes(adv)) is None
 
 

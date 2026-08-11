@@ -1,3 +1,91 @@
+# !Fri3d Friends — Documentation-vs-code audit + fixes — 2026-08-11 (session 4)
+
+A "verify the documentation matches the code, flag every difference" pass. Five parallel
+reviewers compared README / DESIGN / the Gotcha plan docs against `app/` / `server/` /
+`tools/` / `tests/`. Found **21 discrepancies**: documented them first, then fixed all.
+No on-device work this session (pytest isn't installed on this host either, so the
+pure-function changes were verified by importing the modules straight from the app dir).
+
+## 0. The audit record
+- **`Doc_Audit_20260811.md`** (new) — all 21 findings with doc-claim vs `file:line`
+  code reality, severity (🔴/🟠/🟡/⚪), and a resolution table. The authoritative list;
+  the bullets below are the short form.
+
+## 1. README — wrong control model + stale layout (#1–4, #11, #13–16)
+The biggest real-world risk: a player following the README's instructions would press
+**Y** (swap) / **B** (mute) and nothing happens — those are **menu rows picked with A**
+since the v0.10.0 menu redesign.
+- Swap = menu **Contact ruilen** (A), not Y; rewrote the intro, `## Swapping contacts`
+  section, and the `contact` config bullet.
+- Mute = menu **Geluid: aan/uit** (A), not B; rewrote the `sound` config line.
+- Join-group ASCII mock was wrong AND self-contradictory: showed groups pre-ticked with a
+  `A: next / B: tick / Y: join` legend (none of which exists). Code starts groups
+  **unchecked**, **A** toggles a tick, a separate **Meedoen** button joins. Rewrote the
+  mock + prose. (The README's own Controls section already had it right.)
+- Project layout omitted 4 shipped modules (`gotcha.py` / `gotcha_app.py` / `gotcha_gatt.py`
+  / `state_backup.py`); tools list omitted `publish_badgehub.py` and one of the two logo
+  scripts. Added them.
+- Test count 442 → **444** (static count: `grep -rE '^\s*def test_' tests/ | wc -l`, 0
+  async, 0 parametrize).
+- Documented the internal `setup_skipped` config key; added the missing "(standaard)" to
+  the first Bereik preset.
+
+## 2. DESIGN.md — stale BLE protocol + background-beacon spec (#5–10, #17)
+DESIGN §3/§4 still described the **v1** wire format the code no longer radiates, and §12
+still called `beacon_service` "advertise-only" — but it's the Phase-4 Gotcha **victim
+responder**.
+- §3 wire-format diagram → **v2** (the `blocks` byte), version `0x02`; name budget
+  corrected `20−2G` → `19−2G` (and `16−2G` connectable / `14−2G` game — **all verified
+  against `name_budget()`**); "No Flags AD" made conditional (emitted when connectable).
+- §4 "✅ verified on-air `ver 1`" annotated as a v1-era capture.
+- **§12 rewritten** from "advertise-only" to the full victim responder: headless
+  `GotchaController` + GATT + `_on_engaged/_on_killed/_on_spotted/_on_dodged` buzzer/LED
+  cues, 250 ms / 2000 ms poll cadence, ~3 s re-assert (was "5 s poll / 30 s re-assert").
+- §11a.1 + the `to_latin1` docstring: "parse_payload raises on a Latin-1 byte" → it uses
+  `decode("utf-8", "replace")` and never raises.
+- Caught two same-class stale claims while editing: §6 "toggled with B" and §10 "hold B
+  ≥1.5 s" (setup opens via the **Telefoon-setup** menu row, confirmed in code); refreshed
+  the §2 project layout too.
+
+## 3. Code (#17 docstring, #21 Flags AD)
+- `ble_proximity.py` `to_latin1` docstring: no longer claims `parse_payload` raises.
+- `contact_exchange.build_exchange_adv` now leads with a **Flags AD** — the same pattern
+  `build_payload(connectable=True)` already follows, and the lesson in memory
+  (`gotcha-connect-path-findings`: "connectable advert NEEDS a Flags AD"). It was the one
+  connectable advert in the codebase still missing it. The exchange advert is always
+  connectable, so the Flags AD is unconditional.
+  - `tests/test_contact_exchange.py` `test_parse_rejects_unknown_version`: the version
+    byte shifted 8 → **11** (3-byte Flags AD now leads); updated the index + comment.
+  - **Verified** by running the pure functions: round-trip, magic-present, nonce-wrap,
+    flags-AD-led layout (`adv[:3]==[2,1,6]`, version at index 11), unknown-version
+    reject, and full truncation sweep all pass.
+
+## 4. Plan + memory (#12, #18–20)
+- Main plan §11: Phase 3 (duel + Reveal) marked **✅ DONE** (it read as unbuilt future
+  work), with the authoritative current status that supersedes the two conflicting 3a
+  session numbers (0.11.5/336 vs 0.11.4/333).
+- Added an editorial "this is retracted history" banner over the RSSI-trend body in the
+  main plan (§8.8.2a) — the header was already marked RETRACTED but the body still read as
+  a live spec.
+- `memory/MEMORY.md` index line refreshed: was "3b not started; 4-6 pending" → now
+  "3a built 0.11.5; 3b verified end-to-end 0.11.13; Phase 4 done 0.11.18; Phase 5 partial;
+  Phase 6 pending". Also bumped `gotcha-phase-status.md`'s stale "last updated 2026-08-01"
+  (it had 2026-08-09 content).
+
+## Notes / follow-ups
+- **#21 is a code-behavior change to a feature DESIGN says is verified working
+  (badge-to-badge swap).** Low-regression-risk (Flags AD is standard, benign), but
+  **not re-verified on hardware this session**. Re-test a real swap before shipping, and
+  **bump `MANIFEST.json` 0.11.29 → 0.11.30** on deploy so the splash confirms the new
+  code (per the deploy-bump-version rule).
+- §9 and §13 of DESIGN still carry pre-v0.10.0 Y/B/START control references; left as-is
+  because they are explicitly version-tagged historical (§7's hedge covers §9; §13 is the
+  v0.9.0 onboarding record). Flag if we ever want them brought current.
+- pytest is not installed on this host (`No module named pytest`); pure-function
+  verification was done by importing the modules directly from the app dir.
+
+---
+
 # !Fri3d Friends — Player-card QR flow + hardware validation of the §8.10 fixes — 2026-08-10 (session 3)
 
 Built the last unbuilt Phase 5 deliverable (the player-card QR), deployed to all three

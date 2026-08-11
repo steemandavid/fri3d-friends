@@ -9,9 +9,10 @@ things:
 2. **Proximity finder** — over Bluetooth Low Energy, it detects other badges
    running this app that share **at least one group** with you, and alerts you
    when one comes within radio range ("someone from my groups is nearby").
-3. **Contact swap (Y button)** — press **Y** near another badge whose owner also
-   presses **Y** within ~5 s (they need *not* be a friend or in your group), and
-   the two badges exchange contact info over a short Bluetooth connection. You
+3. **Contact swap** — from the menu pick **Contact ruilen** near another badge
+   whose owner does the same within ~5 s (they need *not* be a friend or in your
+   group), and the two badges exchange contact info over a short Bluetooth
+   connection. You
    send your **name** and **group(s)**, plus a free-form set of fields you choose
    (Email, Phone, Website, Discord, bitcoin wallet…). What you receive is stored
    on the badge with the date/time — **one entry per swap**.
@@ -115,7 +116,8 @@ Edit **`/apps/com.fri3dcamp.fri3dfriends/config.json`**:
   It's a noise/range filter, *not* fine calibration. See **DESIGN.md §5** for a
   fuller dBm→range guidance table and the open-field link-budget estimate.
 - **`sound`** — `true`/`false`, whether the arrival buzzer sting plays. Toggled
-  with **B** and **persisted** across reboots. Default `true`.
+  from the menu (**Geluid: aan/uit**) and **persisted** across reboots. Default
+  `true`.
 - **`banner_ms`** — how long the "friend arrived" banner stays on screen, in ms.
   Default `5000` (5 s). Values below `500` are ignored (a `0`/negative would hide
   every banner) and fall back to the default.
@@ -123,8 +125,12 @@ Edit **`/apps/com.fri3dcamp.fri3dfriends/config.json`**:
   (otherwise auto-detected). Only needed if autodetection fails.
 - **`contact`** — your "my contact info": a free-form object of `"field":
   "value"` pairs (Discord, website, phone, bitcoin wallet, anything). This is the
-  data sent to another badge when you both press **Y**. Easiest to edit from the
-  **phone setup page** (below) rather than by hand.
+  data sent to another badge during a **Contact ruilen** swap. Easiest to edit
+  from the **phone setup page** (below) rather than by hand.
+- **`setup_skipped`** — internal state flag, not a setting to edit by hand: set
+  (`true`) when you pick **Overslaan** on the first-run screen so the badge goes
+  straight to the nametag and doesn't ask again. Clear it (or delete the key) to
+  bring the first-run screen back.
 
 ## Setup on the badge itself (no phone, no internet)
 
@@ -138,7 +144,7 @@ keyboard on the button-only 2024 badge.
 | **Je naam** | text |
 | **Groepen** | text, comma-separated |
 | **Geluid** | Aan / Uit |
-| **Bereik** | pick from *Volledig bereik · Ruime omgeving · Zelfde tent of ruimte · Vlak naast me · Tegen elkaar* |
+| **Bereik** | pick from *Volledig bereik (standaard) · Ruime omgeving · Zelfde tent of ruimte · Vlak naast me · Tegen elkaar* |
 | **Banner (sec)** | slider, 1–15 s |
 
 Saving writes straight to `config.json` through the same validation the phone page
@@ -181,14 +187,15 @@ at Fri3d Camp where badges and phones sit on different SSIDs/subnets.
 - There is also a headless CLI client, `tools/setup_client.py` (needs
   `pip install bleak`), that speaks the same protocol for testing/scripting.
 
-## Swapping contacts (Y button)
+## Swapping contacts
 
-Press **Y** and, within ~5 s, have a nearby badge's owner press **Y** too. The
-two badges find each other over Bluetooth and swap their `contact` info in both
-directions — **no shared group or friendship required**, just radio range. The
-banner confirms `Geruild met <name>`; the received fields are stored on your
-badge with the date & time and are visible in the phone setup page's **Contacts**
-tab. (If nobody else is swapping in the window you get `niemand aan het ruilen`.)
+From the menu pick **Contact ruilen** and, within ~5 s, have a nearby badge's
+owner pick **Contact ruilen** too. The two badges find each other over Bluetooth
+and swap their `contact` info in both directions — **no shared group or
+friendship required**, just radio range. The banner confirms `Geruild met
+<name>`; the received fields are stored on your badge with the date & time and
+are visible in the phone setup page's **Contacts** tab. (If nobody else is
+swapping in the window you get `niemand aan het ruilen`.)
 
 ### Joining a friend's group by swapping
 
@@ -199,15 +206,17 @@ you're not in, the badge asks right after the swap:
       Alice is in 3 groups
       Join which?
 
-   >  [x] Makerspace Baasrode
-      [x] Fri3d Volunteers
+      [ ] Makerspace Baasrode
+      [ ] Fri3d Volunteers
       [ ] Lockpicking Village
 
-   A: next   B: tick   Y: join
+      [ Meedoen ]
 ```
 
-Everything offered starts ticked, so the usual case — a friend with one group — is
-a single **Y**. This is the easiest way to join a group and the most reliable:
+Groups start **unchecked** — move with the joystick and press **A** to tick the
+one(s) you want, then pick **Meedoen** to join (**X** cancels). For the usual
+case — a friend with one group — it's a tick and a Meedoen. This is the easiest
+way to join a group and the most reliable:
 group names are matched exactly (after ignoring case and spacing), so a typo means
 you silently never match anyone. Swapping copies the name across character for
 character. It needs no phone, no internet and no typing, and it works on a badge
@@ -327,8 +336,11 @@ until you open the app — but *they* see *you*.
 app/com.fri3dcamp.fri3dfriends/   → the app (deploy to /apps/…)
   MANIFEST.JSON, fri3d_friends.py, ble_proximity.py (proximity beacon),
   beacon_service.py (background beacon boot service),
-  contact_exchange.py (Y-button GATT swap), ble_setup.py (Web-Bluetooth setup GATT
-  service + on-badge editor mapping), identity.py (auto-nickname),
+  contact_exchange.py (menu "Contact ruilen" GATT swap),
+  ble_setup.py (Web-Bluetooth setup GATT service + on-badge editor mapping),
+  gotcha.py / gotcha_app.py / gotcha_gatt.py (Gotcha game: controller, app UI, GATT),
+  state_backup.py (survive an AppStore update — mirror/restore config+contacts+gotcha state),
+  identity.py (auto-nickname),
   config.json, fri3dfriends.png (splash logo), icon_64x64.png (launcher icon),
   montserrat_name.ttf (42px name font)
 server/       the Gotcha game backend (FastAPI + SQLite, one process, no build step)
@@ -339,7 +351,9 @@ server/       the Gotcha game backend (FastAPI + SQLite, one process, no build s
 docs/setup/index.html   → the Web-Bluetooth setup page (served via GitHub Pages)
 tests/        off-device pytest: BLE wire format + contact exchange + setup protocol,
               plus the Gotcha backend (badge_sim.py drives the API as N fake badges)
-tools/        setup_client.py (bleak GATT client), host_advertise.py, pull_file.py, make_logos.py
+tools/        setup_client.py (bleak GATT client), host_advertise.py, pull_file.py,
+              make_logos.py + make_hybrid_logo.py (launcher icon / splash logo),
+              publish_badgehub.py (automated BadgeHub build + upload + publish),
               deploy.sh (sha-verified code push), recover_badge_port.py (USBDEVFS_RESET
               unwedge for a badge whose USB-CDC has gone silent)
 probes/       throwaway on-badge measurement apps (deployed, run, then removed) +
@@ -373,7 +387,7 @@ each with the command that undoes it, so the machine can be returned to its prio
 state after camp.
 
 ```bash
-python3 -m pytest tests/ -q                                   # 442 tests, no badge needed
+python3 -m pytest tests/ -q                                   # 444 tests, no badge needed
 python3 server/tools/smoke.py http://<host>:8080 --badges 6    # check a deployment
 ```
 

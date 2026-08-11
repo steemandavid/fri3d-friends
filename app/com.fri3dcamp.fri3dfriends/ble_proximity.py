@@ -219,9 +219,11 @@ def to_latin1(s):
     README's "never strip accents from names" rule holds, provided the string is
     Latin-1 and not UTF-8.
 
-    NOT for the HSNT wire: parse_payload does `decode("utf-8")`, and on this build
-    that RAISES on a Latin-1 high byte (the `errors` argument is not supported),
-    so the receiver would end up with an empty name. Use fold_ascii() there.
+    NOT for the HSNT wire: the beacon byte budget should be spent on letters, not
+    on multi-byte sequences this build cannot render (§3), so the beacon name is
+    folded to ASCII via fold_ascii() before budgeting. (parse_payload decodes the
+    wire name with `decode("utf-8", "replace")` -- bad bytes become U+FFFD rather
+    than raising -- but folding upstream is what keeps peers from seeing mojibake.)
 
     Codepoints above 255 have no Latin-1 form and fall back to the ASCII
     transliteration (oe-ligature -> "oe"), or are dropped."""

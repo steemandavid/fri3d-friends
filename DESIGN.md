@@ -116,10 +116,14 @@ Consequences (all verified by probe — see `probes/`):
 ```
 app/com.fri3dcamp.fri3dfriends/   → deployed to /apps/com.fri3dcamp.fri3dfriends/
   MANIFEST.JSON        MicroPythonOS app manifest (launcher intent)
-  fri3d_friends.py     the Activity (UI, alerts, buttons, lifecycle)
+  fri3d_friends.py     the Activity (UI, alerts, menu, lifecycle)
   ble_proximity.py     BLE advertise/scan + group-aware state machine
-  contact_exchange.py  Y-button connectable-GATT contact swap (+ shared service registration)
+  beacon_service.py    background beacon + Gotcha victim responder (boot service, §12)
+  contact_exchange.py  menu "Contact ruilen" connectable-GATT contact swap (+ shared service registration)
   ble_setup.py         Web-Bluetooth phone-setup GATT service (config/contacts)
+  gotcha.py / gotcha_app.py / gotcha_gatt.py  Gotcha game: controller / app UI / GATT
+  state_backup.py      mirror+restore config/contacts/gotcha.json across an AppStore update
+  identity.py          auto-nickname
   config.json          per-group/member config (edit from the phone setup page)
   fri3dfriends.png     !Fri3d Friends splash logo   |  icon_64x64.png  launcher icon
   montserrat_name.ttf  42px name font (subset TTF)
@@ -135,21 +139,31 @@ docs/setup/index.html  the Web-Bluetooth setup page (GitHub Pages)
 
 ## 3. BLE protocol (PLAN §6, unchanged in design)
 
-Non-connectable legacy advertising, one Manufacturer-Specific AD structure
-(type `0xFF`, company `0xFFFF` placeholder, little-endian):
+Legacy advertising, one Manufacturer-Specific AD structure (type `0xFF`, company
+`0xFFFF` placeholder, little-endian). The proximity beacon is **non-connectable**;
+when a Gotcha game is live the beacon flips **connectable** and prepends a Flags
+AD (see `set_connectable` / `build_payload(connectable=True)` and §5.7/§12):
 
 ```
-[AD len][0xFF][0xFFFF][ "HSNT" ][ver][gcount][gid_le × gcount][namelen][name_utf8]
-                     4 magic    1     1        2×G              1        ≤(20−2G)
+[AD len][0xFF][0xFFFF][ "HSNT" ][ver=2][blocks][gcount][gid_le × gcount][namelen][name_utf8][game?]
+                     4 magic    1        1        1        2×G              1        ≤(19−2G)   5
 ```
 
 - `fnv1a_16(name.strip().lower())` per group; **dedup + sort ascending**; cap at
   `MAX_GROUPS=5`, keeping the lowest ids (deterministic). Collision-tolerant, not
-  security. Version byte `0x01`; receivers **drop** unknown versions.
+  security. Version byte `0x02`; `parse_payload` still accepts **v1** (no `blocks`
+  byte) for back-compat, and receivers **drop** unknown versions. The `blocks`
+  byte carries bit `BLOCK_GAME` — when set, a 5-byte game block (`pid`, flags,
+  streak) is appended after the name (plan §4).
 - Both parsers (`parse_payload` here, `parse_exchange_adv` in `contact_exchange.py`)
   gate on the 2-byte **company id** (`0xFFFF`) *and* the 4-byte magic before
   accepting a beacon (was magic-only; tightened in the 2026-07-15 review — F-15).
-- Name UTF-8, truncated on a codepoint boundary to `20 − 2×G` bytes. No Flags AD.
+- Name UTF-8, truncated on a codepoint boundary to `19 − 2×G` bytes — the v2
+  `blocks` byte costs one byte vs v1's `20 − 2×G`. The budget shrinks further to
+  `16 − 2×G` when connectable (a 3-byte Flags AD is prepended) and to `14 − 2×G`
+  when a game block is appended. The connectable beacon **does** carry a Flags AD
+  (`0x02 0x01 0x06` = LE General Discoverable + BR/EDR Not Supported); the plain
+  proximity beacon does not.
 - **Stable address:** `ble.config("mac") == (0, <6 bytes>)` → addr_type **0 =
   public**, derived from the factory MAC, stable for the session (and across
   reboots). The `seen` table is keyed on `(addr_type, addr)`; no address-rotation
@@ -184,7 +198,7 @@ Non-connectable legacy advertising, one Manufacturer-Specific AD structure
 | Concurrent adv+scan | ✅ | 7 s concurrent run, no NimBLE crash. |
 | Hardware-API probe | ✅ | addr (public, stable), lights/buzzer/buttons/battery all confirmed; **backlight absent → dim feature dropped+noted**. |
 | Off-device unit tests | ✅ | `pytest tests/` → **118 passed** (v0.9.0). |
-| Single-badge smoke (advertise) | ✅ | Host bleak scanner received `34:85:18:AB:DF:0E rssi −75 ver 1 gids [0xa07b] name "Alex YOURCALL"` — full HSNT payload correct on-air. |
+| Single-badge smoke (advertise) | ✅ | Host bleak scanner received `34:85:18:AB:DF:0E rssi −75 ver 1 gids [0xa07b] name "Alex YOURCALL"` — full HSNT payload correct on-air (v1-era capture; the current build radiates **v2** with a `blocks` byte, see §3). |
 | Proximity logic (round-trip, disjoint, multi, signature, eviction, re-alert) | ✅ | 17 on-device checks through the **real** `parse_payload → intersect → seen → arrivals → eviction` path (synthetic-but-correct HSNT packets fed to the real IRQ handler). |
 | Real badge **scan RX** | ✅ | `gap_scan` IRQ fires on real advertisements (raw counts); non-HSNT adverts correctly ignored. |
 | Real **physical** round-trip (badge RX of a real HSNT advertiser) | ✅ | **Closed with a 2nd badge.** Badge #2's real `gap_scan` detected badge #1 over the air: `ARR name="Alex YOURCALL" shared="Makerspace Baasrode" id=0xa07b rssi=−40`. Both apps run + advertise + scan and detect each other (host scan sees both beacons: `Alex YOURCALL` + `Alice`). |
@@ -267,7 +281,7 @@ does not depend on the exact number, only on "roughly same area."**
 ## 6. Remaining out-of-scope items (PLAN §11)
 
 - Animated-GIF logos / scan-response name extension remain out of scope.
-  (Persisted mute is now implemented — `sound` config key, toggled with B.)
+  (Persisted mute is now implemented — `sound` config key, toggled from the menu's **Geluid: aan/uit** row.)
 
 ## 7. 2024 vs 2026 badge support
 
@@ -381,9 +395,9 @@ was in active use / off-limits during development).
 - **Names keep their accents, but only locally.** `ble_proximity.to_latin1()`
   converts the player's own name to one-byte-per-character before it is drawn, so
   `Zoë`/`Renée` render on the nametag. The **BLE beacon** folds to ASCII
-  (`fold_ascii`), so peers see `Renee`: `parse_payload` decodes the wire name as
-  UTF-8 and on this build that *raises* on a Latin-1 byte, leaving the receiver
-  with no name at all.
+  (`fold_ascii`), so peers see `Renee` rather than mojibake. (Reason it folds on
+  the wire, not "parse_payload raises": the beacon byte budget is spent on
+  letters, not on multi-byte sequences this build cannot render — see §3.)
 - **Dutch runs ~15 % longer than English** on a 296×240 fixed-font screen with no
   reflow. **First real casualty found on hardware 2026-07-28**: the adopt prompt's
   title went from one line to two and overlapped the group rows (§13.3). Assume more
@@ -513,7 +527,7 @@ from GitHub Pages, `docs/setup/index.html`) talks GATT straight to the badge —
   slices an **in-memory snapshot taken once on the loop at auth**
   (`_handle_auth`) — NO flash I/O in the IRQ (a file read there stalls the main
   task and can starve the GATT link). `contacts.json` can't change during a
-  session (a Y-swap can't run while setup owns the radio), so the snapshot serves
+  session (a contact swap can't run while setup owns the radio), so the snapshot serves
   every page. The client adds a small settle before each read: a
   `writeValueWithResponse(offset)` resolves the instant NimBLE ACKs, but the
   buffer update runs in a *scheduled* IRQ that can land just after, so a zero-gap
@@ -535,11 +549,10 @@ from GitHub Pages, `docs/setup/index.html`) talks GATT straight to the badge —
     unconfigured badge — the README "silent" promise becomes "never runs the
     *proximity* beacon"; it does advertise `Fri3d-XXXX` so a phone can configure
     it). App closed → `beacon_service` keeps the radio off (unchanged).
-  - *Configured badge:* **hold B ≥1.5 s** opens a window
+  - *Configured badge:* the **Telefoon-setup** menu row opens a window
     (`SetupService.run("window", proximity=self._ble, timeout_ms=SETUP_WINDOW_MS)`):
     it `suspend()`s proximity, advertises, shows a create-once overlay (QR + code
-    + countdown), and `resume()`s on close/timeout (A/Y close early). START is
-    intentionally unused; long-press B is board-agnostic (short B still mutes).
+    + countdown), and `resume()`s on close/timeout (**X** closes early).
     `timeout_ms` is an **idle** window (2 min): any GATT event resets it (see
     `_process` bumping `_last_activity`), so a long friends-list transfer never
     times out mid-flight; `SETUP_ABS_CAP_MS` (10 min) is an absolute backstop. The
@@ -567,37 +580,64 @@ Notifications-on-badge and a personal-hotspot fallback were considered and
 the iOS trade-off (Bluefy) is accepted because a WiFi portal is simply unreachable
 across the camp's split SSIDs.
 
-## 12. Background beacon service (`beacon_service.py`, v0.7.0)
+## 12. Background beacon + Gotcha victim responder (`beacon_service.py`)
 
-Keeps the badge visible to friends' badges while the app is closed. A
-manifest-declared boot service (`"services"` → `boot_completed`; supported by
+A manifest-declared boot service (`"services"` → `boot_completed`; supported by
 the installed OS on both badge generations — verified via
-`AppManager.get_services_for_action`). **Advertise-only**: non-connectable adv
-of the exact same `build_payload` beacon; no scanning, alerts or swaps in the
-background.
+`AppManager.get_services_for_action`). It has two jobs while the app is **not**
+on the screen stack (Phase 4, plan §5.6 / D3):
 
-- **Radio ownership rule** (single `BLE()` stack / adv set): a slow watchdog
-  (5 s poll) checks whether the app's Activity is anywhere on
-  `mpos.ui.view.screen_stack` (membership, not top-only — the app pushes *two*
-  entries: splash + main). App on the stack → service never touches BLE (the
-  Activity's lifecycle owns begin/suspend/teardown, incl. the swap window).
-  App absent → service `active(True)` + advertises, re-asserting every ~30 s.
+1. **Beacon** — advertise the same proximity beacon the app sends, so a closed
+   badge stays visible to friends.
+2. **Gotcha victim responder** — bring up the GATT server and run the **victim**
+   half of the game only: accept inbound REVEAL and ATTACK writes, run the hold
+   timer, dodge accounting, soul release, target handover, and the reveal flash
+   + chirp, with effects delivered through buzzer + LEDs only (no UI). It must
+   **not** scan and **not** attack — hunting requires the app to be open.
+   Without it, "close the app" would be perfect invincibility (D3).
+
+So the service is **not** advertise-only (the §12 text up to 0.11.x that called
+it "advertise-only, no scanning/alerts/swaps in the background" described the
+old v0.7.0 beacon). It still does **no scanning and no attacking**, and still
+does **no contact swaps** in the background — but it *does* answer inbound
+Gotcha writes and play the victim cues.
+
+- **Stack built per radio-take** (`_build_stack`): `BLEProximity` +
+  `ContactExchange` + `GotchaService` + a headless `GotchaController`, wired
+  exactly like the Activity's `_setup_gotcha` minus the UI widgets. The
+  controller's victim callbacks drive the effects: `_on_spotted` (gold LEDs +
+  chirp), `_on_engaged` (red LED + two-tone siren for the hold),
+  `_on_dodged` (green + relief chirp), `_on_killed` (dim red + descending tone).
+  The §8.10.1 `alarm_enabled` kill switch mutes every game-initiated sound; the
+  LED cue still shows when muted. A single `_leds()` write is used (never
+  animated) — `lights.write()` disables IRQs and would starve the live GATT
+  link a duel holds open; buzzer PWM does not, so the siren is safe alongside
+  it.
+- **Radio ownership rule** (single `BLE()` stack / adv set): the watchdog
+  checks whether the app's Activity is anywhere on `mpos.ui.view.screen_stack`
+  (`app_in_stack`, membership not top-only). App on the stack → the service
+  does a **SOFT release** (forgets its state, **never** `active(False)`) so it
+  cannot wipe a GATT registration the app just made; the app's own onPause
+  `active(False)` clears the table on the way out. App absent → `_take_radio`:
+  `ensure_radio` (its write-probe re-registers after that wipe), `ble.begin`,
+  `gc.start()` (which pushes a **connectable** advert with the game block).
+- **Cadence** (`POLL_MS_RADIO=250 ms` while it owns the radio, so a victim
+  drains the ATTACK queue and advances the duel hold promptly;
+  `POLL_MS_IDLE=2000 ms` while the app is open, just polling for it to leave).
+  The beacon is re-asserted every `REFRESH_POLLS=12` radio ticks ≈ **3 s** (a
+  no-op while still advertising; self-heals if another app touched the radio).
 - **Handoff needs no coordination calls**: the app's `begin()` replaces the
-  service's identical adv on open; the app's teardown `active(False)` is undone
-  by the next watchdog poll (≤5 s beacon gap) after exit.
+  service's advert on open; the service's SOFT release means the app's teardown
+  `active(False)` is final, and the next watchdog tick rebuilds the responder.
 - **Badge with no groups stays silent** in the background too
-  (`load_beacon_config` mirrors `_load_config`'s rule — since v0.9.0 that rule is
-  GROUPS ONLY; a blank name falls back to the same auto-nickname the app shows,
-  so the background beacon and the app never advertise different names).
+  (`load_beacon_config`/`load_service_config` mirror `_load_config`'s rule —
+  since v0.9.0 GROUPS ONLY; a blank name falls back to the same auto-nickname
+  the app shows, so the background beacon and the app never advertise different
+  names; a badge not advertising is not a reachable target either).
 - **Watchdog survivability**: the loop catches `BaseException` (only
   `CancelledError` passes) around body *and* sleep — a USB-console Ctrl-C is
   delivered as `KeyboardInterrupt` to whatever coroutine is running and must
-  not kill the beacon permanently.
-- **Verified on-device (2026-07-15)**, 2024 ↔ 2026 both directions: beacon on
-  the air with the app never opened; app-open → app-owned beacon continues;
-  app-exit → service reclaims ≤ poll interval; adv killed externally →
-  self-heals within a refresh cycle. Known cosmetic quirk: dev-time REPL scans
-  on a badge can knock its adv off the air for ≤30 s (self-heals).
+  not kill the responder permanently.
 - **Boot-only start**: the service activates on the next reboot after
   install/update; an AppStore update does not hot-swap a running service.
 

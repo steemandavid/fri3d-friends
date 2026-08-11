@@ -1798,6 +1798,13 @@ learns *"solid red, all of them, means press A"* has learned the whole hunt.
 > is retained as design history; it is NOT to be implemented.** See §8.8.6 for
 > the ping (pitch bend dropped, rate kept).
 
+> 📝 **Editorial note (2026-08-11):** the mechanism text that follows — the two-EWMA
+> design, the trend/ping tables, and the "Phase 0 blocking spike" framing — is the
+> original *since-retracted* spec, kept verbatim as history. None of it is
+> implemented: `gotcha.py` dropped `rssi_trend()` (see `:1380`) and the constants
+> below do not exist in the code. Read it as "what we tried and rejected," not as a
+> live design.
+
 **The plan promised this and could not deliver it.** The narrative said the
 badge *"only ever tells you warmer or colder"*, but everything specified reports
 **absolute** level. In a crowd, absolute RSSI is close to useless for navigation — it is
@@ -3011,6 +3018,11 @@ fun. Ends with a real two-badge chase across a field. **Build Reveal first** —
 much simpler GATT interaction than the duel (write, ack, disconnect, flash), it
 exercises the same connect path, and having it working makes every subsequent duel test
 easier to set up.
+**✅ DONE — built and verified end-to-end on hardware (Phase 3a Reveal + Phase 3b duel;
+see `Implementation_Plan_Gotcha_Phase3b_20260801.md` and
+`Coder_Summary_Phase3a_20260731_2342.md`). This §11 line is the authoritative current
+status; the version/test-count each of those session docs records for 3a is its
+point-in-time snapshot, not the final state.**
 
 **Phase 4 — background participation** (D3). The fragile one; see §5.6.
 **✅ DONE (2026-08-09, 0.11.18) — bench-validated.**

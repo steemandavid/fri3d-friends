@@ -58,7 +58,13 @@ def _u16_le(v):
 
 
 def build_exchange_adv(nonce=0, want=True):
-    """Build the connectable exchange beacon (one manufacturer AD structure).
+    """Build the connectable exchange beacon: a Flags AD followed by one
+    manufacturer AD structure.
+
+    The Flags AD (LE General Discoverable + BR/EDR Not Supported) is required for
+    central stacks to honour the advert as connectable -- the same lesson recorded
+    in ble_proximity.build_payload(connectable=True) and the §5.7 connect-path
+    probe. parse_exchange_adv skips it (it only reads manufacturer ADs).
 
     The peer's address (used both to connect and to decide roles) comes from the
     scan result itself, so it is NOT embedded here. `nonce` (0..65535) lets a
@@ -72,7 +78,9 @@ def build_exchange_adv(nonce=0, want=True):
         bytes([flags & 0xFF]) +
         _u16_le(int(nonce) & 0xFFFF)
     )
-    return bytes([len(body) + 1, AD_TYPE_MFG]) + body
+    mfg = bytes([len(body) + 1, AD_TYPE_MFG]) + body
+    flags_ad = bytes([0x02, 0x01, 0x06])   # AD len=2, type=Flags, value=0x06
+    return flags_ad + mfg
 
 
 def parse_exchange_adv(adv):
