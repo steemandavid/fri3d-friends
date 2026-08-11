@@ -283,6 +283,38 @@ Same lesson as 6b, ignored within twelve hours: badge interaction has a physical
 failure mode, so it does not belong in unattended work regardless of how read-only the
 operation looks.
 
+## 6i. 2026-08-11 early hours — A6 reversed, and the duel diagnosis corrected
+
+**§14.2 A6 was WRONG and is now reversed** (`1708e58`, 0.11.29). lvgl here is byte-per-glyph
+*and* the fonts carry Latin-1: `chr(0xEB)` measures **10 px, identical to an ASCII 'e'**
+(a real missing glyph, `chr(0xFF)`, is 9 px), and the bundled `montserrat_name.ttf` cmap has
+197 codepoints including é ë ï ü ç ß (parsed on the host, no badge needed). **Accents render;
+UTF-8 does not.** Yesterday's measurement fed the badge UTF-8 and a source-encoded literal
+instead of a Latin-1 byte — and `README.md:41-45` had the right policy all along
+("never strip accents from names"), which I overrode on bad evidence.
+
+The fix is **per render site**, not global:
+- **Own name label** → new `to_latin1()`: one byte per character, accents kept, so the
+  nametag shows `Renée` properly.
+- **HSNT beacon** → still `fold_ascii()`. `parse_payload` does `decode("utf-8")` and on this
+  build that **raises** on a Latin-1 byte (`errors` is unsupported), so the receiver would
+  get an *empty* name. Verified on badge.
+
+⚠️ **Three probes give false answers**, all tried: `get_glyph_width()` returns a
+per-codepoint fallback; a UTF-8 literal measures as boxes; a source `"ë"` measures 0. Use
+`lv.text_get_size` on `chr(0xEB)` with `chr(0xFF)` as the control.
+
+**The duel diagnosis is corrected too.** `HUNT attack->` is logged *immediately before*
+`duel_session`, and the failing attempt produced **no `ds` lines at all** — the hunter never
+connected. With the victim at the launcher, every `ds` line appeared and the ATTACK write
+landed on the correct handle. So the blocker is **the victim's app-open dense scan blocking
+the inbound connect**, not the duplicate GATT handles I first blamed: the hunter's discovery
+overwrites on each match, so *last wins*, which is already the app's live copy. The duplicate
+registration is real (two `ContactExchange` instances, two `start` lines per boot) but is
+probably not what breaks the duel.
+
+Badges left on **0.11.29**, verified by behaviour probe, all three ports intact.
+
 ## 7. Follow-ups
 - **Not validated on hardware:** the `below_min` hunting gate and the UPDATE NODIG banner.
   Both are fully host-tested; a live test means setting `min_version` above the fleet, which

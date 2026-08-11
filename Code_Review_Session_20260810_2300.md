@@ -119,7 +119,8 @@ both cases where I reasoned instead of looked.
 
 | Item | Severity for camp |
 |---|---|
-| **Duplicate GATT registration** — app-on-top-of-boot-service registers the service twice; the hunter writes to the dead first copy | **BLOCKING** — any badge whose owner opens the app is unattackable |
+| **A badge with its app OPEN cannot be connected to** — the hunter's `duel_session` produced no `ds` line at all (not even `ds connected`); with the victim at the launcher every `ds` line appeared and the write landed on the right handle. The victim's dense 50% scan appears to block the inbound connect, and the `suspend()`-on-central-connect logic cannot help because the connect never completes. **This supersedes the duplicate-handle diagnosis I gave first** — that was over-claimed from `write=0` before I checked where the hunter's log line is emitted. | **BLOCKING** — two players with the app open cannot duel |
+| **Duplicate GATT registration** — the boot service and the app each build their own `ContactExchange` with its own `_svc_ready`, so the app appends a SECOND service copy (two `start` lines per boot, handles 21/23/26/28 then 35/37/40/42). Real, but probably NOT the duel blocker: the hunter's discovery callback overwrites on each match, so **last wins**, which is the app's live copy. | Medium — wasteful and confusing, unclear if harmful |
 | Badge→badge kill never completed end-to-end | **BLOCKING** — the core loop is unproven |
 | Link-drop dodge never demoed | High |
 | fac0 heartbeats from the boot service while its app is open | Medium — that badge cannot be a target |
