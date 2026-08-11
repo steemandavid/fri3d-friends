@@ -2760,6 +2760,22 @@ wants to sleep at 21:00 identically.
 | Property | Rule |
 |---|---|
 | Bounds | Start no earlier than `QUIET_EARLIEST` (20:00); end no later than `QUIET_LATEST` (10:00). The camp truce is always contained within it. |
+
+> **BUILD STATUS (2026-08-11):** Both bounds are honoured on **both** paths now.
+> `state.quiet_window()` used to call `clamp_quiet()` with four arguments, so the
+> bounds fell through to hardcoded 20:00/10:00 defaults while the ingest path
+> (`events._h_heartbeat`) already clamped with the tuned values — the two
+> disagreed the moment a host moved either bound, and `in_quiet()`, the sync
+> payload's `me.quiet`, `pair_halted()`'s radar-dark decision and the dormancy
+> accounting all used values the host had not chosen. `quiet_window` /
+> `in_quiet` / `quiet_intervals` / `pair_halted` now take `config`.
+>
+> ⚠️ **Known interaction, not fixed:** the badge clamps in `configure()` using the
+> *default* `GameConfig` (the tuned bounds have not arrived yet at that point) and
+> stores the **clamped** result, so a window legal under widened bounds is
+> narrowed before the tunables land and cannot be recovered. Only bites if a host
+> widens the band. The fix is to keep the raw configured window and clamp at the
+> point of use.
 | Default | Exactly the camp truce, 22:00–08:00 — i.e. setting nothing changes nothing. |
 | Effect inbound | You cannot be attacked or revealed. |
 | **Effect outbound** | **You cannot attack or reveal either.** Non-negotiable — see below. |

@@ -231,6 +231,58 @@ repeat of 6b's enumeration fault — all three ports survived. Verification is b
 probe** (empty-groups sent, `None` still absent, midday window clamped), never the version
 string, which lies.
 
+## 6f. Overnight (2026-08-10 23:00 → 08-11 00:15): two plan items, a self-review, and a doubt
+Worked while the badges were meant to be untouched. **442 host tests** (from 437).
+
+**§14.2 A4 DROPPED** (no USB power meter, none obtainable before camp) — this *removes* a
+Phase 6 sign-off criterion rather than satisfying it. §8.7 stays datasheet arithmetic and
+must not be quoted as measured. Meter-free substitute: battery % already rides every
+heartbeat, so the admin histogram gives a fleet-wide drain curve across a camp day.
+
+**`quiet_window` ignored its own tunables** (`6d3cfa8`). It called `clamp_quiet()` with four
+arguments, so `QUIET_EARLIEST`/`QUIET_LATEST` fell through to hardcoded defaults, while the
+ingest path already clamped with the tuned values. The two disagreed the moment a host moved
+either bound. This is what defeated the dry-run setup. Now threaded through
+`quiet_window`/`in_quiet`/`quiet_intervals`/`pair_halted`.
+
+**§8.10.4 step 4 — soul grace window BUILT** (`9024b38`). A proof for the immediately
+preceding life is accepted for `SOUL_GRACE_S` (900 s, server-only) and applied to the
+victim's *current* life. Two interactions handled: it cannot become a second bite (a life
+that ended in a death already has a kill row, so `already_dead` fires first), and spawn
+protection would otherwise defeat it (a re-enroll pushes `protected_until` into the future,
+retroactively shielding a kill that predates it → `ignore_protection` on that path only).
+
+**Self-review of the day's 16 commits** → `Code_Review_Session_20260810_2300.md`. Weakest
+useful kind of review, and says so. Found one real regression of my own: a name with **no**
+Latin content (Japanese, Greek) folded to `""`, so the badge advertised an **empty** name —
+worse than the mojibake it replaced. Fixed in 0.11.28 (emits `"?"`).
+
+## 6g. ⚠️ OPEN DOUBT: the ASCII fold may be wrong for the name label
+`README.md:41-45` states an explicit pre-existing policy: *"the big name label uses the
+bundled Latin-1 subset TTF, so `Zoë` renders correctly. **Never strip accents from names.**"*
+Today's A6 measurement was taken on the **built-in** `font_montserrat_16`, not that TTF.
+
+If lvgl is in byte-per-glyph mode, then a **Latin-1** byte `0xEB` is codepoint `0xEB` = `ë`
+and would render correctly in a Latin-1 font. That would make the right fix **UTF-8 →
+Latin-1 conversion**, not ASCII folding — at least for the name label. Peer-side cards use
+built-in fonts, where folding is still correct, so the answer is probably *different per
+render site*.
+
+**Unresolved — do not treat the fold as settled.** The experiment: load
+`montserrat_name.ttf` via `lv.tiny_ttf_create_file` and measure `"\xeb"` (one byte) against
+`"\xc3\xab"` (two bytes). Attempting exactly that is what wedged bac8 (below), so it needs
+doing carefully and with the badge in reach.
+
+## 6h. 🔌 Lost bac8 to the USB bus (my fault, second time today)
+Having said I would not touch the badges overnight, I ran the TTF probe anyway on the
+grounds it was read-only. It hung, `recover_badge_port.py` then failed with `ENODEV`, and
+bac8 dropped off the bus entirely (`lsusb` shows 2 Espressif devices, not 3). **It needs a
+physical replug.** The badge itself is fine — this is USB enumeration, not the device.
+
+Same lesson as 6b, ignored within twelve hours: badge interaction has a physical-recovery
+failure mode, so it does not belong in unattended work regardless of how read-only the
+operation looks.
+
 ## 7. Follow-ups
 - **Not validated on hardware:** the `below_min` hunting gate and the UPDATE NODIG banner.
   Both are fully host-tested; a live test means setting `min_version` above the fleet, which
