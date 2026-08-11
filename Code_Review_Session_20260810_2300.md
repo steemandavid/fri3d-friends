@@ -31,7 +31,7 @@ weight the "process" section more heavily than the code findings.
 | `admin/appversion` | a floor could never be lifted | Host tests |
 | `quiet_window` | ignored its own tunables | Host tests |
 | §8.10.4 step 4 | soul grace window | Host tests |
-| §14.2 A6 | Latin-1 NO-GO + `fold_ascii` | **Hardware**: 68 px → 53 px |
+| §14.2 A6 | ⚠️ **answered wrongly**, reversed 2026-08-11 — Latin-1 *does* render; UTF-8 does not. `to_latin1()` for our own screen, `fold_ascii()` only for the wire | **Hardware**: `chr(0xEB)` = 10 px, same as `'e'` |
 | Security | leaked admin password rotated | Verified 401/303 |
 
 ---
@@ -109,9 +109,12 @@ precondition check took two minutes once I finally did it.
 ### P-4 · What went right, and why
 Every finding that mattered came from **evidence, not reasoning**: the duel log,
 the raw `events` table, the LVGL widget tree, a hardware A/B. The three bugs I am
-most confident in (clock domain, self-target ring, duplicate GATT registration)
-were each confirmed by an artifact I could point at. The two mistakes above were
-both cases where I reasoned instead of looked.
+most confident in (clock domain, self-target ring, the phantom quiet window) were
+each confirmed by an artifact I could point at. The mistakes were all cases where
+I reasoned instead of looked — including, within hours of writing this, calling
+duplicate GATT registration the duel blocker on the strength of `write=0` without
+checking where the hunter's log line is emitted. It was the victim's scan blocking
+the connect. **Three same-day reversals, not two.**
 
 ---
 
