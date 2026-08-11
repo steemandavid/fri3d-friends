@@ -175,6 +175,67 @@ _FOLD = {
 }
 
 
+def _codepoints(s):
+    """Walk `s` as bytes, yielding codepoints. Accepts UTF-8 sequences AND bare
+    Latin-1 high bytes, because both reach us: a phone posts UTF-8 over BLE,
+    while this byte-oriented MicroPython turns a source literal accent into one
+    Latin-1 byte."""
+    if not isinstance(s, str) or not s:
+        return
+    try:
+        b = s.encode("utf-8") if max(ord(c) for c in s) > 0xFF else bytes(
+            ord(c) for c in s)
+    except Exception:
+        return
+    i, n = 0, len(b)
+    while i < n:
+        c = b[i]
+        if c < 0x80:
+            yield c
+            i += 1
+        elif 0xC2 <= c <= 0xDF and i + 1 < n and 0x80 <= b[i + 1] < 0xC0:
+            yield ((c & 0x1F) << 6) | (b[i + 1] & 0x3F)
+            i += 2
+        elif 0xE0 <= c <= 0xEF and i + 2 < n and 0x80 <= b[i + 1] < 0xC0 \
+                and 0x80 <= b[i + 2] < 0xC0:
+            yield ((c & 0x0F) << 12) | ((b[i + 1] & 0x3F) << 6) | (b[i + 2] & 0x3F)
+            i += 3
+        else:
+            yield c                       # a bare high byte -> read it as Latin-1
+            i += 1
+
+
+def to_latin1(s):
+    """Fold a string to ONE BYTE PER CHARACTER, keeping accents (§8.9, D26).
+
+    For anything drawn on THIS badge's own screen, prefer this over fold_ascii:
+    both the built-in `font_montserrat_*` and the bundled name TTF carry Latin-1,
+    and lvgl here is byte-per-glyph -- so a single 0xEB byte IS `e-diaeresis` and
+    renders at full width (measured on badge 2026-08-11: 10 px, identical to an
+    ASCII 'e', against 9 px for a genuine missing glyph). What does NOT render is
+    UTF-8: a 2-byte sequence draws as two boxes.
+
+    So "Renee-with-an-acute" displays correctly on the player's own nametag -- the
+    README's "never strip accents from names" rule holds, provided the string is
+    Latin-1 and not UTF-8.
+
+    NOT for the HSNT wire: parse_payload does `decode("utf-8")`, and on this build
+    that RAISES on a Latin-1 high byte (the `errors` argument is not supported),
+    so the receiver would end up with an empty name. Use fold_ascii() there.
+
+    Codepoints above 255 have no Latin-1 form and fall back to the ASCII
+    transliteration (oe-ligature -> "oe"), or are dropped."""
+    out = []
+    for cp in _codepoints(s):
+        if 32 <= cp < 127 or 0xA0 <= cp <= 0xFF:
+            out.append(chr(cp))
+        elif cp < 32:
+            out.append(" ")
+        else:
+            out.append(_FOLD.get(cp, ""))
+    return "".join(out).strip()
+
+
 def fold_ascii(s):
     """Fold a display string down to printable ASCII (§8.9, D26).
 

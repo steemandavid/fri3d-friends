@@ -17,7 +17,8 @@ import ble_proximity as bp
 from ble_proximity import (
     fnv1a_16, normalize_group, hash_groups, name_budget, truncate_utf8,
     build_payload, parse_payload, intersect, shared_name_for, build_own_table,
-    build_game_block, parse_game_block, admit_peer, evict_lru,
+    to_latin1,
+    build_game_block, parse_game_block, admit_peer, evict_lru, fold_ascii,
     MAGIC, VERSION, ADV_TOTAL, OVERHEAD, MAX_GROUPS, SEEN_CAP, NEARBY_CAP,
     EVICT_MS, BLOCK_GAME, GAME_BLOCK_LEN, GFLAG_ALIVE, GFLAG_BOUNTY,
 )
@@ -549,6 +550,35 @@ def test_current_peers_and_has_peers_exclude_game_admitted(monkeypatch):
     assert b.current_peers() == []
     assert b.has_peers() is False
     assert b.peer_count() == 2       # _nearby is independent of the peer table
+
+
+def test_to_latin1_keeps_accents_for_local_rendering():
+    """§8.9/D26, corrected 2026-08-11. Measured on badge: lvgl here is
+    byte-per-glyph AND the fonts carry Latin-1, so a single 0xEB byte IS
+    e-diaeresis and renders at 10 px -- identical to an ASCII 'e', against 9 px
+    for a genuine missing glyph. What does NOT render is UTF-8 (two bytes, two
+    boxes). So for anything drawn on OUR OWN screen the fix is conversion, not
+    stripping -- the README's "never strip accents from names" rule holds."""
+    assert to_latin1("Ren\u00e9e") == "Ren\u00e9e"
+    assert to_latin1("Zo\u00eb") == "Zo\u00eb"
+    assert to_latin1("Stra\u00dfe") == "Stra\u00dfe"
+    # Every character is ONE byte -- that is what makes it renderable here.
+    assert all(ord(c) < 256 for c in to_latin1("Fran\u00e7ois"))
+    # Above Latin-1 there is no single byte, so it falls back to the ASCII form.
+    assert to_latin1("\u0152uvre") == "OEuvre"
+    assert to_latin1("\u65e5\u672c") == ""
+    assert to_latin1("plain") == "plain"
+
+
+def test_latin1_must_not_go_on_the_wire():
+    """parse_payload does decode("utf-8"), and on the badge build that RAISES on
+    a Latin-1 high byte (the `errors` argument is unsupported), leaving the
+    receiver with an empty name. So the BEACON folds to ASCII even though the
+    local screen can render Latin-1 -- verified on badge 2026-08-11."""
+    ids, _ = hash_groups(["G"])
+    name = "Ren\u00e9e"
+    assert to_latin1(name) != fold_ascii(name)          # they really do differ
+    assert parse_payload(build_payload(ids, name))["name"] == "Renee"
 
 
 def test_build_payload_folds_the_name_to_ascii():

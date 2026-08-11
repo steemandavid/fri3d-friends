@@ -37,7 +37,7 @@ from mpos import Activity, TaskManager, BatteryManager, lights
 import mpos
 
 from ble_proximity import (
-    BLEProximity, build_own_table, hash_groups, fnv1a_16, fold_ascii,
+    BLEProximity, build_own_table, hash_groups, fnv1a_16, to_latin1,
     parse_groups_field, new_groups_from, merge_groups,
     EVICT_MS, RSSI_FLOOR_DEFAULT, MAX_GROUPS,
 )
@@ -1960,11 +1960,15 @@ class Fri3dFriends(Activity):
         # Name: bundled 42px TrueType font (1.5× the built-in max), single line,
         # scrolls when too long. Fixed font, not transform-scaled (scaling a
         # scrolling label re-renders every frame and starves the CPU).
-        # fold_ascii at the render boundary (§8.9/D26): the stored name keeps
-        # its accents, but lvgl here draws one box per byte, so the SCREEN gets
-        # the folded form. Same treatment on the reload path below.
+        # to_latin1, NOT fold_ascii (§8.9/D26): this is OUR OWN screen, and both
+        # the bundled name TTF and the built-in fonts carry Latin-1, so the
+        # accents render (measured on badge: a 0xEB byte is 10 px, same as an
+        # ASCII 'e'). What does not render is UTF-8, which draws two boxes -- so
+        # convert, do not strip. The README's "never strip accents from names"
+        # holds here; the BEACON still folds to ASCII, because parse_payload's
+        # utf-8 decode raises on a Latin-1 byte and the peer would see no name.
         self._name_lbl = self._label(scr, (W - NAME_W) // 2, NAME_TOP,
-                                     fold_ascii(cfg["name"]),
+                                     to_latin1(cfg["name"]),
                                      COL_NAME, font=self._name_font, center=True, w=NAME_W)
         try:
             self._name_lbl.set_long_mode(lv.label.LONG_MODE.SCROLL_CIRCULAR)
@@ -3253,7 +3257,7 @@ class Fri3dFriends(Activity):
             pass
         if self._name_lbl is not None:
             try:
-                self._name_lbl.set_text(fold_ascii(self._config.get("name", "")))
+                self._name_lbl.set_text(to_latin1(self._config.get("name", "")))
             except Exception:
                 pass
         self._refresh_pills()
