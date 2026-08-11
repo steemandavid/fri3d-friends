@@ -21,6 +21,12 @@ RETRY_MS = 60000                   # back into sync soon after a failure
 
 FULLNAME = "com.fri3dcamp.fri3dfriends"
 
+# §8.10.3 update nudge strings. Shared by _compute_nudge (the banner) and
+# update_prompt (the full-screen UPDATE NODIG), and asserted verbatim by the
+# callback tests, so they live here as named constants rather than inline.
+UPDATE_PROMPT_CLEAN = "UPDATE NODIG -- alles opgeslagen, update in de AppStore"
+UPDATE_PROMPT_PENDING = "UPDATE NODIG -- even synchroniseren voor je update..."
+
 
 _VERSION_CACHE = None
 
@@ -523,11 +529,28 @@ class GotchaController(object):
             except Exception:
                 pending = 0
             if pending:
-                return "UPDATE NODIG -- even synchroniseren voor je update..."
-            return "UPDATE NODIG -- alles opgeslagen, update in de AppStore"
+                return UPDATE_PROMPT_PENDING
+            return UPDATE_PROMPT_CLEAN
         if gotcha.version_tuple(latest) and gotcha.version_lt(me, latest):
             return "Nieuwe versie beschikbaar -- update in de AppStore"
         return None
+
+    def update_prompt(self):
+        """The dynamic line for the prominent full-screen UPDATE NODIG (§8.10.3).
+
+        Unlike `nudge_text` (set once per sync and latched for the banner), this is
+        re-derived live so the screen reflects a sync that lands while it is up:
+        below_min plus whether the offline queue still holds unsent events -- never
+        send a player to the AppStore holding unsent kills (§8.10.4 step 3). Returns
+        None when the badge is not below the floor, which the renderer reads as
+        "hide the screen"."""
+        if not self.below_min:
+            return None
+        try:
+            pending = len(self.state.queue)
+        except Exception:
+            pending = 0
+        return UPDATE_PROMPT_PENDING if pending else UPDATE_PROMPT_CLEAN
 
     def card_url(self):
         """The player-card URL for this badge's QR (§9.1), or None if there is

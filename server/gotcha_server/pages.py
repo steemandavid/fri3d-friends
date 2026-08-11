@@ -1,13 +1,22 @@
-"""Backend-served web pages (D31, §9.1) -- Phase 1 skeletons.
+"""Backend-served web pages (D31, §9.1) -- Phase 5.
 
-Phase 5 builds these out properly (player card, four leaderboards, hit list, QR
-flow). What is here is the skeleton the plan asks Phase 1 for, plus a **fully
-working admin dashboard**, because the dashboard is the thing a host actually
-needs on a phone the moment badges are handed out -- it is what tells you the
-game is alive (§9.4).
+The player-facing pages a phone browser opens (the badge's QR points here) plus
+the host admin console. Three pages:
+
+  * `/gotcha/`     -- the player card (§9.1): public stats + token-gated target,
+                      the four leaderboards, and the hit list. The QR flow
+                      (0.11.24) encodes `…/gotcha/?badge=<pid>&t=<token>`.
+  * `/klassement`  -- the standalone public standings: the four boards and the
+                      hit list, full-width. This is the "leaderboards" deliverable
+                      browsable without scanning a QR -- the thing you project on
+                      a camp screen or check between kills.
+  * `/admin`       -- the host dashboard (§9.4), the screen a host needs on a
+                      phone the moment badges are handed out.
 
 Everything is inline HTML/CSS/JS on purpose: one process, no build step, no CDN,
-no asset pipeline to break on a laptop in a field with the uplink down.
+no asset pipeline to break on a laptop in a field with the uplink down. Same
+origin as the API, so the pages read the unsigned `/v1/public/*` views (D21
+governs the *badge* path only; these publish only what the boards publish anyway).
 
 Player-facing text is Dutch (D26). ASCII only, as elsewhere in this project.
 """
@@ -80,6 +89,77 @@ async def root():
 
 
 # ---------------------------------------------------------------------------
+# Public standings (§9.1 leaderboards) -- browse without a QR
+# ---------------------------------------------------------------------------
+
+@router.get("/klassement")
+async def standings():
+    """The standalone public leaderboard page: the four boards and the hit list,
+    full-width, auto-refreshing. Reachable without scanning a QR (unlike the
+    player card), so it is the page to project on a camp screen or check between
+    kills. Public data only -- exactly what the boards publish."""
+    body = """
+<header><h1>!Fri3d Friends &mdash; Klassement</h1>
+  <span class="sub" id="clock">laden...</span>
+  <span class="sub"><a href="/gotcha/">mijn kaart</a></span></header>
+<main>
+  <div class="card"><h2>Prijzenlijst</h2><div id="hitlist" class="muted">laden...</div></div>
+  <div class="card"><h2>Klassement</h2>
+    <div class="row" id="tabs" style="margin-bottom:10px"></div>
+    <div id="boardbody"></div>
+  </div>
+</main>
+<footer>Alles wat je hier ziet is openbaar. Wie wie uitschakelt staat op het
+  klassement &mdash; dat is met opzet.</footer>
+<script>
+const TABS = [
+  ['total',            'Totaal (punten)'],
+  ['streak',           'Langste reeks'],
+  ['group_total',      'Groepen: totaal'],
+  ['group_per_member', 'Groepen: per lid'],
+];
+let board = 'total';
+async function j(u){ const r = await fetch(u); if(!r.ok) throw new Error(r.status); return r.json(); }
+function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function renderTabs(){
+  document.getElementById('tabs').innerHTML = TABS.map(([k,lbl])=>
+    '<button class="' + (k===board?'':'ghost') + '" onclick="pick(\''+k+'\')">' + lbl + '</button>').join('');
+}
+function pick(b){ board = b; renderTabs(); loadBoard(); }
+async function loadBoard(){
+  const d = await j('/v1/public/leaderboard?board=' + board + '&limit=50');
+  const grp = board.startsWith('group');
+  const head = grp
+    ? '<tr><th>#</th><th>groep</th><th>' + (board==='group_per_member'?'per lid':'punten') + '</th><th>leden</th></tr>'
+    : '<tr><th>#</th><th>speler</th><th>' + (board==='streak'?'beste reeks':'punten') + '</th><th>kills</th></tr>';
+  const rows = d.entries.map((e,i)=>{
+    if(grp) return '<tr><td>'+(i+1)+'</td><td>'+esc(e.name)+'</td><td>'+
+      (board==='group_per_member'? e.per_member : e.points)+'</td><td class="muted">'+e.members+'</td></tr>';
+    const v = board==='streak' ? e.best_streak : e.score;
+    return '<tr><td>'+(i+1)+'</td><td>'+esc(e.name)+' #'+e.pid+'</td><td>'+v+'</td><td class="muted">'+e.kills+' kills</td></tr>';
+  }).join('');
+  document.getElementById('boardbody').innerHTML =
+    '<table>' + head + (rows || '<tr><td colspan="4" class="muted">nog geen scores</td></tr>') + '</table>';
+}
+async function loadHitlist(){
+  const d = await j('/v1/public/hitlist');
+  document.getElementById('hitlist').innerHTML = d.hitlist.length
+    ? d.hitlist.map(h=>'<span class="pill warn">'+esc(h.name)+' #'+h.pid+' &middot; reeks '+h.streak+'</span>').join(' ')
+    : 'Niemand heeft nu een prijs op zijn hoofd.';
+}
+async function tickClock(){
+  try { const d = await j('/healthz');
+    document.getElementById('clock').textContent = new Date(d.server_time*1000).toLocaleTimeString('nl-BE');
+  } catch(e) { document.getElementById('clock').textContent = 'GEEN VERBINDING'; }
+}
+renderTabs(); loadBoard(); loadHitlist(); tickClock();
+setInterval(()=>{ loadBoard(); loadHitlist(); tickClock(); }, 30000);
+</script>
+"""
+    return page("Klassement &mdash; !Fri3d Friends", body)
+
+
+# ---------------------------------------------------------------------------
 # Player card (§9.1) -- public by default, private view with a read token
 # ---------------------------------------------------------------------------
 
@@ -94,7 +174,8 @@ async def player_card(request: Request):
     """
     body = """
 <header><h1>!Fri3d Friends &mdash; Gotcha</h1>
-  <span class="sub" id="sub">laden...</span></header>
+  <span class="sub" id="sub">laden...</span>
+  <span class="sub"><a href="/klassement">klassement</a></span></header>
 <main>
   <div class="card" id="me"><h2>Speler</h2><div class="muted">Scan de QR-code op je
     badge om je eigen kaart te zien.</div></div>

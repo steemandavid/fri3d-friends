@@ -498,6 +498,41 @@ def test_compute_nudge_short_server_floor_does_not_false_trigger(nudge_controlle
     assert gc._compute_nudge({"min_version": "0.11", "latest_version": "0.12"}) is None
 
 
+# §8.10.3 full-screen UPDATE NODIG -- the dynamic line the overlay reads. Unlike
+# nudge_text (latched per sync), update_prompt() is re-derived live so the screen
+# tracks a sync that lands while it is up.
+
+def test_update_prompt_below_min_clean(nudge_controller):
+    gc = nudge_controller("0.10.0")
+    gc._compute_nudge({"min_version": "0.11.0"})     # sets below_min True
+    assert gc.update_prompt() == UPDATE_CLEAN
+
+
+def test_update_prompt_below_min_with_queue_says_sync_first(nudge_controller):
+    gc = nudge_controller("0.10.0")
+    gc.state.queue.add(gotcha.reveal_event(1004))
+    gc._compute_nudge({"min_version": "0.11.0"})
+    assert gc.update_prompt() == UPDATE_PENDING
+
+
+def test_update_prompt_none_when_not_below_min(nudge_controller):
+    gc = nudge_controller("0.11.20")
+    gc._compute_nudge({"min_version": "0.11.0"})
+    assert gc.below_min is False
+    assert gc.update_prompt() is None
+
+
+def test_update_prompt_reflects_a_sync_that_drains_the_queue(nudge_controller):
+    gc = nudge_controller("0.10.0")
+    gc.state.queue.add(gotcha.reveal_event(1004))
+    gc._compute_nudge({"min_version": "0.11.0"})
+    assert gc.update_prompt() == UPDATE_PENDING
+    # a sync lands and flushes the queue (the server's accepted-uuids path)
+    uuids = [e["uuid"] for e in gc.state.queue.peek_batch(10)]
+    gc.state.queue.remove(uuids)
+    assert gc.update_prompt() == UPDATE_CLEAN
+
+
 def test_take_fleet_banner_surfaces_new_broadcast_once(nudge_controller):
     gc = nudge_controller("0.11.20")
     gc.broadcast = "Ceremonie om 17:00 aan de bar"

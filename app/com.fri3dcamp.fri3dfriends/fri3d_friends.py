@@ -370,6 +370,15 @@ class Fri3dFriends(Activity):
         self._card_close_btn = None
         self._card_open = False
         self._card_next_ms = 0
+        # §8.10.3 full-screen UPDATE NODIG overlay (create-once, hidden). Shown
+        # when the badge is below min_version; dismissible (A/X), and the stay-
+        # killable hunting gate (_hunting_blocked) still applies after dismiss.
+        self._update_overlay = None
+        self._update_msg_lbl = None
+        self._update_close_btn = None
+        self._update_open = False
+        self._update_dismissed = False        # player closed it this below-min stint
+        self._update_was_below = False        # rising-edge detect to re-show next stint
         self._setup_widgets = []
         self._reload_pending = False
         self._setup_skipped = False       # user chose "skip for now" on Configure-me
@@ -1556,6 +1565,7 @@ class Fri3dFriends(Activity):
         self._build_menu(scr)
         self._build_setup_overlay(scr)
         self._build_card_overlay(scr)
+        self._build_update_overlay(scr)
         self._build_adopt_panel(scr)
         self._build_banner(scr)
 
@@ -1781,6 +1791,138 @@ class Fri3dFriends(Activity):
         self._card_close_btn = close
         ov.add_flag(lv.obj.FLAG.HIDDEN)
         self._card_overlay = ov
+
+    def _build_update_overlay(self, scr):
+        # §8.10.3 prominent full-screen UPDATE NODIG. Shown when the badge is below
+        # min_version (gc.below_min): the version is too old to hunt, so prompt the
+        # player to update via the AppStore. Same create-once/hide discipline as the
+        # setup/card overlays (deleting live widgets hard-crashes this build). The
+        # stay-killable gate (_hunting_blocked) is independent and stays armed after
+        # the player dismisses this -- closing it only says "I have seen it", it does
+        # not re-enable hunting. A/X (or the Sluiten button) closes it; it re-opens
+        # on the next fresh below-min stint (rising edge), and the banner keeps
+        # reminding meanwhile. Owns no radio.
+        ov = self._rbox(scr, 0, 0, W, H, COL_BG, radius=0)
+        try:
+            ov.set_style_border_width(2, 0)
+            ov.set_style_border_color(_col(COL_NEAR), 0)
+            ov.remove_flag(lv.obj.FLAG.SCROLLABLE)
+        except Exception:
+            pass
+        self._label(ov, 0, 38, "UPDATE NODIG", COL_NEAR,
+                    font=lv.font_montserrat_24, center=True)
+        self._label(ov, 0, 74, "Deze versie is te oud om te jagen.", COL_NONE,
+                    font=lv.font_montserrat_14, center=True)
+        self._label(ov, 0, 96, "Sluit de app af en update in de AppStore.", COL_NONE,
+                    font=lv.font_montserrat_14, center=True)
+        self._update_msg_lbl = self._label(ov, 0, 128, "", COL_HINT,
+                                           font=lv.font_montserrat_14, center=True)
+        close = lv.button(ov)
+        close.set_size(120, 28)
+        close.set_pos((W - 120) // 2, 174)
+        try:
+            close.set_style_bg_color(_col(COL_PANEL), 0)
+            close.set_style_bg_opa(lv.OPA.COVER, 0)
+            close.set_style_radius(14, 0)
+            close.set_style_border_width(1, 0)
+            close.set_style_border_color(_col(COL_CARD_LINE), 0)
+            close.set_style_shadow_width(0, 0)
+        except Exception:
+            pass
+        clbl = lv.label(close)
+        clbl.set_text("Sluiten")
+        clbl.set_style_text_color(_col(COL_HINT), 0)
+        clbl.set_style_text_font(lv.font_montserrat_14, 0)
+        try:
+            clbl.center()
+        except Exception:
+            pass
+        self._make_focusable(close)
+        self._bind_event(close, self._on_update_close_clicked, lv.EVENT.CLICKED)
+        self._update_close_btn = close
+        ov.add_flag(lv.obj.FLAG.HIDDEN)
+        self._update_overlay = ov
+
+    def _on_update_close_clicked(self, e=None):
+        self._close_update()
+
+    def _open_update(self, msg):
+        # Show the full-screen prompt. Caller has already checked no other overlay
+        # or duel owns the screen.
+        if self._update_overlay is None:
+            return
+        self._update_open = True
+        if self._update_msg_lbl is not None and msg:
+            try:
+                self._update_msg_lbl.set_text(msg)
+            except Exception:
+                pass
+        try:
+            self._update_overlay.remove_flag(lv.obj.FLAG.HIDDEN)
+            self._update_overlay.move_foreground()
+        except Exception:
+            pass
+        if self._banner_bg is not None:
+            try:
+                self._banner_bg.move_foreground()
+            except Exception:
+                pass
+        self._set_focus([self._update_close_btn])
+        self._wake()
+
+    def _close_update(self):
+        # "I have seen it": stop showing the screen this below-min stint, but leave
+        # the hunting gate armed. Re-arms (re-shows) on the next rising edge.
+        self._update_open = False
+        self._update_dismissed = True
+        if self._update_overlay is not None:
+            try:
+                self._update_overlay.add_flag(lv.obj.FLAG.HIDDEN)
+            except Exception:
+                pass
+        self._establish_focus()
+
+    def _refresh_update(self, now):
+        # Drive the full-screen UPDATE NODIG from gc.below_min. One showing per
+        # below-min stint (rising edge clears the dismiss latch); while up, the
+        # dynamic line tracks the live queue state via gc.update_prompt(). Never
+        # steals the screen from an active overlay or a duel/under-attack banner --
+        # those are higher priority and self-clear, so it opens the next tick.
+        gc = self._gc
+        if gc is None or self._update_overlay is None or self._unconfigured:
+            return
+        try:
+            below = bool(gc.below_min)
+        except Exception:
+            below = False
+        if below and not self._update_was_below:
+            self._update_dismissed = False       # fresh stint: re-show
+        self._update_was_below = below
+        want = below and not self._update_dismissed
+        if not want:
+            if self._update_open:
+                self._update_open = False
+                try:
+                    self._update_overlay.add_flag(lv.obj.FLAG.HIDDEN)
+                except Exception:
+                    pass
+            return
+        busy = (self._duel_banner or self._card_open or self._setup_open or
+                self._setup_task is not None or self._adopt_open or
+                self._menu_open or self._consent_open or self._exchanging)
+        if busy:
+            return                                # let the higher-priority UI finish
+        try:
+            msg = gc.update_prompt() or ""
+        except Exception:
+            msg = ""
+        if not self._update_open:
+            self._open_update(msg)
+        elif self._update_msg_lbl is not None and msg:
+            try:
+                self._update_msg_lbl.set_text(msg)
+            except Exception:
+                pass
 
     def _on_card_close_clicked(self, e=None):
         self._close_card()
@@ -2385,6 +2527,7 @@ class Fri3dFriends(Activity):
                 if self._banner_until and time.ticks_diff(now, self._banner_until) >= 0:
                     self._hide_banner()
                 self._render_fleet_banner()
+                self._refresh_update(now)
                 if (self._has_backlight and not self._dimmed and
                         time.ticks_diff(now, self._last_input_ms) > 30000 and
                         not self._ble.has_peers()):
@@ -2898,6 +3041,10 @@ class Fri3dFriends(Activity):
         if self._consent_open:
             # Consent must be acknowledged: X == "Niet meedoen" (decline, §13).
             self._do_consent_action("decline")
+            return True
+        if self._update_open:
+            # §8.10.3: X dismisses the UPDATE NODIG screen (hunting stays gated).
+            self._close_update()
             return True
         if self._menu_open:
             self._close_menu()
