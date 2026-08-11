@@ -315,6 +315,19 @@ probably not what breaks the duel.
 
 Badges left on **0.11.29**, verified by behaviour probe, all three ports intact.
 
+## 6j. Docs caught up with the two reversals
+- **`README.md`** — the encoding note said the built-in fonts "carry ASCII only". They do
+  not; corrected with the measurement, the real constraint (byte-per-glyph, no UTF-8
+  decoding), and the new per-render-site rule. Also documents the user-visible consequence
+  that **peers see `Renee`, not `Renée`**, and why.
+- **`DESIGN.md`** — closed the standing open question *"Not yet verified on hardware:
+  whether this build's built-in fonts actually lack the Latin-1 range."* They don't lack it.
+  Records the three probes that give false answers.
+- **Plan §8.9.1** — corrected the same assumption; the ASCII-only rule for UI copy stands,
+  but for a different reason than the section gave.
+- **`Code_Review_Session_20260810_2300.md`** — two stale lines fixed after the reversals,
+  and the process section now says **three** same-day reversals, not two.
+
 ## 7. Follow-ups
 - **Not validated on hardware:** the `below_min` hunting gate and the UPDATE NODIG banner.
   Both are fully host-tested; a live test means setting `min_version` above the fleet, which

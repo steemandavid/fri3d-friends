@@ -357,7 +357,8 @@ was in active use / off-limits during development).
   docstrings and log output stay English. See the Gotcha plan §8.9 for the fixed
   terminology list (`doelwit`, `reeks`, `premie`, `onthullen`, `wapenstilstand`).
 - ⚠️ **UI copy must be pure ASCII.** UI chrome uses the **built-in**
-  `font_montserrat_12/14/16/24/28`, which on a stock lvgl build carry ASCII only;
+  `font_montserrat_12/14/16/24/28`. They do carry Latin-1 (see below), but lvgl
+  here never decodes UTF-8, and source files are UTF-8, so in practice
   a `ë`/`é`/`—`/`…`/`✓`/`·` renders as a missing glyph, silently. Several such
   characters were shipping in v0.9.0 strings and were removed in the v0.10.0
   translation pass — including the `…` in `_short()`, replaced by `"..."` with the
@@ -365,10 +366,24 @@ was in active use / off-limits during development).
 - **Player names are exempt and must stay exempt**: the 42 px name label uses the
   bundled **Latin-1** subset TTF above, so `Zoë`/`Renée` render correctly. Never
   strip accents from a name to satisfy the ASCII rule.
-- **Not yet verified on hardware**: whether this build's built-in fonts actually
-  lack the Latin-1 range. The ASCII rule is the safe assumption until someone
-  renders `ë é ï` in `font_montserrat_16` and reads it back with
-  `get_all_widgets_with_text()` (screenshots can't answer this — §1).
+- ✅ **VERIFIED on hardware 2026-08-11 — and the assumption above was wrong.**
+  The built-in fonts **do** carry Latin-1: `lv.text_get_size` on `chr(0xEB)` in
+  `font_montserrat_16` measures **10 px**, identical to an ASCII `e`, against
+  **9 px** for a genuine missing glyph (`chr(0xFF)`). The bundled name TTF's cmap
+  has 197 codepoints including `é ë ï ü ç ß`.
+  **The real constraint is that lvgl here is byte-per-glyph and never decodes
+  UTF-8** — a two-byte `é` from a UTF-8 source file draws as *two* boxes. So the
+  ASCII rule for UI copy stands, for a different reason than we thought.
+  ⚠️ Three probes give FALSE answers, all tried: `get_glyph_width()` returns a
+  per-codepoint fallback (accents look present); a UTF-8 literal measures as
+  boxes (they look absent); a source `"ë"` measures 0. Use `lv.text_get_size` on
+  `chr(0xEB)` with `chr(0xFF)` as the missing-glyph control.
+- **Names keep their accents, but only locally.** `ble_proximity.to_latin1()`
+  converts the player's own name to one-byte-per-character before it is drawn, so
+  `Zoë`/`Renée` render on the nametag. The **BLE beacon** folds to ASCII
+  (`fold_ascii`), so peers see `Renee`: `parse_payload` decodes the wire name as
+  UTF-8 and on this build that *raises* on a Latin-1 byte, leaving the receiver
+  with no name at all.
 - **Dutch runs ~15 % longer than English** on a 296×240 fixed-font screen with no
   reflow. **First real casualty found on hardware 2026-07-28**: the adopt prompt's
   title went from one line to two and overlapped the group rows (§13.3). Assume more

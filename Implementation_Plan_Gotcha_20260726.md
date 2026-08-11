@@ -2044,8 +2044,15 @@ same pass (§11, Phase 2).
 #### 8.9.1 The font constraint — read before writing any copy
 
 The UI chrome renders in **built-in lvgl fonts** (`font_montserrat_12/14/16/24/28`,
-used throughout `fri3d_friends.py`). In a stock lvgl build these carry **ASCII only**;
-a `ë` or `é` renders as a missing-glyph box, and nothing warns you at build time.
+used throughout `fri3d_friends.py`).
+
+> **CORRECTED 2026-08-11 (§14.2 A6).** These fonts **do** carry Latin-1 — `chr(0xEB)`
+> measures 10 px, the same as an ASCII `e`, against 9 px for a real missing glyph.
+> The constraint is different from what this section assumed: **lvgl here is
+> byte-per-glyph and never decodes UTF-8**, so a two-byte `é` from a UTF-8 source
+> file draws as *two* boxes. **The ASCII-only rule for UI copy therefore stands**,
+> but names can and do keep their accents via `to_latin1()` (local render only —
+> the beacon still folds, because the wire parser decodes UTF-8 strictly).
 
 > **Rule: all UI copy must be pure ASCII.** This costs nothing in Dutch — write
 > `een` not `één`, `overgenomen` not `geërfd`, `Prive` not `Privé`. Where a diacritic

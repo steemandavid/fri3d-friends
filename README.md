@@ -38,11 +38,22 @@ set their own group name(s) and member name by editing one file (no code changes
 > badge UI, the on-badge editor and the phone setup page — is Dutch. Code,
 > comments, docstrings, log output and this README stay English.
 >
-> **UI copy must be pure ASCII.** The badge renders its chrome in lvgl's built-in
-> `font_montserrat_*`, which carry ASCII only — a `ë` or `é` becomes a
-> missing-glyph box with no warning at build time. Write `een`, not `één`.
-> **Player names are the exception**: the big name label uses the bundled
-> Latin-1 subset TTF, so `Zoë` renders correctly. Never strip accents from names.
+> **UI copy must be pure ASCII.** Not because the fonts lack accents — measured
+> on badge 2026-08-11, both the built-in `font_montserrat_*` and the bundled name
+> TTF **do** carry Latin-1 (`chr(0xEB)` renders at 10 px, the same width as an
+> ASCII `e`; a genuine missing glyph is 9 px). The real constraint is that lvgl
+> here is **byte-per-glyph**: it never decodes UTF-8, so a two-byte `é` from a
+> UTF-8 source file draws as **two boxes**. Since source files are UTF-8, keep UI
+> copy ASCII: write `een`, not `één`.
+>
+> **Player names are the exception, and they keep their accents.** The badge
+> converts its own name to Latin-1 (`ble_proximity.to_latin1`) before drawing it,
+> so `Zoë` renders correctly on the nametag. Never strip accents from names.
+>
+> **On the BLE beacon, names are folded to ASCII** (`fold_ascii`), so a peer's
+> nearby-list shows `Renee`, not `Renée`. That is deliberate: `parse_payload`
+> decodes the wire name as UTF-8, and on this build that *raises* on a Latin-1
+> byte — the receiver would end up showing no name at all.
 
 ## Install
 
