@@ -1,4 +1,98 @@
-# !Fri3d Friends — Documentation-vs-code audit + fixes — 2026-08-11 (session 4)
+# !Fri3d Friends — Two duel bugs fixed + live two-badge kill PROVEN — 2026-08-12 (session 5)
+
+The pre-camp physical test of the duel surfaced two real on-badge bugs. Both fixed,
+deployed to the dev badges (bac8 + 9de4), and the kill was then proven end-to-end on
+real hardware for the first time badge-to-badge (Phase 3b was previously only verified
+with a *host* BLE hunter). Camp is 14–16 Aug 2026.
+
+## 1. Test 2 (real two-badge kill over the live flush path) — PASSED
+A genuine badge-to-badge duel scored end-to-end:
+- 9de4 (pid 1004) pressed A on bac8 (pid 1003) at **rssi −43 dBm** → connect → discover
+  GOTCHA_SVC → ATTACK → victim **ENGAGED (hold 5000 ms) → KILLED** → SPOILS (soul)
+  disclosed on the hunter → death/respawn screen on the victim.
+- The badge flushed the kill; the server recorded **kill id 1**, soul verified against
+  the victim's commitment, `total_kills` 0→1 and `score` 0→1 on the hunter.
+- The "UITGESCHAKELD — respawn" screen the operator first saw was bac8's **death screen
+  (success)**, not a failure — it had just been killed at −43 dBm.
+
+This is the first *badge-to-badge* end-to-end kill (Phase 3b's 2026-08-02 verification
+used a host BLE hunter because host-BLE can't connect from this dev box at −95 dBm).
+
+## 2. Bug A (0.11.30) — ATTACK GATT buffer truncated the payload → "aanval mislukt"
+**Root cause:** `GotchaService.bind_handles` sized the ATTACK/REVEAL/DUEL write buffers
+to `gatts_set_buffer(h, 64, True)`. But the real ATTACK payload is **66 bytes** — the
+dev badges' group id is a 5-digit number (`23689`, "gotcha-dev"):
+`{"a":1004,"as":"target","g":23689,"n":"<16-hex nonce>","v":1003}` = 66 B. The 64-byte
+buffer **truncated the write by 2 bytes** → invalid JSON → `parse_attack_payload`
+returned `None` → the attack was **silently dropped on the victim** (`_pending_attacks`
+stayed 0, no `apply_attack`) → the hunter timed out → **"aanval mislukt"**, every time.
+
+A host round-trip of `build_attack_payload` had "passed" only because it was tested with
+`group=1` (62 bytes, fits). The 5-digit group id is what pushed it over 64.
+
+**Fix (`gotcha_gatt.py bind_handles`):**
+- buffer 64 → **128 bytes** (covers the real payload + any larger group id with margin);
+- `append=True` → **`append=False`** — these are latest-write-wins characteristics, not
+  logs. With `append=True`, two ATTACK writes landing before a drain would concatenate
+  to `}{` and also fail `json.loads`. SPOILS (512 B) likewise switched to `append=False`.
+
+**Lesson:** size GATT buffers against the REAL payload with a 5-digit group id, not a
+toy `group=1`. REVEAL (~53 B) was under-sized too but happened to fit; it now has the
+same 128 B + latest-wins treatment.
+
+## 3. Bug B (0.11.31) — double-tapping A clobbered the shared BLE IRQ
+**Root cause:** `request_attack` guarded re-entry on `self._attacking`, but the flag was
+set **inside the async `_do_attack` task**, not synchronously in `request_attack`. Two
+A-presses closer than the event-loop's first tick both passed the guard and launched two
+concurrent `duel_session`s. Each calls `self._ble.irq(_dirq)` — and MicroPython has a
+**single global BLE IRQ callback**, so the second registration clobbered the first's
+handler. Symptoms (from the on-badge duel log): one session's `gap_connect raised` (a
+connect already pending), the survivor's `discover incomplete n=0` (its characteristic-
+result IRQs went to the wrong handler) → both failed. A player double-tapping at camp
+would hit this immediately.
+
+**Fix (`gotcha_app.py`):**
+- `request_attack` now sets `self._attacking = True` **synchronously** before
+  `TaskManager.create_task`, so a second press before the task's first tick is ignored.
+- `_do_attack` wraps its whole body in an outer `try/finally` that clears `_attacking`
+  and `_attack_task` on **every** exit — including the early "doel niet in bereik"
+  return and any exception — so the guard can never wedge. (Previously an early return
+  left `_attack_task` set, which would also have stuck the guard closed.)
+
+## 4. Deploy gotcha — `MANIFEST` filename is case-sensitive
+The app reads its version from **`MANIFEST.JSON` (uppercase)** at launch
+(`fri3d_friends._read_version`, `gotcha_app._app_version`) — for both the splash version
+and the §8.10.3 update-nudge computation. `mpremote cp ... MANIFEST.json` (lowercase)
+silently creates a **separate orphan** on the case-sensitive LittleFS; the real
+uppercase file is untouched, so the splash keeps showing the OLD version (it read 0.11.29
+while the lowercase orphan said 0.11.30). Both dev badges cleaned to a single uppercase
+`MANIFEST.JSON` and advanced to **0.11.31**. `tools/deploy.sh` already used uppercase;
+its default file list was also missing `gotcha_gatt.py` and `state_backup.py` — added.
+
+## 5. Env / runbook
+- Both dev badges configured for the **LIMEHOME** WiFi; backend live at
+  `100.64.72.86:8080` (Tailscale Funnel HTTPS for the badges, CERT_NONE + HMAC-safe).
+- `Physical_Tests_Runbook_20260811.md` + `PreCamp_Runbook_20260811.md` version refs
+  swept (0.11.29/0.11.30 → 0.11.31); README test count 444 → **455**.
+- bac8 revived server-side after the scored kill (`base_status=active`,
+  `protected_until=NULL`) so it remains attackable for the deferred re-test.
+
+## Files
+- `app/com.fri3dcamp.fri3dfriends/gotcha_gatt.py` — buffer 64→128, `append` True→False.
+- `app/com.fri3dcamp.fri3dfriends/gotcha_app.py` — synchronous `_attacking` guard +
+  full-body `try/finally` in `_do_attack`.
+- `app/com.fri3dcamp.fri3dfriends/MANIFEST.JSON` — 0.11.29 → 0.11.31.
+- `tools/deploy.sh` — default file list += `gotcha_gatt.py`, `state_backup.py`.
+- Runbooks + README version/test-count sweeps.
+
+## Still pending
+- One clean **single**-A-press re-test (deferred by the operator) to confirm Bug B live
+  and watch the hunter's `total_kills` go 1→2. Both badges are on 0.11.31, sha + symbol
+  verified, rebooted; bac8 is alive/unprotected, 9de4 hunts bac8.
+
+---
+
+
 
 A "verify the documentation matches the code, flag every difference" pass. Five parallel
 reviewers compared README / DESIGN / the Gotcha plan docs against `app/` / `server/` /

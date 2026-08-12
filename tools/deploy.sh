@@ -41,9 +41,10 @@ wait_ready() {
 }
 
 if [ $# -eq 0 ]; then
-    FILES=(MANIFEST.JSON fri3d_friends.py gotcha_app.py gotcha.py ble_proximity.py \
-           ble_setup.py contact_exchange.py beacon_service.py identity.py \
-           config.json icon_64x64.png fri3dfriends.png montserrat_name.ttf)
+    FILES=(MANIFEST.JSON fri3d_friends.py gotcha_app.py gotcha.py gotcha_gatt.py \
+           state_backup.py ble_proximity.py ble_setup.py contact_exchange.py \
+           beacon_service.py identity.py config.json icon_64x64.png \
+           fri3dfriends.png montserrat_name.ttf)
 else
     FILES=("$@")
 fi

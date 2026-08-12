@@ -387,7 +387,7 @@ each with the command that undoes it, so the machine can be returned to its prio
 state after camp.
 
 ```bash
-python3 -m pytest tests/ -q                                   # 444 tests, no badge needed
+python3 -m pytest tests/ -q                                   # 455 tests, no badge needed
 python3 server/tools/smoke.py http://<host>:8080 --badges 6    # check a deployment
 ```
 

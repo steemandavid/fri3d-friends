@@ -48,6 +48,14 @@ playtest as the measurement. Don't let it block anything.
 
 ## TEST 2 — Real two-badge kill over the live flush path  *(~15 min)*
 
+**✅ PROVEN 2026-08-12 (0.11.31):** 9de4 killed bac8 at rssi −43 dBm; kill id 1,
+soul verified, hunter `total_kills` 0→1 / `score` 0→1 on the server. The chain
+(A → ENGAGED → KILLED → soul → flush → server increment) works badge-to-badge.
+The steps below remain the canonical re-run. **Press A exactly once** — a
+double-tap used to launch two duels that clobber the shared BLE IRQ (fixed in
+0.11.31; the second press is now ignored), but single-press is still the reliable
+discipline.
+
 **Goal:** prove a genuine duel scores end-to-end: A-press → 5 s hold → KILLED →
 soul disclosed → badge flushes → server `total_kills`/`score` increment.
 
@@ -81,10 +89,13 @@ work from this laptop (−95 dBm) — it must be badge-to-badge.
 
 ## TEST 3 — Flags AD + full-screen UPDATE smoke  *(~10 min, after a redeploy)*
 
-**Precondition:** redeploy current repo code to the badge and bump `MANIFEST.json`
-to **0.11.30** first (the on-badge `contact_exchange.py` is stale at 0.11.29).
-Deploy recipe: reset to launcher, then ONE chained `cp` session. Verify a loaded
-symbol afterwards, not just the MANIFEST number.
+**Precondition:** the repo is at **0.11.31** and both dev badges are already deployed
+to 0.11.31 (sha + symbol verified, 2026-08-12). `contact_exchange.py` (Flags AD) and
+`gotcha_gatt.py`/`gotcha_app.py` (duel fixes) are all current on-badge. Only redeploy
+if you've changed code since; then bump `MANIFEST.JSON` (uppercase — the app reads
+`MANIFEST.JSON`, not `.json`; a lowercase cp creates an orphan the splash ignores),
+reset to launcher, ONE chained `cp` session, and verify a loaded symbol — not just the
+MANIFEST number.
 
 ### 3a — Flags AD (connectable advert)
 ```

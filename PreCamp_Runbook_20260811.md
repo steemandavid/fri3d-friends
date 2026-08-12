@@ -76,26 +76,31 @@ are valid flush payload once WiFi is up.
 
 ## Step 3 — Flags AD on-hardware re-verification  *(code correct; badge stale)*
 
-**Repo code (0.11.29): CORRECT + tested.**
+**Repo code (0.11.31): CORRECT + tested.**
 - `contact_exchange.py:82-83` — `build_exchange_adv` prepends `flags_ad = bytes([0x02,0x01,0x06])`
   before the manufacturer AD; `return flags_ad + mfg`.
 - `ble_proximity.py:304` — `build_payload(connectable=True)` prepends the Flags AD
   (§5.7 probe finding); the load-bearing game beacon for the duel connect path.
+- `gotcha_gatt.py bind_handles` — ATTACK/REVEAL/DUEL buffers 128 B, `append=False`
+  (0.11.30 fix; was 64 B → truncated the 66-byte ATTACK payload → "aanval mislukt").
+- `gotcha_app.py request_attack/_do_attack` — synchronous `_attacking` re-entry guard
+  (0.11.31 fix; double-tapping A no longer clobbers the shared BLE IRQ).
 - Tests: `test_contact_exchange.py:60` (Flags-first), `test_ble_proximity.py`
   (`test_build_payload_connectable_prepends_flags_and_still_parses`,
-  `test_name_budget_connectable_reserves_flags`). 444 green.
+  `test_name_budget_connectable_reserves_flags`). 455 green.
 
-**On-badge (9de4, 2026-08-11): `contact_exchange.py` is STALE.** The badge reports
-`MANIFEST.JSON` version **0.11.29**, but its deployed `contact_exchange.py` is the old
-build (docstring "one manufacturer AD structure", no `0x02,0x01,0x06` literal; a live
-`build_exchange_adv()` call returned bytes starting `0b ff ff …` = manufacturer AD
-with **no** Flags prefix). This is the version-bump-without-real-deploy hazard — the
-MANIFEST advanced but the module didn't ship. The **game beacon** (`ble_proximity`)
-is unaffected and proven deployed (the 0.11.13 duel connect worked).
+**On-badge (bac8 + 9de4, 2026-08-12): DEPLOYED + VERIFIED at 0.11.31.** Both badges
+sha-verified against the repo, the duel-fix symbols confirmed loaded, and a real
+badge-to-badge kill scored end-to-end (Test 2 PROVEN — see `Physical_Tests_Runbook`).
+The earlier 0.11.29 stale-deploy hazard (MANIFEST advanced but the module didn't ship)
+and the 0.11.30 buffer / 0.11.31 double-tap duel bugs are all resolved on these two
+badges. **Other badges must still be (re)deployed before camp** — don't trust the
+MANIFEST number alone; verify a loaded symbol, per the `badge-deploy-verify-loaded-code`
+note. Deploy `MANIFEST.JSON` **uppercase** (the app reads `MANIFEST.JSON`; a lowercase
+cp creates an orphan the splash ignores — see the 0.11.31 changelog entry).
 
-**Action before camp:** redeploy the **current repo code** to every badge (don't trust
-the MANIFEST number alone — verify a loaded symbol, per the `badge-deploy-verify-loaded-code`
-note). After redeploy, re-confirm on-badge:
+**Action before camp:** redeploy the **current repo code (0.11.31)** to every badge.
+After redeploy, re-confirm on-badge:
 ```
 sudo /tmp/ff-venv/bin/mpremote connect <port> exec \
   "import contact_exchange as ce; print(ce.build_exchange_adv(1)[:3]==bytes([0x02,0x01,0x06]))"

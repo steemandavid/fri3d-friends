@@ -998,8 +998,18 @@ class GotchaController(object):
             return False
         try:
             from mpos import TaskManager
+            # Set the in-flight flag SYNCHRONOUSLY (not inside the async task) so a
+            # second A-press that lands before the task's first tick is blocked. Two
+            # concurrent duel_sessions each call self._ble.irq(_dirq), and MicroPython
+            # has a SINGLE global BLE IRQ callback -> the second clobbers the first's
+            # handler: one session's gap_connect raises (a connect already pending),
+            # the survivor's discovery sees zero characteristics (n=0) -> both fail.
+            # The flag is cleared in _do_attack's outer finally on every exit path.
+            self._attacking = True
             self._attack_task = TaskManager.create_task(self._do_attack())
         except Exception:
+            self._attacking = False
+            self._attack_task = None
             return False
         return True
 
@@ -1019,51 +1029,55 @@ class GotchaController(object):
         via ContactExchange.duel_session, with BLEProximity suspended around it.
         On a kill: verify the disclosed soul, adopt the inherited target offline
         (D10), optimistically score, queue the 'kill'. Runs as a TaskManager task."""
-        tp = self.state.target_pid()
-        addr = self.ble.addr_for_pid(tp) if tp is not None else None
-        if addr is None:
-            self._set_reveal_msg("doel niet in bereik", 1500)
-            return
-        my_pid = self.state.d.get("pid")
-        group = self.groups[0] if self.groups else 0
+        # _attacking was set synchronously by request_attack. This outer finally
+        # clears it on EVERY exit -- including the early 'target not in range'
+        # return and any exception -- so the re-entry guard can never wedge.
         try:
-            nonce = gotcha.new_nonce()
-        except Exception:
-            nonce = "n0"
-        payload = gotcha.build_attack_payload(group, my_pid, tp, gotcha.ATTACK_TARGET,
-                                              nonce).encode("utf-8")
-        self._plog("HUNT attack->%s prox=%s" % (tp, self.target_prox))
-        now_s = self.state.effective_now(int(time.time()))
-        # §5.8: sending an ATTACK ends OUR OWN protection immediately. Clear it
-        # locally and queue attack_started so the server does the same on ingest.
-        st = self.state.d.setdefault("state", {})
-        if st.get("protected_until"):
-            st["protected_until"] = None
-        self.state.queue.add(gotcha.attack_started_event(tp, at=now_s))
-        self.state.save()
-        self._attacking = True
-        self._attack_cd[tp] = time.ticks_ms()
-        self._set_reveal_msg("AANVALLEN...", 12000)
-        result = {"outcome": "failed"}
-        try:
+            tp = self.state.target_pid()
+            addr = self.ble.addr_for_pid(tp) if tp is not None else None
+            if addr is None:
+                self._set_reveal_msg("doel niet in bereik", 1500)
+                return
+            my_pid = self.state.d.get("pid")
+            group = self.groups[0] if self.groups else 0
             try:
-                self.ble.suspend()
+                nonce = gotcha.new_nonce()
             except Exception:
-                pass
+                nonce = "n0"
+            payload = gotcha.build_attack_payload(group, my_pid, tp, gotcha.ATTACK_TARGET,
+                                                  nonce).encode("utf-8")
+            self._plog("HUNT attack->%s prox=%s" % (tp, self.target_prox))
+            now_s = self.state.effective_now(int(time.time()))
+            # §5.8: sending an ATTACK ends OUR OWN protection immediately. Clear it
+            # locally and queue attack_started so the server does the same on ingest.
+            st = self.state.d.setdefault("state", {})
+            if st.get("protected_until"):
+                st["protected_until"] = None
+            self.state.queue.add(gotcha.attack_started_event(tp, at=now_s))
+            self.state.save()
+            self._attack_cd[tp] = time.ticks_ms()
+            self._set_reveal_msg("AANVALLEN...", 12000)
+            result = {"outcome": "failed"}
             try:
-                result = await self._exch.duel_session(addr[0], addr[1], payload,
-                                                        log=self._plog)
-            except Exception as e:
-                result = {"outcome": "failed"}
-                self._plog("HUNT duel_session err %r" % (e,))
+                try:
+                    self.ble.suspend()
+                except Exception:
+                    pass
+                try:
+                    result = await self._exch.duel_session(addr[0], addr[1], payload,
+                                                            log=self._plog)
+                except Exception as e:
+                    result = {"outcome": "failed"}
+                    self._plog("HUNT duel_session err %r" % (e,))
+            finally:
+                try:
+                    self.ble.resume()
+                except Exception:
+                    pass
+            self._handle_duel_result(tp, result, now_s)
         finally:
-            try:
-                self.ble.resume()
-            except Exception:
-                pass
             self._attacking = False
             self._attack_task = None
-        self._handle_duel_result(tp, result, now_s)
 
     def _handle_duel_result(self, victim_pid, result, now_s):
         outcome = result.get("outcome") if isinstance(result, dict) else None

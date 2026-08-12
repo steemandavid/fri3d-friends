@@ -82,20 +82,27 @@ class GotchaService(object):
             self._h[name] = h
         # Write buffers so a REVEAL/ATTACK payload is not truncated, and so the
         # DUEL value we stage for the attacker's poll-read (notify fallback, §5.5)
-        # holds a full {s,h,d} state rather than the ~20-byte default.
+        # holds a full {s,h,d} state rather than the ~20-byte default. These are
+        # latest-write-wins characteristics, so append=False (a second ATTACK
+        # before a drain must REPLACE, not concatenate -- concatenation yields
+        # '}{' which fails json.loads and silently drops the write). 128 bytes
+        # covers the real ATTACK payload with margin: {g,a,v,as,n} is ~66 bytes
+        # with a 5-digit group id (e.g. 23689) + 16-char nonce + 4-digit pids;
+        # the 64-byte buffer used here before 0.11.30 TRUNCATED that payload by
+        # 2 bytes and dropped every duel (root cause of the "aanval mislukt" bug).
         for name in ("attack", "reveal", "duel"):
             h = self._h.get(name)
             if h is not None:
                 try:
-                    ble.gatts_set_buffer(h, 64, True)
+                    ble.gatts_set_buffer(h, 128, False)
                 except Exception:
                     pass
         # SPOILS carries soul + inherited target; give it the room the Phase-0
-        # spike confirmed (512-byte gatts_set_buffer succeeded).
+        # spike confirmed (512-byte gatts_set_buffer succeeded). latest-wins.
         h = self._h.get("spoils")
         if h is not None:
             try:
-                ble.gatts_set_buffer(h, 512, True)
+                ble.gatts_set_buffer(h, 512, False)
             except Exception:
                 pass
 
