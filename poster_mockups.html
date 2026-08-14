@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gotcha-posters — 5 mock-ups (A4)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800;900&family=Oswald:wght@500;600;700&family=Special+Elite&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0B0E14; --name:#FFFFFF; --near:#FFE066; --hint:#FF8C42;
+    --batt:#8FA8B8; --banner:#143A2A; --panel:#121826; --card:#162033;
+    --bar-on:#9FE0A0; --muted:#7B8AA0;
+    --paper:#EDE3CC; --paper-dark:#D9CBA8; --ink:#1a140c;
+    --danger:#E5484D;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{background:#1c1f26;color:#e8e8e8;font-family:system-ui,Segoe UI,Roboto,sans-serif}
+  body{padding:32px 16px 80px}
+  .intro{max-width:820px;margin:0 auto 40px;text-align:center}
+  .intro h1{font-family:'Oswald',sans-serif;font-size:34px;letter-spacing:1px;color:#fff;margin-bottom:10px}
+  .intro p{color:#9aa0aa;line-height:1.55;font-size:15px}
+  .intro .tag{display:inline-block;background:#FF8C42;color:#0B0E14;font-weight:700;font-size:12px;letter-spacing:1px;padding:4px 12px;border-radius:20px;margin-bottom:14px;font-family:'Oswald',sans-serif}
+  .gallery{display:flex;flex-direction:column;align-items:center;gap:48px}
+  .poster-wrap{display:flex;flex-direction:column;align-items:center;gap:14px}
+  .poster-label{font-family:'Oswald',sans-serif;letter-spacing:2px;color:#9aa0aa;font-size:13px;text-transform:uppercase}
+  .poster-label b{color:#FFE066}
+  .poster-caption{max-width:595px;text-align:center;color:#9aa0aa;font-size:13.5px;line-height:1.5}
+
+  /* A4 portrait at a screen-friendly size: 595 x 842 px (96dpi A4) */
+  .poster{
+    width:595px; height:842px; position:relative; overflow:hidden;
+    box-shadow:0 24px 60px rgba(0,0,0,.6); border-radius:2px;
+    font-family:'Oswald',sans-serif;
+  }
+
+  /* ---------- shared bits ---------- */
+  .badge-mock{
+    background:var(--bg); border:1.5px solid #2a3346; border-radius:10px;
+    padding:10px 12px; color:#fff; font-family:'JetBrains Mono',monospace; font-size:11px;
+  }
+  .pill{display:inline-block;padding:2px 9px;border-radius:20px;font-size:10px;font-weight:700;font-family:'Montserrat',sans-serif}
+  .bars{display:flex;gap:3px;align-items:flex-end;height:16px}
+  .bars i{width:7px;background:#2A3346;border-radius:1px;display:block}
+  .bars i.on{background:var(--bar-on)}
+  .install-strip{position:absolute;left:0;right:0;bottom:0;padding:16px 26px;font-family:'Oswald',sans-serif}
+  .install-strip .steps{font-size:12.5px;letter-spacing:.5px}
+  .install-strip .store{color:var(--near);font-weight:700}
+  .logo-foot{font-family:'Montserrat',sans-serif;font-weight:900;letter-spacing:.5px}
+
+  /* ============ POSTER A — JAGERS & PROOI (the dual core) ============ */
+  .A{background:var(--bg);color:#fff;display:flex;flex-direction:column}
+  .A .top, .A .bot{flex:1;padding:30px 34px;display:flex;flex-direction:column;justify-content:center;position:relative}
+  .A .top{background:linear-gradient(160deg,#0B0E14 0%, #141d1a 100%)}
+  .A .role{font-family:'Oswald',sans-serif;font-size:13px;letter-spacing:6px;color:var(--hint);margin-bottom:6px}
+  .A h2{font-family:'Oswald',sans-serif;font-weight:700;font-size:46px;line-height:.98;letter-spacing:.5px}
+  .A .top h2 span{color:var(--near)}
+  .A .badge-mock{margin-top:16px;max-width:240px}
+  .A .badge-mock .tline{display:flex;justify-content:space-between;color:var(--muted);font-size:9.5px;margin-bottom:6px}
+  .A .badge-mock .tgt{font-family:'Montserrat',sans-serif;font-weight:800;font-size:16px;letter-spacing:.5px}
+  .A .badge-mock .lbl{color:var(--muted);font-size:9px;letter-spacing:1px;margin-top:8px}
+  .A .badge-mock .meter{margin-top:6px}
+  .A .mid{height:64px;background:var(--hint);color:#0B0E14;display:flex;align-items:center;justify-content:center;
+          font-family:'Oswald',sans-serif;font-weight:700;font-size:22px;letter-spacing:4px;text-transform:uppercase}
+  .A .bot{background:radial-gradient(circle at 50% 40%, #2a1213 0%, #0B0E14 70%)}
+  .A .bot .role{color:var(--danger)}
+  .A .bot h2 span{color:var(--danger)}
+  .A .warn{margin-top:16px;display:inline-flex;gap:8px;align-items:center;border:1.5px solid var(--danger);
+           padding:7px 14px;border-radius:30px;font-size:13px;letter-spacing:1px;color:var(--danger);width:max-content}
+  .A .warn .dot{width:9px;height:9px;border-radius:50%;background:var(--danger);box-shadow:0 0 10px var(--danger)}
+  .A .install-strip{background:#08090d;border-top:1px solid #2a3346}
+  .A .install-strip .steps{color:#cfd6e2}
+  .A .install-strip .topname{display:flex;justify-content:space-between;align-items:flex-end}
+  .A .logo-foot{font-size:20px}
+  .A .by{color:var(--muted);font-size:10px;font-family:'JetBrains Mono',monospace}
+
+  /* ============ POSTER B — GEZOCHT (wanted poster) ============ */
+  .B{background:var(--paper);color:var(--ink);font-family:'Special Elite',serif;
+     background-image:radial-gradient(circle at 20% 10%, rgba(0,0,0,.05) 0, transparent 40%),
+                      radial-gradient(circle at 80% 80%, rgba(0,0,0,.06) 0, transparent 45%);}
+  .B::before{content:"";position:absolute;inset:0;pointer-events:none;
+     background:
+       repeating-linear-gradient(90deg, transparent 0 3px, rgba(0,0,0,.015) 3px 4px),
+       radial-gradient(circle at 70% 30%, rgba(80,50,10,.08), transparent 30%);
+     mix-blend-mode:multiply;}
+  .B .inner{position:absolute;inset:18px;border:3px double var(--ink);padding:30px 30px 0;
+            display:flex;flex-direction:column;height:calc(100% - 36px)}
+  .B h1{text-align:center;font-size:54px;letter-spacing:4px;line-height:1;font-weight:400}
+  .B .sub{text-align:center;font-size:15px;letter-spacing:2px;margin-top:8px;color:#5a4321}
+  .B .photo{margin:22px auto 0;width:200px;height:230px;border:2px solid var(--ink);
+            background:#c9b98f;display:flex;align-items:center;justify-content:center;position:relative;
+            background-image:repeating-linear-gradient(45deg,#c9b98f 0 8px,#c0b085 8px 16px)}
+  .B .photo .sil{font-size:150px;line-height:.7;color:#6a5630;opacity:.55;font-family:'Oswald',sans-serif}
+  .B .photo .stamp{position:absolute;top:-14px;right:-14px;background:var(--ink);color:var(--paper);
+                   font-family:'Oswald',sans-serif;font-weight:700;font-size:12px;letter-spacing:2px;
+                   padding:6px 10px;transform:rotate(8deg);border:2px dashed var(--paper)}
+  .B .name-slot{text-align:center;margin-top:18px;font-size:13px;letter-spacing:1px;color:#5a4321}
+  .B .name-slot .line{display:inline-block;min-width:260px;border-bottom:1.5px solid var(--ink);padding-bottom:2px}
+  .B .reward{text-align:center;margin-top:18px;font-size:16px;line-height:1.5}
+  .B .reward b{font-size:22px;font-family:'Oswald',sans-serif}
+  .B .twist{margin-top:22px;text-align:center;border-top:1px solid rgba(0,0,0,.3);padding-top:14px;
+            font-size:14px;line-height:1.45}
+  .B .twist b{font-size:17px}
+  .B .foot{margin-top:auto;padding:18px 0 4px;border-top:2px solid var(--ink);display:flex;
+           justify-content:space-between;align-items:flex-end}
+  .B .foot .store{font-family:'Oswald',sans-serif;font-size:13px;letter-spacing:1px}
+  .B .foot .store b{font-size:16px}
+  .B .foot .logo-foot{font-family:'Montserrat',sans-serif;font-weight:900;font-size:15px;color:var(--ink)}
+
+  /* ============ POSTER C — GOTCHA. (minimal typographic) ============ */
+  .C{background:#f4f1ea;color:#0B0E14;display:flex;flex-direction:column;justify-content:space-between;
+     padding:46px 40px}
+  .C .kicker{font-family:'Oswald',sans-serif;font-size:13px;letter-spacing:5px;color:var(--hint);font-weight:700}
+  .C h1{font-family:'Oswald',sans-serif;font-weight:700;font-size:230px;line-height:.82;letter-spacing:-4px;margin:8px 0 0}
+  .C h1 .dot{color:var(--hint)}
+  .C .tagline{font-family:'Oswald',sans-serif;font-weight:600;font-size:22px;line-height:1.25;margin-top:18px;max-width:420px}
+  .C .tagline em{font-style:normal;border-bottom:4px solid var(--hint)}
+  .C .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px 30px;margin-top:22px;max-width:440px;
+           font-family:'Oswald',sans-serif}
+  .C .grid div{font-size:13px;letter-spacing:.5px;color:#3a3f4a}
+  .C .grid b{color:#0B0E14}
+  .C .foot{display:flex;justify-content:space-between;align-items:flex-end;border-top:2px solid #0B0E14;padding-top:14px}
+  .C .foot .install{font-family:'Oswald',sans-serif;font-size:14px;line-height:1.4}
+  .C .foot .install b{background:#0B0E14;color:#f4f1ea;padding:2px 8px}
+  .C .foot .logo-foot{font-family:'Montserrat',sans-serif;font-weight:900;font-size:16px}
+
+  /* ============ POSTER D — SLUIP NADER (proximity tension) ============ */
+  .D{background:var(--bg);color:#fff;display:flex;flex-direction:column;padding:34px}
+  .D .kicker{font-family:'Oswald',sans-serif;font-size:13px;letter-spacing:5px;color:var(--hint);font-weight:700}
+  .D h2{font-family:'Oswald',sans-serif;font-weight:700;font-size:54px;line-height:.96;margin-top:6px}
+  .D h2 span{color:var(--danger)}
+  .D .meter-block{margin:34px 0 10px}
+  .D .meter-block .mlbl{display:flex;justify-content:space-between;font-family:'JetBrains Mono',monospace;
+                        font-size:11px;color:var(--muted);margin-bottom:8px;letter-spacing:1px}
+  .D .meter-block .mlbl b{color:var(--danger)}
+  .D .bigbars{display:flex;gap:8px;align-items:flex-end;height:150px}
+  .D .bigbars i{flex:1;border-radius:3px 3px 0 0;display:block}
+  .D .bigbars i:nth-child(1){height:30%;background:var(--bar-on)}
+  .D .bigbars i:nth-child(2){height:48%;background:var(--bar-on)}
+  .D .bigbars i:nth-child(3){height:66%;background:var(--near)}
+  .D .bigbars i:nth-child(4){height:84%;background:var(--hint)}
+  .D .bigbars i:nth-child(5){height:100%;background:var(--danger);box-shadow:0 0 24px var(--danger)}
+  .D .scale{display:flex;justify-content:space-between;font-family:'JetBrains Mono',monospace;font-size:10px;
+            color:var(--muted);margin-top:6px;letter-spacing:1px}
+  .D .scale b{color:var(--danger)}
+  .D .duo{display:flex;gap:14px;margin-top:30px}
+  .D .duo .col{flex:1;border:1.5px solid #2a3346;border-radius:10px;padding:14px;background:var(--panel)}
+  .D .duo .col .h{font-family:'Oswald',sans-serif;font-size:13px;letter-spacing:2px;margin-bottom:6px}
+  .D .duo .col.hunt .h{color:var(--near)}
+  .D .duo .col.prey .h{color:var(--danger)}
+  .D .duo .col p{font-size:12.5px;line-height:1.4;color:#cfd6e2}
+  .D .install-strip{position:static;margin-top:auto;padding-top:18px;border-top:1px solid #2a3346}
+  .D .install-strip .row{display:flex;justify-content:space-between;align-items:flex-end}
+  .D .install-strip .steps{color:#cfd6e2;font-size:12.5px}
+  .D .install-strip .store{color:var(--near);font-weight:700}
+  .D .logo-foot{font-size:18px}
+
+  /* ============ POSTER E — JIJ JAAGT / OP JOU WORD GEJAAGD (editorial split) ============ */
+  .E{display:flex;flex-direction:column}
+  .E .split{flex:1;display:flex}
+  .E .half{flex:1;padding:40px 30px;display:flex;flex-direction:column;justify-content:center;position:relative}
+  .E .hunt{background:#0B0E14;color:#fff}
+  .E .prey{background:var(--danger);color:#0B0E14}
+  .E .half .num{font-family:'Montserrat',sans-serif;font-weight:900;font-size:64px;line-height:1;opacity:.15}
+  .E .half h2{font-family:'Oswald',sans-serif;font-weight:700;font-size:50px;line-height:.96;margin-top:6px}
+  .E .hunt h2 em{font-style:normal;color:var(--near)}
+  .E .half p{font-family:'Oswald',sans-serif;font-size:15px;line-height:1.5;margin-top:14px;max-width:230px;font-weight:500}
+  .E .half .arrow{position:absolute;font-size:40px;}
+  .E .hunt .arrow{bottom:34px;right:30px;color:var(--near)}
+  .E .prey .arrow{top:34px;left:30px;color:#0B0E14}
+  .E .head{background:#0B0E14;color:#fff;text-align:center;padding:30px 24px 22px}
+  .E .head .logo-foot{font-size:24px}
+  .E .head .kicker{font-family:'Oswald',sans-serif;font-size:12px;letter-spacing:5px;color:var(--hint);margin-top:6px}
+  .E .install-strip{background:#08090d;padding:16px 30px;display:flex;justify-content:space-between;align-items:center}
+  .E .install-strip .steps{color:#cfd6e2;font-size:12.5px;font-family:'Oswald',sans-serif}
+  .E .install-strip .store{color:var(--near);font-weight:700}
+  .E .install-strip .logo-foot{font-size:16px}
+
+  @media (max-width:640px){
+    .poster{transform:scale(.62);transform-origin:top center;margin-bottom:-320px}
+  }
+</style>
+</head>
+<body>
+  <div class="intro">
+    <span class="tag">GOTCHA-POSTERS · 5 MOCK-UPS · A4 PORTRAIT</span>
+    <h1>Find &amp; stalk your victim — but you're never safe.</h1>
+    <p>Five takes on the hunter-vs-prey tension. Each is a print-ready A4 concept using the
+       app's real palette. Scroll, compare, and tell me which letter (A–E) wins — or what to
+       mix. The footer of every poster carries the install call-to-action
+       (<b>AppStore on the badge</b>). The red &ldquo;live server&rdquo; caveat applies to all five:
+       Gotcha needs the field-laptop game server running at camp.</p>
+  </div>
+
+  <div class="gallery">
+
+    <!-- ===================== A ===================== -->
+    <div class="poster-wrap">
+      <div class="poster-label">A — <b>Jagers &amp; Prooi</b> · the dual core (from idea #1)</div>
+      <div class="poster A">
+        <div class="top">
+          <div class="role">Jij bent de JAGER</div>
+          <h2>Zoek je doelwit.<br><span>Sluip nader.</span></h2>
+          <div class="badge-mock">
+            <div class="tline"><span>14:22</span><span>87%</span></div>
+            <div class="tgt">DOELWIT: Marie K.</div>
+            <div class="lbl">NABIJHEID</div>
+            <div class="bars meter">
+              <i class="on" style="height:30%"></i><i class="on" style="height:50%"></i>
+              <i class="on" style="height:70%;background:#FFE066"></i><i style="height:85%"></i><i style="height:100%"></i>
+            </div>
+          </div>
+        </div>
+        <div class="mid">Maar ondertussen…</div>
+        <div class="bot">
+          <div class="role">Jij bent de Prooi</div>
+          <h2>Iemand jaagt<br><span>op jou.</span></h2>
+          <div class="warn"><span class="dot"></span> JE BENT NOOIT VEILIG</div>
+        </div>
+        <div class="install-strip">
+          <div class="topname">
+            <div>
+              <div class="logo-foot">!Fri3d Friends</div>
+              <div class="by">Gotcha · een optioneel spel op je badge</div>
+            </div>
+            <div class="steps" style="text-align:right">
+              Installeer in de <span class="store">AppStore op je badge</span><br>
+              zoek <b>!Fri3d Friends</b> &rarr; menu &rarr; Gotcha
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="poster-caption"><b>Why this works:</b> the split makes the tension literal — top half
+        you're the stalker, bottom half you're the stalked. Clearest single-image statement of the game.</div>
+    </div>
+
+    <!-- ===================== B ===================== -->
+    <div class="poster-wrap">
+      <div class="poster-label">B — <b>Gezocht</b> · wanted-poster (from idea #2)</div>
+      <div class="poster B">
+        <div class="inner">
+          <h1>GEZOCHT</h1>
+          <div class="sub">JOUW DOELWIT · LEVEND</div>
+          <div class="photo">
+            <span class="sil">?</span>
+            <span class="stamp">TARGET</span>
+          </div>
+          <div class="name-slot">Naam: <span class="line">&nbsp;</span></div>
+          <div class="reward">
+            Beloning: <b>Het klassement</b><br>
+            <span style="font-size:13px;color:#5a4321">Sluip nader. Maak de kill. Klim in de ranking.</span>
+          </div>
+          <div class="twist">
+            <b>PS — jij staat ook op iemands poster.</b><br>
+            Iemand sluift nu naar jou.
+          </div>
+          <div class="foot">
+            <div class="store">Download in de<br><b>AppStore op je badge</b></div>
+            <div class="logo-foot">!Fri3d Friends</div>
+          </div>
+        </div>
+      </div>
+      <div class="poster-caption"><b>Why this works:</b> most photogenic and &ldquo;camp&rdquo; — people point at it.
+        The twist line carries the &ldquo;you're never safe&rdquo; beat without losing the wanted-poster joke.</div>
+    </div>
+
+    <!-- ===================== C ===================== -->
+    <div class="poster-wrap">
+      <div class="poster-label">C — <b>GOTCHA.</b> · minimal typographic (from idea #10)</div>
+      <div class="poster C">
+        <div>
+          <div class="kicker">EEN SPEL OP JE BADGE</div>
+          <h1>GOTCHA<span class="dot">.</span></h1>
+          <div class="tagline">Jij <em>jaagt</em>.<br>Op jou wordt <em>gejaagd</em>.</div>
+          <div class="grid">
+            <div><b>1.</b> Krijg een doelwit</div>
+            <div><b>2.</b> Sluip nader</div>
+            <div><b>3.</b> Maak de kill</div>
+            <div><b>4.</b> Respawn &amp; herhaal</div>
+          </div>
+        </div>
+        <div class="foot">
+          <div class="install">Download in de<br><b>AppStore op je badge</b><br>
+            <span style="font-size:12px">zoek !Fri3d Friends &rarr; menu &rarr; Gotcha</span></div>
+          <div class="logo-foot">!Fri3d Friends</div>
+        </div>
+      </div>
+      <div class="poster-caption"><b>Why this works:</b> reads from across a field, lowest ink, prints fast.
+        The tension lives in two short underlined lines. Bulk-print this for every tent.</div>
+    </div>
+
+    <!-- ===================== D ===================== -->
+    <div class="poster-wrap">
+      <div class="poster-label">D — <b>Sluip nader</b> · proximity-meter tension (blend of #1 + #4)</div>
+      <div class="poster D">
+        <div class="kicker">HOE DICHTERBIJ JE KOMT</div>
+        <h2>HOE <span>GEVAARLIJKER</span><br>HET WORDT.</h2>
+        <div class="meter-block">
+          <div class="mlbl"><span>NABIJHEID VAN JE DOELWIT</span><b>5 = KILL</b></div>
+          <div class="bigbars"><i></i><i></i><i></i><i></i><i></i></div>
+          <div class="scale"><span>ver weg</span><span>in de buurt</span><b>vlak naast je</b></div>
+        </div>
+        <div class="duo">
+          <div class="col hunt">
+            <div class="h">Jij jaagt</div>
+            <p>Vind je doelwit. Kom dichterbij. Vijf strepen = een kill.</p>
+          </div>
+          <div class="col prey">
+            <div class="h">Op jou wordt gejaagd</div>
+            <p>Je badge waarschuwt wanneer er iemand nadert. Je bent nooit veilig.</p>
+          </div>
+        </div>
+        <div class="install-strip">
+          <div class="row">
+            <div>
+              <div class="logo-foot">!Fri3d Friends</div>
+              <div class="steps" style="color:#7B8AA0;margin-top:2px">menu &rarr; Meedoen met Gotcha</div>
+            </div>
+            <div class="steps" style="text-align:right">Download in de<br><span class="store">AppStore op je badge</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="poster-caption"><b>Why this works:</b> sells the <i>feel</i> — that filling meter is the game's
+        heartbeat. The two columns keep the &ldquo;hunter &amp; hunted&rdquo; duality from idea #1.</div>
+    </div>
+
+    <!-- ===================== E ===================== -->
+    <div class="poster-wrap">
+      <div class="poster-label">E — <b>Jij jaagt / Op jou wordt gejaagd</b> · editorial split (#1 + #10)</div>
+      <div class="poster E">
+        <div class="head">
+          <div class="logo-foot">!Fri3d Friends</div>
+          <div class="kicker">GOTCHA · HET ASSASSIN-SPEL</div>
+        </div>
+        <div class="split">
+          <div class="half hunt">
+            <div class="num">01</div>
+            <h2>Jij <em>jaagt.</em></h2>
+            <p>Zoek je doelwit. Sluip nader. Maak de kill. Bekijk je score op het live klassement.</p>
+            <div class="arrow">&rarr;</div>
+          </div>
+          <div class="half prey">
+            <div class="arrow">&larr;</div>
+            <div class="num">02</div>
+            <h2>Op jou<br>wordt gejaagd.</h2>
+            <p>Iemand heeft jou als doelwit. Je badge fluistert wanneer hij nadert. Slaap niet.</p>
+          </div>
+        </div>
+        <div class="install-strip">
+          <div class="steps">Download in de <span class="store">AppStore op je badge</span> &rarr; zoek !Fri3d Friends &rarr; menu &rarr; Gotcha</div>
+          <div class="logo-foot">!Fri3d Friends</div>
+        </div>
+      </div>
+      <div class="poster-caption"><b>Why this works:</b> boldest, most modern — black/red split is pure tension.
+        Strong contender if you want something that looks designed rather than jokey.</div>
+    </div>
+
+  </div>
+</body>
+</html>

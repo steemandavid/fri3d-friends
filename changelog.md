@@ -1,3 +1,120 @@
+# !Fri3d Friends — Gotcha shelved, pre-Gotcha app republished, and the .mpk layout bug that broke every AppStore install — 2026-08-14 (session 6)
+
+Gotcha development was stopped. The task was to republish the last known-good
+pre-Gotcha app to BadgeHub. Doing that surfaced a long-standing packaging bug:
+**`tools/publish_badgehub.py` had been building `.mpk` archives with the wrong
+root for its entire existence**, so the published 0.11.22 was uninstallable too.
+Camp is 14–16 Aug 2026.
+
+## 1. Decision — stop Gotcha, ship the pre-Gotcha app
+Published build is the app tree exactly as of **`5df769b`** ("v0.10.0: joystick
+menu + OS-drawer fix"), the last commit before any Gotcha code landed: nametag,
+BLE proximity friends, contact swap, phone/BLE setup, joystick menu. No
+`gotcha.py` / `gotcha_app.py` / `gotcha_gatt.py` (grep-confirmed in the package).
+
+**Version bumped to 0.12.x, not republished as 0.10.0** — BadgeHub was already
+serving 0.11.x and badges would not treat a downgrade as an update. The splash
+shows the version, so a reverted badge is identifiable at a glance.
+
+Built from a `git archive 5df769b` into the scratchpad rather than the working
+tree, because Syncthing was running (see the folder-churn caveat).
+
+## 2. `0.12.0` published → badge reported "download failed"
+The user's AppStore update failed. Server side checked out completely:
+
+| check | result |
+|---|---|
+| `project-summaries` | 0.12.1 / rev 21 |
+| `/api/v3/projects/<slug>` (anonymous) | 200, exec name matches |
+| `.mpk` GET (anonymous, no token) | 200, 233868 B, sha matches local |
+| icon `icon-64x64.png` | 200 |
+| rate limit | 453/500 remaining — not throttled |
+
+**Then tested from the badge itself.** Badge `bac8` was attached, so mpremote was
+bootstrapped from PyPI wheels into `/tmp` (`mpremote` + `pyserial` +
+**`platformdirs`**, which the toolchain note omits) and a raw `socket`+`ssl` GET
+run on-badge:
+
+```
+addr ('104.21.44.80', 443)
+tcp ok 54 ms
+tls ok 652 ms
+HTTP/1.1 200 OK   Content-Length: 233868
+body bytes 233868 in 5672 ms
+```
+
+The badge downloads the whole package fine. Network, DNS and TLS were never the
+problem — which pointed straight at the package.
+
+## 3. Root cause — the archive root (this is the important part)
+`unzip -l` on the two packages:
+
+```
+0.12.0 (published): tmp/claude-1000/-home-john-.../scratchpad/prega/app/com.fri3dcamp.fri3dfriends/...
+0.11.22 (previous): home/john/claudecode/projects/fri3d-friends/app/com.fri3dcamp.fri3dfriends/...
+```
+
+MicroPythonOS is explicit ([Bundling Apps](https://docs.micropythonos.com/apps/bundling-apps/)):
+
+> The first entry in the ZIP stream must be a top-level directory whose name
+> matches the app's fullname exactly … That top-level directory must be the only
+> top-level entry … MicroPythonOS **validates this layout while extracting, and
+> rejects packages that do not follow it.**
+
+`build_mpk` passed `find` an **absolute** path, and `zip` only strips the leading
+`/` — so the whole host path was baked into every entry. The archive's only
+top-level entry was `tmp/` (or `home/`). The download succeeds, the *extract*
+refuses, and the AppStore surfaces that as the misleading **"download failed"**.
+
+**The bug predates this session.** `0.11.22` had the same defect (`home/`), so it
+was never installable via the AppStore either — building from a temp directory
+just made the path long enough to notice.
+
+**Second bug found alongside it:** `zip -r` defeated the exclusion list. `-r`
+recursed into the top-level directory entry and re-added everything under it —
+which is how **`config.json` ended up inside the published 0.11.22**, the one
+file that must never ship (it clobbers the player's real config on update,
+§8.10.4). That package also carried two zero-byte Syncthing `.tmp.` junk files.
+
+## 4. Fix — `tools/publish_badgehub.py`
+- `find` now runs with `cwd=APP_DIR` on a **relative** `FULLNAME`.
+- **`-r` dropped** — the entry list is already the complete filtered tree.
+- `! -name '*.tmp.*'` added, to keep Syncthing scratch files out.
+- New **`verify_mpk_layout()`** runs after every build and raises unless the
+  first ZIP entry is `com.fri3dcamp.fri3dfriends/`, that is the *only* top-level
+  entry, and `MANIFEST.JSON` is present. The build now fails loudly instead of
+  shipping a package no badge can open.
+
+Same `-r` fix applied to the manual recipe in README.md, plus a warning block on
+the relative-path requirement and the "download failed" symptom.
+
+## 5. Result — `0.12.1`, revision 21
+```
+Layout OK: 11 entries, all under com.fri3dcamp.fri3dfriends/
+Published. latest_revision=21 version=0.12.1
+```
+Verified after publish: served sha256 `880fa16a…e34a9` matches the local build
+byte for byte; first entry `com.fri3dcamp.fri3dfriends/`; single top-level entry;
+no `config.json`; `project-summaries` reads 0.12.1 / rev 21.
+
+## Notes / follow-ups
+- **Not yet confirmed installed on hardware.** The package is spec-correct and
+  byte-verified, but no badge has actually completed an AppStore install of
+  0.12.1 yet. A direct `install_mpk` test on `bac8` was *not* run — it clears
+  `/apps`, and that badge currently holds `org.fri3d.hwtest` and
+  `org.fri3d.meshcore`. Needs the user's OK.
+- **`state_backup.py` is not in this build.** It was written during the Gotcha
+  era but it is what stopped an AppStore update from wiping config/contacts. On
+  0.12.1 that protection is gone. It is cleanly additive and could be ported
+  forward onto the pre-Gotcha base.
+- **Repo source still sits at 0.11.32 with all the Gotcha code**, so the tree and
+  BadgeHub now disagree. A revert commit (app code back to pre-Gotcha, Gotcha
+  tests removed, MANIFEST at 0.12.1) was offered and not yet done.
+- No test suite run — there is still no pytest on this host.
+- mpremote bootstrap needs **three** wheels: `mpremote`, `pyserial`,
+  `platformdirs`. ModemManager was already inactive; `sudo` still required for
+  `/dev/ttyACM*`.
+
 # !Fri3d Friends — Two duel bugs fixed + live two-badge kill PROVEN — 2026-08-12 (session 5)
 
 The pre-camp physical test of the duel surfaced two real on-badge bugs. Both fixed,

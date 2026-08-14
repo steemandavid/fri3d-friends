@@ -65,6 +65,17 @@ Friends**, and install. It shows up at the top of the launcher afterwards (the
 `!` sorts it first). Updates are offered automatically when a newer version is
 published.
 
+> **What is published right now: `0.12.1` — the pre-Gotcha app.** Gotcha
+> development was stopped on 2026-08-14, so the BadgeHub release is built from
+> the app tree as of commit `5df769b` (v0.10.0, the last commit before any
+> Gotcha code): nametag, BLE proximity, contact swap, phone/BLE setup and the
+> joystick menu, with no Gotcha screens. The version was bumped to `0.12.x`
+> rather than republished as `0.10.0` so badges still running a `0.11.x` build
+> see it as an update. The Gotcha sources remain in this repo and in the git
+> history; they are simply not shipped. Note this build predates
+> `state_backup.py`, so an AppStore update will again wipe the badge's name,
+> groups and contacts (§8.10.4).
+
 ### From source (development)
 
 The app folder is `app/com.fri3dcamp.fri3dfriends/`. Copy the whole folder to
@@ -424,8 +435,26 @@ find $FN -exec touch -t 202501010000.00 {} \;
 # bare template it ships reads as "the update wiped my badge" (§8.10.4). The app
 # bootstraps a missing config from defaults; gotcha.json/contacts.json are
 # runtime-only and never in the repo.
-(find $FN -type d; find $FN -type f ! -name config.json) | sort | TZ=CET zip -X -r -0 ../dist/${FN}_$(python3 -c "import json;print(json.load(open('$FN/MANIFEST.JSON'))['version'])").mpk -@
+# No -r: with the entry list already complete, -r recurses into the top-level
+# dir entry and re-adds the very files the filter just excluded (that is how
+# config.json ended up inside the published 0.11.22 package).
+(find $FN -type d; find $FN -type f ! -name config.json) | sort | TZ=CET zip -X -0 ../dist/${FN}_$(python3 -c "import json;print(json.load(open('$FN/MANIFEST.JSON'))['version'])").mpk -@
+unzip -l ../dist/${FN}_*.mpk   # first AND only top-level entry must be $FN/
 ```
+
+> **The `find` paths must be relative — run it from `app/`.** MicroPythonOS
+> validates the archive layout while extracting: the first ZIP entry must be
+> `com.fri3dcamp.fri3dfriends/` and that must be the *only* top-level entry
+> ([Bundling Apps](https://docs.micropythonos.com/apps/bundling-apps/)). `zip`
+> only strips the leading `/` from an absolute path, so feeding `find` an
+> absolute one bakes the whole host path into every entry and yields a package
+> rooted at `home/…` (or `tmp/…`) that **every badge rejects** — surfacing on
+> the badge as a misleading **"download failed"** in the AppStore, even though
+> the bytes downloaded fine. `tools/publish_badgehub.py` had this bug until
+> 2026-08-14 (published 0.11.22 was uninstallable); it now builds from a
+> relative path and `verify_mpk_layout()` fails the build if the root is wrong.
+> When an AppStore install fails, `unzip -l` the package before suspecting the
+> network.
 
 To publish, log in at **[badgehub.eu](https://badgehub.eu)** → **Create Project**
 (App Identifier / slug = the `fullname` `com.fri3dcamp.fri3dfriends`; under

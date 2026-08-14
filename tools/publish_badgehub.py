@@ -57,16 +57,29 @@ def build_mpk(version):
     if os.path.exists(mpk_path):
         os.remove(mpk_path)
 
-    find_dirs = subprocess.run(["find", APP_SRC, "-type", "d"],
-                                capture_output=True, text=True, check=True).stdout
-    find_files = subprocess.run(["find", APP_SRC, "-type", "f",
-                                  "!", "-name", "config.json"],
-                                 capture_output=True, text=True, check=True).stdout
+    # MPOS validates the archive layout on extract: the first entry in the ZIP
+    # stream must be the top-level directory FULLNAME/, and it must be the only
+    # top-level entry. Anything else is rejected with a download/install error.
+    # So `find` must be given a RELATIVE path (run from APP_DIR) -- an absolute
+    # one leaves the whole host path baked into every archive entry (zip only
+    # strips the leading "/"), which produced packages rooted at "home/" or
+    # "tmp/" that no badge could install.
+    find_dirs = subprocess.run(["find", FULLNAME, "-type", "d"],
+                                capture_output=True, text=True, check=True,
+                                cwd=APP_DIR).stdout
+    find_files = subprocess.run(["find", FULLNAME, "-type", "f",
+                                  "!", "-name", "config.json",
+                                  "!", "-name", "*.tmp.*"],
+                                 capture_output=True, text=True, check=True,
+                                 cwd=APP_DIR).stdout
     entries = sorted((find_dirs + find_files).splitlines())
 
     env = dict(os.environ, TZ="CET")
     zip_proc = subprocess.run(
-        ["zip", "-X", "-r", "-0", mpk_path, "-@"],
+        # No -r: the entry list is already the full, filtered tree, and -r would
+        # recurse into the top-level dir entry and re-add the excluded files
+        # (that is how config.json ended up inside the 0.11.22 package).
+        ["zip", "-X", "-0", mpk_path, "-@"],
         input="\n".join(entries), text=True, cwd=APP_DIR,
         capture_output=True, env=env,
     )
@@ -74,7 +87,27 @@ def build_mpk(version):
         print(zip_proc.stdout, zip_proc.stderr, file=sys.stderr)
         raise RuntimeError("zip failed")
 
+    verify_mpk_layout(mpk_path)
     return mpk_path, mpk_name
+
+
+def verify_mpk_layout(mpk_path):
+    """Fail loudly if the package would be rejected on the badge."""
+    import zipfile
+
+    with zipfile.ZipFile(mpk_path) as z:
+        names = z.namelist()
+    if not names:
+        raise RuntimeError("mpk is empty")
+    if names[0] != f"{FULLNAME}/":
+        raise RuntimeError(
+            f"first ZIP entry is {names[0]!r}, must be {FULLNAME + '/'!r}")
+    tops = {n.split("/", 1)[0] for n in names}
+    if tops != {FULLNAME}:
+        raise RuntimeError(f"archive has extra top-level entries: {sorted(tops)}")
+    if f"{FULLNAME}/MANIFEST.JSON" not in names:
+        raise RuntimeError("MANIFEST.JSON missing from the package")
+    print(f"Layout OK: {len(names)} entries, all under {FULLNAME}/")
 
 
 # Python's urllib gets a 403 (Cloudflare bot-management, error 1010) on POST
