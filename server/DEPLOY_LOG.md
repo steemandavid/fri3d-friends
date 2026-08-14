@@ -10,6 +10,17 @@ check that nothing was left behind.
 
 ---
 
+## DECOMMISSIONED 2026-08-14 — no instance is running anywhere
+
+Gotcha development was stopped, and the staging instance below was removed from
+`john-ThinkPad-E15` the same day. **Every row in the table was reverted and
+verified**; the host is back to its pre-deploy state. See "Decommission" at the
+end of the session record for exactly what was run and what was checked. The
+sections below are kept as the audit trail (and as the recipe, should the game
+ever be revived).
+
+---
+
 ## Host: 192.168.1.57 (`john-ThinkPad-E15`, Ubuntu 26.04, Python 3.14.4)
 
 Development/staging instance for Phase 1. Deployed **2026-07-30** by
@@ -52,6 +63,57 @@ were created — this server has no scheduled work by design (see `README.md`,
 | 2026-08-09 | Truce reset to 22:00–08:00 | The DB still held the `00:00–00:01` dev override from commit `7d9cef3`. Reset via `POST /v1/admin/truce_schedule` over localhost (the server is now on this machine, on casarural WiFi at `192.168.1.177`). |
 | 2026-08-09 | Tailscale Funnel enabled (row 10) | Exposes `:8080` publicly at `https://john-thinkpad-e15.tail44c8ab.ts.net`. Reason: casarural WiFi isolates clients, so badges cannot reach the server over the LAN. Verified end-to-end — a badge's signed `/v1/sync` over the funnel returned `200` and `synced_15m` went `0→1`. |
 | 2026-08-09 | Badges pointed at the funnel | All 3 dev badges (9de4, fac0/Badge2024lijn, bac8) on casarural WiFi, `config.json gotcha.api`/`enroll` set to the funnel URL, on app `0.11.16` (HTTPS sync support). |
+| **2026-08-14** | **DECOMMISSIONED — all 10 rows reverted** | See below. |
+
+### Decommission (2026-08-14)
+
+Gotcha development was stopped, so the instance was torn down by hand rather than
+via `deploy/uninstall.sh` (the script was not used; the manual steps below are the
+same reversals the table prescribes, run in a safe order). Order mattered: the
+**Funnel was closed first** so the public exposure ended before anything else, and
+the service was stopped **before** archiving so SQLite checkpointed its WAL into a
+consistent file.
+
+```bash
+sudo tailscale funnel --https=443 off && sudo tailscale serve reset   # row 10
+sudo systemctl stop gotcha                                            # row 7
+# ... archive taken here (see below) ...
+sudo systemctl disable gotcha && sudo rm -f /etc/systemd/system/gotcha.service
+sudo systemctl daemon-reload && sudo systemctl reset-failed           # row 7
+sudo rm -rf /opt/gotcha /var/lib/gotcha /etc/gotcha                   # rows 2,3,4,5,6,8
+sudo userdel gotcha                                                   # row 1
+```
+
+Verified afterwards: `tailscale funnel status` → `No serve config`; the public
+URL no longer answers; no `gotcha` unit, user or group exists; all three
+directories gone; nothing listening on `:8080`; Tailscale itself still up. Row 9
+(`/tmp/gotcha-src/`) was already absent. `ufw` was inactive throughout, as the
+"Not changed on this host" note says, so no firewall state needed undoing.
+
+**Archive:** `/home/john/gotcha-backend-decommissioned-20260814.tar.gz`, mode
+`0600`, owned by `john` — the WAL-checkpointed database (`integrity_check: ok`;
+7 players, 7 `badge_keys`, 1 kill, 1397 events), `gotcha.env` + its `.bak`, and
+`gotcha.service`. This is the `--keep-backup` idea done by hand, so it sits in
+`/home/john` rather than the script's `/root/gotcha-final-<timestamp>.sqlite3`.
+**It contains credentials** — a `player_key` per badge (row 4) and the admin
+password (row 6) — hence `0600`, and deliberately **outside this repo**, which is
+public and Syncthing-synced.
+
+Two things deliberately left in place, neither of which is host state this
+project created: the Funnel's Let's Encrypt certificate in
+`/var/lib/tailscale/certs` (Tailscale-managed, self-expiring), and the tailnet's
+Funnel **ACL grant**, which lives in the Tailscale admin console rather than on
+this machine and must be revoked there if it is no longer wanted.
+
+Two observations from the teardown, recorded because they are the kind of thing
+this log exists for. A dev badge was **still syncing** at shutdown (`POST
+/v1/events`, `GET /v1/sync` at 15:25) — harmless, since the badge protocol treats
+an absent server as "keep playing, queue events" (D6), and the app now published
+(0.12.1, pre-Gotcha) does not sync at all. And the Funnel was being **scanned from
+the open internet**: an open-proxy probe (`CONNECT httpbin.org:443` from
+45.135.193.193) hit it minutes before shutdown, answered `404`. That is the
+predicted "a public URL attracts bot scans" behaviour, and a reminder of why the
+admin password rotation above mattered.
 
 ### Operating notes
 

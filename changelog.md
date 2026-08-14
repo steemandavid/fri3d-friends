@@ -1,4 +1,4 @@
-# !Fri3d Friends — Gotcha shelved, pre-Gotcha app republished, and the .mpk layout bug that broke every AppStore install — 2026-08-14 (session 6)
+# !Fri3d Friends — Gotcha shelved, pre-Gotcha app republished, the .mpk layout bug that broke every AppStore install, and the backend decommissioned — 2026-08-14 (session 6)
 
 Gotcha development was stopped. The task was to republish the last known-good
 pre-Gotcha app to BadgeHub. Doing that surfaced a long-standing packaging bug:
@@ -97,6 +97,65 @@ Verified after publish: served sha256 `880fa16a…e34a9` matches the local build
 byte for byte; first entry `com.fri3dcamp.fri3dfriends/`; single top-level entry;
 no `config.json`; `project-summaries` reads 0.12.1 / rev 21.
 
+## 6. Backend decommissioned from `john-ThinkPad-E15`
+
+With Gotcha stopped, every host change the game server made was reverted. The
+authoritative list is `server/DEPLOY_LOG.md` (10 rows, each with its undo);
+teardown was done by hand rather than via `deploy/uninstall.sh`, in a deliberate
+order: **Funnel first** (ends the public exposure immediately), then stop the
+service (so SQLite checkpoints its WAL into a consistent file), then archive,
+then delete.
+
+```bash
+sudo tailscale funnel --https=443 off && sudo tailscale serve reset   # row 10
+sudo systemctl stop gotcha                                            # row 7
+sudo systemctl disable gotcha && sudo rm -f /etc/systemd/system/gotcha.service
+sudo systemctl daemon-reload && sudo systemctl reset-failed
+sudo rm -rf /opt/gotcha /var/lib/gotcha /etc/gotcha                   # rows 2-6,8
+sudo userdel gotcha                                                   # row 1
+```
+
+| check | after |
+|---|---|
+| `tailscale funnel status` | `No serve config` |
+| public URL `…ts.net/healthz` | no response (curl 000) |
+| `gotcha.service` | unit gone, `could not be found` |
+| `/opt/gotcha`, `/var/lib/gotcha`, `/etc/gotcha` | all gone |
+| `gotcha` user / group | both gone |
+| `:8080` | nothing listening |
+| Tailscale itself | untouched, still up |
+
+Row 9 (`/tmp/gotcha-src/`) was already absent; `ufw` was inactive throughout, so
+no firewall state needed undoing.
+
+**Archive (kept, not destroyed):**
+`/home/john/gotcha-backend-decommissioned-20260814.tar.gz`, `0600`, owned by
+`john` — WAL-checkpointed `gotcha.sqlite3` (`integrity_check: ok`; 7 players, 7
+badge_keys, 1 kill, 1397 events — real camp data), `gotcha.env` + `.bak`,
+`gotcha.service`. **Holds credentials** (a `player_key` per badge, the admin
+password), so it is 0600 and deliberately outside this public, Syncthing-synced
+repo.
+
+Left in place on purpose, neither being host state this project created: the
+Funnel's Let's Encrypt cert in `/var/lib/tailscale/certs` (Tailscale-managed,
+self-expiring) and the tailnet's Funnel **ACL grant**, which lives in the
+Tailscale admin console and must be revoked there.
+
+**A `sudo` glob trap, hit again.** `sudo cp /var/lib/gotcha/gotcha.sqlite3* …`
+silently copied nothing: `/var/lib/gotcha` is 0750, so the glob expands in the
+*unprivileged* shell, fails to match, and `cp` gets a literal path. Fix is
+`sudo sh -c "cp …"`. `DEPLOY_LOG.md` already warned about exactly this under
+"Resetting to an empty database" — worth re-reading before any `sudo` + glob on
+that directory.
+
+**Two observations from the logs at shutdown:** a dev badge was *still* syncing
+(`POST /v1/events`, `GET /v1/sync` at 15:25) — harmless, since D6 says an absent
+server means "keep playing, queue events", and the published 0.12.1 does not sync
+at all. And the Funnel was being scanned from the open internet — an open-proxy
+probe (`CONNECT httpbin.org:443` from 45.135.193.193) answered `404` minutes
+before shutdown. Predicted behaviour for a public URL, and a reminder of why the
+2026-08-10 admin-password rotation mattered.
+
 ## Notes / follow-ups
 - **Not yet confirmed installed on hardware.** The package is spec-correct and
   byte-verified, but no badge has actually completed an AppStore install of
@@ -110,6 +169,11 @@ no `config.json`; `project-summaries` reads 0.12.1 / rev 21.
 - **Repo source still sits at 0.11.32 with all the Gotcha code**, so the tree and
   BadgeHub now disagree. A revert commit (app code back to pre-Gotcha, Gotcha
   tests removed, MANIFEST at 0.12.1) was offered and not yet done.
+- **The Gotcha backend can no longer be reached by any badge**, by design. Dev
+  badges still carrying a `gotcha.api`/`enroll` URL in `config.json` will retry
+  a dead endpoint until they are reflashed with the pre-Gotcha app.
+- The tailnet **Funnel ACL grant** is still in the Tailscale admin console —
+  revoke it there if no node should be able to expose a Funnel.
 - No test suite run — there is still no pytest on this host.
 - mpremote bootstrap needs **three** wheels: `mpremote`, `pyserial`,
   `platformdirs`. ModemManager was already inactive; `sudo` still required for

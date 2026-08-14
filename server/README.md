@@ -5,9 +5,19 @@ tier 1 of `Implementation_Plan_Gotcha_20260726.md` §0. FastAPI + SQLite, one
 process, no ORM, no migration tool, no template engine, no build step: the
 deployment target is a laptop in a field (§6.1).
 
-**Status: Phase 1 complete** (API, scoring, ring, admin console, page
-skeletons, badge-simulator test harness). Phase 2 is the badge side; Phase 5
-replaces the page skeletons and adds HTTPS.
+> **Status: STOPPED 2026-08-14. No instance is running.** Gotcha development was
+> abandoned and the staging deployment was fully removed from
+> `john-ThinkPad-E15` — service, files, user and the public Tailscale Funnel. The
+> database was archived off-repo first; see
+> [`DEPLOY_LOG.md`](DEPLOY_LOG.md) ("Decommission"). The published badge app
+> (0.12.1) is the **pre-Gotcha** build and never contacts this server. The code
+> below still runs, and the deploy recipe is still accurate, should the game ever
+> be revived — but nothing is live and `deploy/install.sh` should not be run
+> without deciding to restart the project.
+
+**Status when work stopped: Phase 1 complete** (API, scoring, ring, admin
+console, page skeletons, badge-simulator test harness). Phase 2 is the badge
+side; Phase 5 replaces the page skeletons and adds HTTPS.
 
 ## Running it
 
